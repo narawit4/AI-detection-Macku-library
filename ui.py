@@ -253,7 +253,7 @@ class JitterApp(tk.Tk):
         self.reconnect_button.pack(side="right")
 
     def _build_main_control_card(self) -> None:
-        self.runtime_frame = self._card("Main Control")
+        self.runtime_frame = self._card("Runtime")
         card = self.runtime_frame
         self.enable_button = ttk.Button(card, text="Enable Jitter",
                                         style="XP.Primary.TButton",
@@ -269,7 +269,8 @@ class JitterApp(tk.Tk):
         self.stop_button.pack(side="right")
 
     def _build_trigger_card(self) -> None:
-        card = self._card("Trigger")
+        self.setup_frame = self._card("Setup")
+        card = self.setup_frame
         card.columnconfigure(1, weight=1)
         card.columnconfigure(3, weight=1)
         ttk.Label(card, text="Trigger", style="XP.Group.TLabel").grid(row=0, column=0,
@@ -286,13 +287,10 @@ class JitterApp(tk.Tk):
                                            state="readonly", style="XP.TCombobox", width=11)
         self.modifier_combo.grid(row=0, column=3, sticky="ew", padx=(0, 12))
         self.modifier_combo.bind("<<ComboboxSelected>>", self._bindings_event)
-        self.hotkey_button = ttk.Button(card, text=f"Hotkey: {self.hotkey_name_var.get()}",
-                                        style="XP.Secondary.TButton",
-                                        command=self.capture_hotkey)
-        self.hotkey_button.grid(row=0, column=4, sticky="e")
 
     def _build_action_card(self) -> None:
-        card = self._card("Actions")
+        card = ttk.Frame(self.setup_frame, style="XP.App.TFrame")
+        card.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(7, 0))
         ttk.Label(card, text="Preset", style="XP.Group.TLabel").pack(side="left", padx=(0, 7))
         self.preset_combo = ttk.Combobox(card, textvariable=self.preset_var,
                                          values=self.preset_values, state="readonly",
@@ -332,10 +330,7 @@ class JitterApp(tk.Tk):
         grid = ttk.Frame(card, style="XP.App.TFrame")
         grid.pack(fill="x")
         controls = (
-            ("Angle", "motion_angle_deg", 0, 360, 1),
             ("Strength", "motion_strength_pps", 0, 500, 1),
-            ("Horizontal", "horizontal_jitter_pps", 0, 500, 1),
-            ("Vertical", "vertical_jitter_pps", 0, 500, 1),
             ("Jitter Rate", "jitter_rate_hz", 0.1, 60, 0.1),
         )
         for index, control in enumerate(controls):
@@ -345,29 +340,36 @@ class JitterApp(tk.Tk):
         self.advanced_frame = ttk.LabelFrame(
             self.content, text="Advanced Settings", style="XP.Group.TLabelframe",
             padding=(11, 8, 11, 10))
+        self.hotkey_button = ttk.Button(
+            self.advanced_frame, text=f"Hotkey: {self.hotkey_name_var.get()}",
+            style="XP.Secondary.TButton", command=self.capture_hotkey)
+        self.hotkey_button.pack(anchor="w", pady=(0, 5))
         grid = ttk.Frame(self.advanced_frame, style="XP.App.TFrame")
         grid.pack(fill="x")
-        self._numeric_control(grid, 0, 0, "Randomness", "jitter_randomness_percent", 0, 100)
-        self._numeric_control(grid, 0, 1, "Axis Phase", "jitter_axis_phase_deg", 0, 360)
-        self._numeric_control(grid, 1, 0, "Smoothness", "smoothness_percent", 1, 100)
-        self._numeric_control(grid, 1, 1, "Ramp (ms)", "ramp_up_ms", 0, 2000)
-        self._numeric_control(grid, 2, 0, "Update Rate", "update_rate_hz", 20, 500)
-        self._numeric_control(grid, 2, 1, "Max Step", "max_step_px", 1, 50)
-        self._numeric_control(grid, 3, 0, "Acceleration", "acceleration_pps2", 1, 10000)
-        self._numeric_control(grid, 3, 1, "Deceleration", "deceleration_pps2", 1, 10000)
+        self._numeric_control(grid, 1, 0, "Angle", "motion_angle_deg", 0, 360, 1)
+        self._numeric_control(grid, 1, 1, "Horizontal", "horizontal_jitter_pps", 0, 500, 1)
+        self._numeric_control(grid, 2, 0, "Vertical", "vertical_jitter_pps", 0, 500, 1)
+        self._numeric_control(grid, 3, 0, "Randomness", "jitter_randomness_percent", 0, 100)
+        self._numeric_control(grid, 3, 1, "Axis Phase", "jitter_axis_phase_deg", 0, 360)
+        self._numeric_control(grid, 4, 0, "Smoothness", "smoothness_percent", 1, 100)
+        self._numeric_control(grid, 4, 1, "Ramp (ms)", "ramp_up_ms", 0, 2000)
+        self._numeric_control(grid, 5, 0, "Update Rate", "update_rate_hz", 20, 500)
+        self._numeric_control(grid, 5, 1, "Max Step", "max_step_px", 1, 50)
+        self._numeric_control(grid, 6, 0, "Acceleration", "acceleration_pps2", 1, 10000)
+        self._numeric_control(grid, 6, 1, "Deceleration", "deceleration_pps2", 1, 10000)
 
-        ttk.Label(grid, text="Waveform", style="XP.Group.TLabel").grid(row=4, column=0,
+        ttk.Label(grid, text="Waveform", style="XP.Group.TLabel").grid(row=7, column=0,
                                                                        sticky="w", padx=5, pady=(8, 3))
         self.waveform_combo = ttk.Combobox(
             grid, textvariable=self.motion_vars["jitter_waveform"],
             values=JITTER_WAVEFORMS, state="readonly", style="XP.TCombobox")
-        self.waveform_combo.grid(row=4, column=1, sticky="ew", padx=5, pady=(8, 3))
-        ttk.Label(grid, text="Motion Curve", style="XP.Group.TLabel").grid(row=5, column=0,
+        self.waveform_combo.grid(row=7, column=1, sticky="ew", padx=5, pady=(8, 3))
+        ttk.Label(grid, text="Motion Curve", style="XP.Group.TLabel").grid(row=8, column=0,
                                                                           sticky="w", padx=5, pady=3)
         self.motion_curve_combo = ttk.Combobox(
             grid, textvariable=self.motion_vars["motion_curve"],
             values=MOTION_CURVES, state="readonly", style="XP.TCombobox")
-        self.motion_curve_combo.grid(row=5, column=1, sticky="ew", padx=5, pady=3)
+        self.motion_curve_combo.grid(row=8, column=1, sticky="ew", padx=5, pady=3)
         grid.columnconfigure(0, weight=1)
         grid.columnconfigure(1, weight=1)
 

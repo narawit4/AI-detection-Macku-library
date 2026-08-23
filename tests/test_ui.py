@@ -130,6 +130,23 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertFalse(self._is_descendant(self.app.stop_button,
                                              self.app.advanced_frame))
 
+    def test_runtime_group_uses_the_approved_title(self):
+        self.assertEqual(self.app.runtime_frame.cget("text"), "Runtime")
+
+    def test_setup_group_combines_bindings_preset_and_test_run(self):
+        group_titles = [
+            child.cget("text") for child in self.app.content.winfo_children()
+            if isinstance(child, ttk.LabelFrame)
+        ]
+        self.assertIn("Setup", group_titles)
+        setup = next(
+            child for child in self.app.content.winfo_children()
+            if isinstance(child, ttk.LabelFrame) and child.cget("text") == "Setup"
+        )
+        for expected in ("Trigger", "Modifier", "Preset", "Test 3s"):
+            self.assertIn(expected, widget_texts(setup))
+        self.assertNotIn("Actions", group_titles)
+
     def test_luna_blue_styles_are_registered(self):
         style = ttk.Style(self.app)
         self.assertEqual(style.lookup("XP.Title.TFrame", "background"), "#0054E3")
