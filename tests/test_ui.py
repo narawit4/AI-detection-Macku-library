@@ -211,6 +211,51 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertFalse(self._is_descendant(self.app.hotkey_button,
                                              self.app.advanced_frame))
 
+    def test_advanced_uses_approved_two_column_grid(self):
+        expected_positions = {
+            "motion_angle_deg": (0, 0),
+            "horizontal_jitter_pps": (0, 1),
+            "vertical_jitter_pps": (1, 0),
+            "jitter_randomness_percent": (1, 1),
+            "jitter_axis_phase_deg": (2, 0),
+            "smoothness_percent": (2, 1),
+            "ramp_up_ms": (3, 0),
+            "update_rate_hz": (3, 1),
+            "max_step_px": (4, 0),
+            "acceleration_pps2": (4, 1),
+            "deceleration_pps2": (5, 0),
+        }
+        for key, expected in expected_positions.items():
+            with self.subTest(key=key):
+                block = getattr(self.app, f"{key}_entry").master.master
+                info = block.grid_info()
+                self.assertEqual((int(info["row"]), int(info["column"])), expected)
+                self.assertIs(block.master, self.app.advanced_grid)
+
+    def test_advanced_choices_span_the_full_grid_width(self):
+        for combo in (self.app.waveform_combo, self.app.motion_curve_combo):
+            with self.subTest(combo=str(combo)):
+                choice_row = combo.master
+                info = choice_row.grid_info()
+                self.assertEqual(int(info["columnspan"]), 2)
+                self.assertIs(choice_row.master, self.app.advanced_grid)
+
+    def test_runtime_actions_have_equal_fixed_weight(self):
+        self.assertIs(self.app.enable_button.master, self.app.runtime_frame)
+        self.assertIs(self.app.stop_button.master, self.app.runtime_frame)
+        self.assertEqual(int(self.app.enable_button.grid_info()["column"]), 0)
+        self.assertEqual(int(self.app.stop_button.grid_info()["column"]), 2)
+        self.assertIn("ew", self.app.enable_button.grid_info()["sticky"])
+        self.assertIn("ew", self.app.stop_button.grid_info()["sticky"])
+        self.assertEqual(self.app.runtime_frame.grid_columnconfigure(0)["weight"],
+                         self.app.runtime_frame.grid_columnconfigure(2)["weight"])
+
+    def test_footer_and_runtime_are_outside_scrollable_workspace(self):
+        for widget in (self.app.footer_frame, self.app.runtime_frame,
+                       self.app.enable_button, self.app.stop_button):
+            with self.subTest(widget=str(widget)):
+                self.assertFalse(self._is_descendant(widget, self.app.right_host))
+
     def test_status_strip_combines_device_and_connection_state(self):
         self.assertTrue(self._is_descendant(self.app.device_label,
                                             self.app.status_strip))
