@@ -1,4 +1,5 @@
 import tkinter as tk
+from tkinter import ttk
 import unittest
 
 from ui import JitterApp
@@ -97,12 +98,43 @@ class JitterLayoutTests(unittest.TestCase):
         except tk.TclError:
             pass
 
-    def test_window_is_fixed_size_focused_dashboard(self):
+    def test_window_is_fixed_size_compact_xp_dashboard(self):
         self.app.update_idletasks()
         self.assertEqual(tuple(map(int, self.app.resizable())), (0, 0))
-        width, height = map(int, self.app.geometry().split("+")[0].split("x"))
-        self.assertGreaterEqual(width, 700)
-        self.assertGreaterEqual(height, 650)
+        self.assertEqual(self.app.geometry().split("+")[0], "640x560")
+        self.assertEqual(self.app.cget("background"), "#ECE9D8")
+
+    def _is_descendant(self, widget, ancestor):
+        current = widget
+        while current is not self.app:
+            if current is ancestor:
+                return True
+            current = current.master
+        return False
+
+    def test_compact_dashboard_keeps_only_primary_motion_controls(self):
+        self.assertFalse(self._is_descendant(self.app.motion_strength_pps_entry,
+                                             self.app.advanced_frame))
+        self.assertFalse(self._is_descendant(self.app.jitter_rate_hz_entry,
+                                             self.app.advanced_frame))
+        for key in ("motion_angle_deg", "horizontal_jitter_pps",
+                    "vertical_jitter_pps"):
+            self.assertTrue(self._is_descendant(getattr(self.app, f"{key}_entry"),
+                                                self.app.advanced_frame))
+        self.assertTrue(self._is_descendant(self.app.hotkey_button,
+                                            self.app.advanced_frame))
+
+    def test_runtime_group_keeps_stop_always_visible(self):
+        self.assertTrue(self._is_descendant(self.app.stop_button,
+                                            self.app.runtime_frame))
+        self.assertFalse(self._is_descendant(self.app.stop_button,
+                                             self.app.advanced_frame))
+
+    def test_luna_blue_styles_are_registered(self):
+        style = ttk.Style(self.app)
+        self.assertEqual(style.lookup("XP.Title.TFrame", "background"), "#0054E3")
+        self.assertEqual(style.lookup("XP.Group.TLabelframe", "background"), "#ECE9D8")
+        self.assertEqual(style.lookup("XP.Danger.TButton", "foreground"), "#A00000")
 
     def test_required_actions_are_present_and_stop_is_outside_advanced(self):
         texts = widget_texts(self.app)
