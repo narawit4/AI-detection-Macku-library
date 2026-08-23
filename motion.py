@@ -156,17 +156,18 @@ class SmoothMotionEngine:
     jitter_phase: float = 0.0
 
     @staticmethod
-    def _wave(phase: float, waveform: str, rng: random.Random) -> float:
+    def _wave(phase: float, waveform: str, randomness: float,
+              rng: random.Random) -> float:
         cycle = (phase / math.tau) % 1.0
         sine = math.sin(phase)
-        if waveform == "Sine":
-            return sine
         if waveform == "Triangle":
-            return 1.0 - 4.0 * abs(round(cycle - 0.25) - (cycle - 0.25))
-        if waveform == "Square":
-            return 1.0 if sine >= 0.0 else -1.0
-        # Random blend retains a coherent wave while adding deterministic noise.
-        return 0.5 * sine + 0.5 * rng.uniform(-1.0, 1.0)
+            wave = 1.0 - 4.0 * abs(round(cycle - 0.25) - (cycle - 0.25))
+        elif waveform == "Square":
+            wave = 1.0 if sine >= 0.0 else -1.0
+        else:
+            wave = sine
+        noise = rng.uniform(-1.0, 1.0)
+        return wave * (1.0 - randomness) + noise * randomness
 
     @staticmethod
     def _ramp(progress: float, curve: str) -> float:
@@ -186,13 +187,8 @@ class SmoothMotionEngine:
             randomness = max(0.0, min(100.0, settings.jitter_randomness)) / 100.0
             phase = self.jitter_phase
             axis_phase = math.radians(settings.jitter_axis_phase_deg)
-            wave_x = self._wave(phase, settings.jitter_waveform, rng)
-            wave_y = self._wave(phase + axis_phase, settings.jitter_waveform, rng)
-            if settings.jitter_waveform != "Random blend":
-                noise_x = rng.uniform(-1.0, 1.0)
-                noise_y = rng.uniform(-1.0, 1.0)
-                wave_x = wave_x * (1.0 - randomness) + noise_x * randomness
-                wave_y = wave_y * (1.0 - randomness) + noise_y * randomness
+            wave_x = self._wave(phase, settings.jitter_waveform, randomness, rng)
+            wave_y = self._wave(phase + axis_phase, settings.jitter_waveform, randomness, rng)
             jitter_x = wave_x * settings.horizontal_jitter_pps
             jitter_y = wave_y * settings.vertical_jitter_pps
 

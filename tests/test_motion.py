@@ -91,6 +91,19 @@ class SmoothMotionEngineTests(unittest.TestCase):
         self.assertEqual(engine.step(strong, 0.1, 1.0, random.Random(3))[0], 2)
         self.assertEqual(engine.step(stopped, 0.1, 1.0, random.Random(3))[0], 0)
 
+    def test_random_blend_honors_configured_randomness(self):
+        base = replace(MotionSettings(), strength_pps=0, horizontal_jitter_pps=20,
+                       vertical_jitter_pps=0, jitter_rate_hz=3,
+                       jitter_waveform="Random blend", smoothness=0,
+                       ramp_up_ms=0, acceleration_pps2=10000, max_step_px=50)
+        coherent = replace(base, jitter_randomness=0)
+        random_only = replace(base, jitter_randomness=100)
+        first_engine = SmoothMotionEngine()
+        second_engine = SmoothMotionEngine()
+        first_engine.step(coherent, 0.01, 1.0, random.Random(9))
+        second_engine.step(random_only, 0.01, 1.0, random.Random(9))
+        self.assertNotEqual(first_engine.filtered_x, second_engine.filtered_x)
+
 
 class TriggerGateTests(unittest.TestCase):
     def test_modifier_is_required_when_configured(self):
