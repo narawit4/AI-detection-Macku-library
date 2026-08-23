@@ -117,18 +117,53 @@ class JitterLayoutTests(unittest.TestCase):
                                              self.app.advanced_frame))
         self.assertFalse(self._is_descendant(self.app.jitter_rate_hz_entry,
                                              self.app.advanced_frame))
-        for key in ("motion_angle_deg", "horizontal_jitter_pps",
-                    "vertical_jitter_pps"):
-            self.assertTrue(self._is_descendant(getattr(self.app, f"{key}_entry"),
-                                                self.app.advanced_frame))
-        self.assertTrue(self._is_descendant(self.app.hotkey_button,
-                                            self.app.advanced_frame))
+        secondary_widgets = {
+            "Hotkey": self.app.hotkey_button,
+            "Angle": self.app.motion_angle_deg_entry,
+            "Horizontal": self.app.horizontal_jitter_pps_entry,
+            "Vertical": self.app.vertical_jitter_pps_entry,
+            "Randomness": self.app.jitter_randomness_percent_entry,
+            "Axis Phase": self.app.jitter_axis_phase_deg_entry,
+            "Smoothness": self.app.smoothness_percent_entry,
+            "Ramp time": self.app.ramp_up_ms_entry,
+            "Update rate": self.app.update_rate_hz_entry,
+            "Maximum step": self.app.max_step_px_entry,
+            "Acceleration": self.app.acceleration_pps2_entry,
+            "Deceleration": self.app.deceleration_pps2_entry,
+            "Waveform": self.app.waveform_combo,
+            "Motion Curve": self.app.motion_curve_combo,
+        }
+        for setting, widget in secondary_widgets.items():
+            with self.subTest(setting=setting):
+                self.assertTrue(self._is_descendant(widget,
+                                                    self.app.advanced_frame))
 
     def test_runtime_group_keeps_stop_always_visible(self):
         self.assertTrue(self._is_descendant(self.app.stop_button,
                                             self.app.runtime_frame))
         self.assertFalse(self._is_descendant(self.app.stop_button,
                                              self.app.advanced_frame))
+
+    def test_stop_remains_inside_application_viewport_when_advanced_is_scrolled(self):
+        self.app.deiconify()
+        self.app.toggle_advanced()
+        self.app.update()
+        self.app.canvas.yview_moveto(1.0)
+        self.app.update()
+
+        app_left = self.app.winfo_rootx()
+        app_top = self.app.winfo_rooty()
+        app_right = app_left + self.app.winfo_width()
+        app_bottom = app_top + self.app.winfo_height()
+        stop_left = self.app.stop_button.winfo_rootx()
+        stop_top = self.app.stop_button.winfo_rooty()
+        stop_right = stop_left + self.app.stop_button.winfo_width()
+        stop_bottom = stop_top + self.app.stop_button.winfo_height()
+
+        self.assertGreaterEqual(stop_left, app_left)
+        self.assertGreaterEqual(stop_top, app_top)
+        self.assertLessEqual(stop_right, app_right)
+        self.assertLessEqual(stop_bottom, app_bottom)
 
     def test_runtime_group_uses_the_approved_title(self):
         self.assertEqual(self.app.runtime_frame.cget("text"), "Runtime")

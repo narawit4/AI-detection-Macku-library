@@ -201,9 +201,20 @@ class JitterApp(tk.Tk):
         shell = ttk.Frame(self, style="XP.App.TFrame")
         shell.pack(fill="both", expand=True)
 
-        self.canvas = tk.Canvas(shell, background=XP_WINDOW, highlightthickness=0,
+        self.fixed_content = ttk.Frame(
+            shell, style="XP.App.TFrame", padding=(8, 8, 8, 0)
+        )
+        self.fixed_content.pack(fill="x")
+        self._build_header()
+        self._build_device_card()
+        self._build_main_control_card()
+
+        scroll_host = ttk.Frame(shell, style="XP.App.TFrame")
+        scroll_host.pack(fill="both", expand=True)
+        self.canvas = tk.Canvas(scroll_host, background=XP_WINDOW, highlightthickness=0,
                                 borderwidth=0)
-        scrollbar = ttk.Scrollbar(shell, orient="vertical", command=self.canvas.yview)
+        scrollbar = ttk.Scrollbar(scroll_host, orient="vertical",
+                                  command=self.canvas.yview)
         self.canvas.configure(yscrollcommand=scrollbar.set)
         self.canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
@@ -214,9 +225,6 @@ class JitterApp(tk.Tk):
         self.content.bind("<Configure>", self._refresh_scrollregion)
         self.canvas.bind("<Configure>", self._resize_content_window)
 
-        self._build_header()
-        self._build_device_card()
-        self._build_main_control_card()
         self._build_trigger_card()
         self._build_action_card()
         self._build_quick_card()
@@ -224,11 +232,11 @@ class JitterApp(tk.Tk):
         self._build_footer()
 
     def _build_header(self) -> None:
-        header = ttk.Frame(self.content, style="XP.Title.TFrame")
+        header = ttk.Frame(self.fixed_content, style="XP.Title.TFrame")
         header.pack(fill="x", pady=(0, 9))
         ttk.Label(header, text="Jitter \N{EM DASH} Makcu Control", style="XP.Title.TLabel").pack(
             side="left", padx=8, pady=5)
-        summary = ttk.Frame(self.content, style="XP.App.TFrame")
+        summary = ttk.Frame(self.fixed_content, style="XP.App.TFrame")
         summary.pack(fill="x", pady=(0, 7))
         ttk.Label(summary, text="Connection:", style="XP.Muted.TLabel").pack(side="left")
         self.connection_label = ttk.Label(
@@ -236,14 +244,16 @@ class JitterApp(tk.Tk):
             style="XP.StatusDisconnected.TLabel")
         self.connection_label.pack(side="left", padx=(4, 0))
 
-    def _card(self, title: str) -> ttk.LabelFrame:
-        card = ttk.LabelFrame(self.content, text=title, style="XP.Group.TLabelframe",
+    def _card(self, title: str, parent: tk.Misc | None = None) -> ttk.LabelFrame:
+        if parent is None:
+            parent = self.content
+        card = ttk.LabelFrame(parent, text=title, style="XP.Group.TLabelframe",
                               padding=(8, 6, 8, 8))
         card.pack(fill="x", pady=(0, 9))
         return card
 
     def _build_device_card(self) -> None:
-        card = self._card("Device")
+        card = self._card("Device", self.fixed_content)
         self.device_label = ttk.Label(card, textvariable=self.device_status_var,
                                       style="XP.Muted.TLabel")
         self.device_label.pack(side="left", fill="x", expand=True)
@@ -253,7 +263,7 @@ class JitterApp(tk.Tk):
         self.reconnect_button.pack(side="right")
 
     def _build_main_control_card(self) -> None:
-        self.runtime_frame = self._card("Runtime")
+        self.runtime_frame = self._card("Runtime", self.fixed_content)
         card = self.runtime_frame
         self.enable_button = ttk.Button(card, text="Enable Jitter",
                                         style="XP.Primary.TButton",
