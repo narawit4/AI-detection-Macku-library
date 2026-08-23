@@ -243,114 +243,170 @@ class JitterApp(tk.Tk):
         return ("Custom", *MOTION_PRESETS.keys())
 
     def _build_page(self) -> None:
-        shell = ttk.Frame(self, style="XP.App.TFrame")
-        shell.pack(fill="both", expand=True)
+        self.shell = ttk.Frame(self, style="XP.App.TFrame", padding=(8, 8, 8, 8))
+        self.shell.pack(fill="both", expand=True)
+        self.shell.columnconfigure(0, weight=1)
+        self.shell.rowconfigure(1, weight=1)
 
-        self.fixed_content = ttk.Frame(
-            shell, style="XP.App.TFrame", padding=(8, 8, 8, 0)
-        )
-        self.fixed_content.pack(fill="x")
-        self._build_header()
-        self._build_device_card()
-        self._build_main_control_card()
+        self.status_strip = ttk.Frame(self.shell, style="XP.Status.TFrame",
+                                      padding=(7, 5))
+        self.status_strip.grid(row=0, column=0, sticky="ew", pady=(0, 7))
+        self._build_status_strip()
 
-        scroll_host = ttk.Frame(shell, style="XP.App.TFrame")
-        scroll_host.pack(fill="both", expand=True)
-        self.canvas = tk.Canvas(scroll_host, background=XP_WINDOW, highlightthickness=0,
-                                borderwidth=0)
-        scrollbar = ttk.Scrollbar(scroll_host, orient="vertical",
-                                  command=self.canvas.yview)
-        self.canvas.configure(yscrollcommand=scrollbar.set)
-        self.canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
+        self.command_center = ttk.Frame(self.shell, style="XP.App.TFrame")
+        self.command_center.grid(row=1, column=0, sticky="nsew")
+        self.command_center.rowconfigure(0, weight=1)
+        self.command_center.columnconfigure(0, minsize=190)
+        self.command_center.columnconfigure(1, weight=1)
 
-        self.content = ttk.Frame(self.canvas, style="XP.App.TFrame", padding=(8, 8, 8, 12))
-        self.content_window = self.canvas.create_window((0, 0), window=self.content,
-                                                         anchor="nw")
-        self.content.bind("<Configure>", self._refresh_scrollregion)
-        self.canvas.bind("<Configure>", self._resize_content_window)
-
+        self.left_column = ttk.Frame(self.command_center, style="XP.App.TFrame")
+        self.left_column.grid(row=0, column=0, sticky="nsew", padx=(0, 7))
         self._build_trigger_card()
         self._build_action_card()
+
+        self._build_right_workspace()
         self._build_quick_card()
         self._build_advanced_card()
         self._build_footer()
+        self._build_main_control_card()
 
-    def _build_header(self) -> None:
-        summary = ttk.Frame(self.fixed_content, style="XP.App.TFrame")
-        summary.pack(fill="x", pady=(0, 7))
-        ttk.Label(summary, text="Connection:", style="XP.Muted.TLabel").pack(side="left")
+    def _build_status_strip(self) -> None:
+        self.device_label = ttk.Label(
+            self.status_strip,
+            textvariable=self.device_status_var,
+            style="XP.Muted.TLabel",
+        )
+        self.device_label.pack(side="left", fill="x", expand=True)
+        ttk.Label(self.status_strip, text="Connection:",
+                  style="XP.Muted.TLabel").pack(side="left", padx=(8, 4))
         self.connection_label = ttk.Label(
-            summary, textvariable=self.connection_status_var,
-            style="XP.StatusDisconnected.TLabel")
-        self.connection_label.pack(side="left", padx=(4, 0))
+            self.status_strip,
+            textvariable=self.connection_status_var,
+            style="XP.StatusDisconnected.TLabel",
+        )
+        self.connection_label.pack(side="right")
 
-    def _card(self, title: str, parent: tk.Misc | None = None) -> ttk.LabelFrame:
-        if parent is None:
-            parent = self.content
+    def _build_right_workspace(self) -> None:
+        self.right_host = ttk.Frame(self.command_center, style="XP.App.TFrame")
+        self.right_host.grid(row=0, column=1, sticky="nsew")
+        self.right_host.rowconfigure(0, weight=1)
+        self.right_host.columnconfigure(0, weight=1)
+        self.right_canvas = tk.Canvas(
+            self.right_host,
+            background=XP_WINDOW,
+            highlightthickness=0,
+            borderwidth=0,
+        )
+        self.right_scrollbar = ttk.Scrollbar(
+            self.right_host,
+            orient="vertical",
+            command=self.right_canvas.yview,
+        )
+        self.right_canvas.configure(yscrollcommand=self.right_scrollbar.set)
+        self.right_canvas.grid(row=0, column=0, sticky="nsew")
+        self.right_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.right_content = ttk.Frame(
+            self.right_canvas,
+            style="XP.App.TFrame",
+            padding=(0, 0, 4, 8),
+        )
+        self.right_content_window = self.right_canvas.create_window(
+            (0, 0),
+            window=self.right_content,
+            anchor="nw",
+        )
+        self.canvas = self.right_canvas
+        self.content = self.right_content
+        self.content_window = self.right_content_window
+        self.right_content.bind("<Configure>", self._refresh_scrollregion)
+        self.right_canvas.bind("<Configure>", self._resize_content_window)
+
+    def _card(self, title: str, parent: tk.Misc) -> ttk.LabelFrame:
         card = ttk.LabelFrame(parent, text=title, style="XP.Group.TLabelframe",
                               padding=(8, 6, 8, 8))
         card.pack(fill="x", pady=(0, 9))
         return card
 
-    def _build_device_card(self) -> None:
-        card = self._card("Device", self.fixed_content)
-        self.device_label = ttk.Label(card, textvariable=self.device_status_var,
-                                      style="XP.Muted.TLabel")
-        self.device_label.pack(side="left", fill="x", expand=True)
-        self.reconnect_button = ttk.Button(card, text="Reconnect",
-                                            style="XP.Secondary.TButton",
-                                            command=self.reconnect)
-        self.reconnect_button.pack(side="right")
-
     def _build_main_control_card(self) -> None:
-        self.runtime_frame = self._card("Runtime", self.fixed_content)
-        card = self.runtime_frame
-        self.enable_button = ttk.Button(card, text="Enable Jitter",
+        self.runtime_frame = ttk.Frame(self.shell, style="XP.App.TFrame")
+        self.runtime_frame.grid(row=3, column=0, sticky="ew")
+        for column in range(3):
+            self.runtime_frame.columnconfigure(column, weight=1)
+        self.enable_button = ttk.Button(self.runtime_frame, text="Enable Jitter",
                                         style="XP.Primary.TButton",
                                         command=self.toggle_enabled)
-        self.enable_button.pack(side="left")
-        state = ttk.Frame(card, style="XP.App.TFrame")
-        state.pack(side="left", expand=True, padx=12)
+        self.enable_button.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        state = ttk.Frame(self.runtime_frame, style="XP.App.TFrame")
+        state.grid(row=0, column=1, sticky="ew", padx=6)
         ttk.Label(state, text="RUNTIME", style="XP.Muted.TLabel").pack(anchor="center")
         ttk.Label(state, textvariable=self.runtime_status_var,
                   style="XP.Group.TLabel", font=(FONT_FAMILY, 8, "bold")).pack(anchor="center")
-        self.stop_button = ttk.Button(card, text="STOP", style="XP.Danger.TButton",
+        self.stop_button = ttk.Button(self.runtime_frame, text="STOP", style="XP.Danger.TButton",
                                       command=self.emergency_stop)
-        self.stop_button.pack(side="right")
+        self.stop_button.grid(row=0, column=2, sticky="ew", padx=(6, 0))
 
     def _build_trigger_card(self) -> None:
-        self.setup_frame = self._card("Setup")
-        card = self.setup_frame
-        card.columnconfigure(1, weight=1)
-        card.columnconfigure(3, weight=1)
-        ttk.Label(card, text="Trigger", style="XP.Group.TLabel").grid(row=0, column=0,
-                                                                     sticky="w", padx=(0, 6))
-        self.trigger_combo = ttk.Combobox(card, textvariable=self.trigger_var,
-                                          values=("Left", "Right", "Middle", "Mouse4", "Mouse5"),
-                                          state="readonly", style="XP.TCombobox", width=11)
-        self.trigger_combo.grid(row=0, column=1, sticky="ew", padx=(0, 12))
+        self.setup_frame = self._card("Control Setup", self.left_column)
+        self.setup_frame.columnconfigure(0, weight=1)
+
+        def combo_row(row, label, variable, values, width):
+            ttk.Label(self.setup_frame, text=label,
+                      style="XP.Group.TLabel").grid(row=row, column=0, sticky="w")
+            combo = ttk.Combobox(
+                self.setup_frame,
+                textvariable=variable,
+                values=values,
+                state="readonly",
+                style="XP.TCombobox",
+                width=width,
+            )
+            combo.grid(row=row + 1, column=0, sticky="ew", pady=(2, 6))
+            return combo
+
+        self.trigger_combo = combo_row(
+            0, "Trigger", self.trigger_var,
+            ("Left", "Right", "Middle", "Mouse4", "Mouse5"), 14,
+        )
         self.trigger_combo.bind("<<ComboboxSelected>>", self._bindings_event)
-        ttk.Label(card, text="Modifier", style="XP.Group.TLabel").grid(row=0, column=2,
-                                                                       sticky="w", padx=(0, 6))
-        self.modifier_combo = ttk.Combobox(card, textvariable=self.modifier_var,
-                                           values=("None", "Left", "Right", "Middle", "Mouse4", "Mouse5"),
-                                           state="readonly", style="XP.TCombobox", width=11)
-        self.modifier_combo.grid(row=0, column=3, sticky="ew", padx=(0, 12))
+        self.modifier_combo = combo_row(
+            2, "Modifier", self.modifier_var,
+            ("None", "Left", "Right", "Middle", "Mouse4", "Mouse5"), 14,
+        )
         self.modifier_combo.bind("<<ComboboxSelected>>", self._bindings_event)
+        self.preset_combo = combo_row(
+            4, "Preset", self.preset_var, self.preset_values, 14,
+        )
+        self.preset_combo.bind("<<ComboboxSelected>>", self.apply_preset)
+        self.hotkey_button = ttk.Button(
+            self.setup_frame,
+            text=f"Hotkey: {self.hotkey_name_var.get()}",
+            style="XP.Secondary.TButton",
+            command=self.capture_hotkey,
+        )
+        self.hotkey_button.grid(row=6, column=0, sticky="ew", pady=(2, 0))
 
     def _build_action_card(self) -> None:
-        card = ttk.Frame(self.setup_frame, style="XP.App.TFrame")
-        card.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(7, 0))
-        ttk.Label(card, text="Preset", style="XP.Group.TLabel").pack(side="left", padx=(0, 7))
-        self.preset_combo = ttk.Combobox(card, textvariable=self.preset_var,
-                                         values=self.preset_values, state="readonly",
-                                         style="XP.TCombobox", width=17)
-        self.preset_combo.pack(side="left", padx=(0, 10))
-        self.preset_combo.bind("<<ComboboxSelected>>", self.apply_preset)
-        self.test_button = ttk.Button(card, text="Test 3s", style="XP.Secondary.TButton",
-                                       command=self.test_run)
-        self.test_button.pack(side="left")
+        self.tools_frame = self._card("Tools", self.left_column)
+        self.reconnect_button = ttk.Button(
+            self.tools_frame,
+            text="Reconnect",
+            style="XP.Secondary.TButton",
+            command=self.reconnect,
+        )
+        self.test_button = ttk.Button(
+            self.tools_frame,
+            text="Test 3s",
+            style="XP.Secondary.TButton",
+            command=self.test_run,
+        )
+        self.advanced_toggle = ttk.Button(
+            self.tools_frame,
+            text="Advanced Settings ▼",
+            style="XP.Secondary.TButton",
+            command=self.toggle_advanced,
+        )
+        for button in (self.reconnect_button, self.test_button, self.advanced_toggle):
+            button.pack(fill="x", pady=(0, 5))
 
     def _numeric_control(self, parent: tk.Misc, row: int, column: int,
                          label: str, key: str, low: float, high: float,
@@ -377,7 +433,7 @@ class JitterApp(tk.Tk):
         setattr(self, f"{key}_scale", slider)
 
     def _build_quick_card(self) -> None:
-        card = self._card("Quick Jitter")
+        card = self._card("Quick Jitter", self.right_content)
         grid = ttk.Frame(card, style="XP.App.TFrame")
         grid.pack(fill="x")
         controls = (
@@ -389,12 +445,8 @@ class JitterApp(tk.Tk):
 
     def _build_advanced_card(self) -> None:
         self.advanced_frame = ttk.LabelFrame(
-            self.content, text="Advanced Settings", style="XP.Group.TLabelframe",
+            self.right_content, text="Advanced Settings", style="XP.Group.TLabelframe",
             padding=(11, 8, 11, 10))
-        self.hotkey_button = ttk.Button(
-            self.advanced_frame, text=f"Hotkey: {self.hotkey_name_var.get()}",
-            style="XP.Secondary.TButton", command=self.capture_hotkey)
-        self.hotkey_button.pack(anchor="w", pady=(0, 5))
         grid = ttk.Frame(self.advanced_frame, style="XP.App.TFrame")
         grid.pack(fill="x")
         self._numeric_control(grid, 1, 0, "Angle", "motion_angle_deg", 0, 360, 1)
@@ -424,25 +476,24 @@ class JitterApp(tk.Tk):
         grid.columnconfigure(0, weight=1)
         grid.columnconfigure(1, weight=1)
 
-        self.advanced_toggle = ttk.Button(self.content, text="Advanced Settings",
-                                           style="XP.Secondary.TButton",
-                                           command=self.toggle_advanced)
-        self.advanced_toggle.pack(fill="x", pady=(0, 9))
-
     def _build_footer(self) -> None:
-        footer = ttk.Frame(self.content, style="XP.App.TFrame")
-        footer.pack(fill="x", pady=(0, 3))
-        self.footer_label = ttk.Label(footer, textvariable=self.footer_var,
-                                      style="XP.Muted.TLabel", anchor="w")
+        self.footer_frame = ttk.Frame(self.shell, style="XP.App.TFrame")
+        self.footer_frame.grid(row=2, column=0, sticky="ew", pady=(6, 3))
+        self.footer_label = ttk.Label(
+            self.footer_frame,
+            textvariable=self.footer_var,
+            style="XP.Muted.TLabel",
+            anchor="w",
+        )
         self.footer_label.pack(fill="x")
 
     # ---- shell interactions -------------------------------------------
 
     def _refresh_scrollregion(self, _event: tk.Event | None = None) -> None:
-        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        self.right_canvas.configure(scrollregion=self.right_canvas.bbox("all"))
 
     def _resize_content_window(self, event: tk.Event) -> None:
-        self.canvas.itemconfigure(self.content_window, width=event.width)
+        self.right_canvas.itemconfigure(self.right_content_window, width=event.width)
 
     def toggle_advanced(self) -> None:
         if self._advanced_visible:
@@ -450,7 +501,7 @@ class JitterApp(tk.Tk):
             self._advanced_visible = False
             self.advanced_state_var.set(False)
         else:
-            self.advanced_frame.pack(fill="x", pady=(0, 9), before=self.advanced_toggle)
+            self.advanced_frame.pack(fill="x", pady=(0, 9))
             self._advanced_visible = True
             self.advanced_state_var.set(True)
         self.update_idletasks()

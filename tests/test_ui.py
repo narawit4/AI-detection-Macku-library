@@ -167,31 +167,56 @@ class JitterLayoutTests(unittest.TestCase):
             current = current.master
         return False
 
-    def test_compact_dashboard_keeps_only_primary_motion_controls(self):
-        self.assertFalse(self._is_descendant(self.app.motion_strength_pps_entry,
+    def test_command_center_uses_fixed_status_body_footer_runtime_order(self):
+        regions = (
+            self.app.status_strip,
+            self.app.command_center,
+            self.app.footer_frame,
+            self.app.runtime_frame,
+        )
+        self.assertTrue(all(widget.master is self.app.shell for widget in regions))
+        self.assertEqual(
+            [int(widget.grid_info()["row"]) for widget in regions],
+            [0, 1, 2, 3],
+        )
+        self.assertEqual(self.app.shell.grid_rowconfigure(1)["weight"], 1)
+
+    def test_setup_and_tools_stay_in_fixed_left_column(self):
+        fixed_widgets = (
+            self.app.trigger_combo,
+            self.app.modifier_combo,
+            self.app.preset_combo,
+            self.app.hotkey_button,
+            self.app.reconnect_button,
+            self.app.test_button,
+            self.app.advanced_toggle,
+        )
+        for widget in fixed_widgets:
+            with self.subTest(widget=str(widget)):
+                self.assertTrue(self._is_descendant(widget, self.app.left_column))
+                self.assertFalse(self._is_descendant(widget, self.app.right_content))
+
+    def test_quick_and_advanced_controls_live_in_right_workspace(self):
+        right_widgets = (
+            self.app.motion_strength_pps_entry,
+            self.app.jitter_rate_hz_entry,
+            self.app.motion_angle_deg_entry,
+            self.app.waveform_combo,
+            self.app.motion_curve_combo,
+        )
+        for widget in right_widgets:
+            with self.subTest(widget=str(widget)):
+                self.assertTrue(self._is_descendant(widget, self.app.right_content))
+        self.assertFalse(self._is_descendant(self.app.hotkey_button,
                                              self.app.advanced_frame))
-        self.assertFalse(self._is_descendant(self.app.jitter_rate_hz_entry,
-                                             self.app.advanced_frame))
-        secondary_widgets = {
-            "Hotkey": self.app.hotkey_button,
-            "Angle": self.app.motion_angle_deg_entry,
-            "Horizontal": self.app.horizontal_jitter_pps_entry,
-            "Vertical": self.app.vertical_jitter_pps_entry,
-            "Randomness": self.app.jitter_randomness_percent_entry,
-            "Axis Phase": self.app.jitter_axis_phase_deg_entry,
-            "Smoothness": self.app.smoothness_percent_entry,
-            "Ramp time": self.app.ramp_up_ms_entry,
-            "Update rate": self.app.update_rate_hz_entry,
-            "Maximum step": self.app.max_step_px_entry,
-            "Acceleration": self.app.acceleration_pps2_entry,
-            "Deceleration": self.app.deceleration_pps2_entry,
-            "Waveform": self.app.waveform_combo,
-            "Motion Curve": self.app.motion_curve_combo,
-        }
-        for setting, widget in secondary_widgets.items():
-            with self.subTest(setting=setting):
-                self.assertTrue(self._is_descendant(widget,
-                                                    self.app.advanced_frame))
+
+    def test_status_strip_combines_device_and_connection_state(self):
+        self.assertTrue(self._is_descendant(self.app.device_label,
+                                            self.app.status_strip))
+        self.assertTrue(self._is_descendant(self.app.connection_label,
+                                            self.app.status_strip))
+        self.assertFalse(self._is_descendant(self.app.reconnect_button,
+                                             self.app.status_strip))
 
     def test_runtime_group_keeps_stop_always_visible(self):
         self.assertTrue(self._is_descendant(self.app.stop_button,
@@ -219,23 +244,6 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertGreaterEqual(stop_top, app_top)
         self.assertLessEqual(stop_right, app_right)
         self.assertLessEqual(stop_bottom, app_bottom)
-
-    def test_runtime_group_uses_the_approved_title(self):
-        self.assertEqual(self.app.runtime_frame.cget("text"), "Runtime")
-
-    def test_setup_group_combines_bindings_preset_and_test_run(self):
-        group_titles = [
-            child.cget("text") for child in self.app.content.winfo_children()
-            if isinstance(child, ttk.LabelFrame)
-        ]
-        self.assertIn("Setup", group_titles)
-        setup = next(
-            child for child in self.app.content.winfo_children()
-            if isinstance(child, ttk.LabelFrame) and child.cget("text") == "Setup"
-        )
-        for expected in ("Trigger", "Modifier", "Preset", "Test 3s"):
-            self.assertIn(expected, widget_texts(setup))
-        self.assertNotIn("Actions", group_titles)
 
     def test_luna_blue_styles_are_registered(self):
         style = ttk.Style(self.app)
