@@ -64,3 +64,67 @@ class XPGlossySliderValueTests(_SliderTestCase):
         self.assertAlmostEqual(slider._value_to_x(100), right)
         self.assertEqual(slider._x_to_value(left - 50), 0)
         self.assertEqual(slider._x_to_value(right + 50), 100)
+
+
+class XPGlossySliderInteractionTests(_SliderTestCase):
+    def test_pointer_click_and_drag_emit_snapped_values(self):
+        emitted = []
+        slider = self.make_slider(command=emitted.append)
+        self.root.deiconify()
+        self.root.update()
+        left, right = slider._rail_bounds()
+        slider.event_generate(
+            "<Button-1>",
+            x=int((left + right) / 2),
+            y=17,
+        )
+        slider.event_generate("<B1-Motion>", x=int(right), y=17)
+        slider.event_generate("<ButtonRelease-1>", x=int(right), y=17)
+        self.root.update()
+        self.assertEqual(slider.get(), 100)
+        self.assertEqual(emitted[-1], "100")
+
+    def test_arrow_home_and_end_keys_update_and_emit(self):
+        emitted = []
+        slider = self.make_slider(command=emitted.append)
+        self.root.deiconify()
+        self.root.update()
+        slider.focus_force()
+        slider.set(50)
+        slider.event_generate("<Right>")
+        slider.event_generate("<Up>")
+        slider.event_generate("<Home>")
+        slider.event_generate("<End>")
+        self.root.update()
+        self.assertEqual(slider.get(), 100)
+        self.assertEqual(emitted, ["51", "52", "0", "100"])
+
+    def test_hover_press_focus_and_bubble_change_canvas_state(self):
+        slider = self.make_slider()
+        self.root.deiconify()
+        self.root.update()
+        slider.event_generate("<Enter>", x=14, y=17)
+        self.root.update()
+        self.assertTrue(slider.find_withtag("halo"))
+        self.assertTrue(slider.find_withtag("bubble"))
+        slider.event_generate("<Button-1>", x=14, y=17)
+        self.root.update()
+        pressed_fill = slider.itemcget("thumb_body", "fill")
+        self.assertEqual(pressed_fill, "#356FAF")
+        slider.focus_set()
+        slider.event_generate("<FocusIn>")
+        self.root.update()
+        self.assertTrue(slider.find_withtag("focus"))
+
+    def test_destroy_cancels_pending_bubble_hide(self):
+        slider = self.make_slider()
+        self.root.deiconify()
+        self.root.update()
+        slider.event_generate("<Enter>", x=14, y=17)
+        slider.event_generate("<Leave>", x=14, y=17)
+        self.root.update_idletasks()
+        self.assertIsNotNone(slider._bubble_after_id)
+        slider.destroy()
+        self.root.update()
+        self.assertTrue(slider._destroyed)
+        self.assertIsNone(slider._bubble_after_id)
