@@ -873,6 +873,8 @@ class JitterApp(tk.Tk):
             self.footer_var.set(f"Invalid value for {key.replace('_', ' ')}")
             return
         self._invalid_motion_keys.clear()
+        if self.footer_var.get().startswith("Invalid value for "):
+            self.footer_var.set("Ready")
         for name in self.motion_vars:
             entry = getattr(self, f"{name}_entry", None)
             if entry is not None:
@@ -929,6 +931,8 @@ class JitterApp(tk.Tk):
         finally:
             self._updating_motion_controls = False
         self._invalid_motion_keys.clear()
+        if self.footer_var.get().startswith("Invalid value for "):
+            self.footer_var.set("Ready")
         for key in self.motion_vars:
             entry = getattr(self, f"{key}_entry", None)
             if entry is not None:

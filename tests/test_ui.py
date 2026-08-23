@@ -589,9 +589,28 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.app.motion_angle_deg_var.set("not-a-number")
         self.app.update()
         self.assertEqual(self.app.motion_angle_deg_entry.cget("style"), "Invalid.TEntry")
+        self.assertEqual(
+            self.app.footer_var.get(),
+            "Invalid value for motion angle deg",
+        )
         self.app.preset_var.set("Balanced")
         self.app.apply_preset()
         self.assertEqual(self.app.motion_angle_deg_entry.cget("style"), "App.TEntry")
+        self.assertEqual(self.app.footer_var.get(), "Ready")
+
+    def test_valid_motion_edit_clears_stale_invalid_footer(self):
+        self.app.motion_strength_pps_var.set("not-a-number")
+        self.app.update()
+        self.assertEqual(
+            self.app.footer_var.get(),
+            "Invalid value for motion strength pps",
+        )
+
+        self.app.motion_strength_pps_var.set("75")
+        self.app.update()
+
+        self.assertEqual(self.app.motion_strength_pps_entry.cget("style"), "App.TEntry")
+        self.assertEqual(self.app.footer_var.get(), "Ready")
 
 
 if __name__ == "__main__":
