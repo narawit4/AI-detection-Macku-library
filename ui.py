@@ -636,19 +636,16 @@ class JitterApp(tk.Tk):
         self._capturing_hotkey = True
         self._capture_seen_down = False
         self._capture_prev_down = self._capture_key_state()
-        self.hotkey_button.configure(text="Press a key...", state="disabled")
-        self.footer_var.set("Press a keyboard key (Esc cancels)")
+        self.hotkey_button.configure(text="Press a key or mouse button...", state="disabled")
+        self.footer_var.set("Press a key or mouse button (Esc cancels)")
         self._poll_hotkey_capture()
 
     def _poll_hotkey_capture(self) -> None:
         if not self._capturing_hotkey or self._closing:
             return
-        mouse_vks = {0x01, 0x02, 0x04, 0x05, 0x06}
         previous = self._capture_prev_down
         current: dict[int, bool] = {}
         for vk in range(1, 256):
-            if vk in mouse_vks:
-                continue
             is_down = bool(self._get_async_key_state(vk) & 0x8000)
             current[vk] = is_down
             if not is_down or previous.get(vk, False):
@@ -669,11 +666,9 @@ class JitterApp(tk.Tk):
             self._capturing_hotkey = False
 
     def _capture_key_state(self) -> dict[int, bool]:
-        mouse_vks = {0x01, 0x02, 0x04, 0x05, 0x06}
         return {
             vk: bool(self._get_async_key_state(vk) & 0x8000)
             for vk in range(1, 256)
-            if vk not in mouse_vks
         }
 
     @staticmethod
@@ -682,7 +677,9 @@ class JitterApp(tk.Tk):
             return f"F{vk - 0x6F}"
         if 0x30 <= vk <= 0x39 or 0x41 <= vk <= 0x5A:
             return chr(vk)
-        names = {0x20: "Space", 0x09: "Tab", 0x0D: "Enter", 0x10: "Shift",
+        names = {0x01: "Mouse Left", 0x02: "Mouse Right", 0x04: "Mouse Middle",
+                 0x05: "Mouse4", 0x06: "Mouse5",
+                 0x20: "Space", 0x09: "Tab", 0x0D: "Enter", 0x10: "Shift",
                  0x11: "Ctrl", 0x12: "Alt", 0x2D: "Insert", 0x2E: "Delete"}
         return names.get(vk, f"VK {vk}")
 

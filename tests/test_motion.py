@@ -38,15 +38,37 @@ class MotionSettingsTests(unittest.TestCase):
         self.assertIn(settings.jitter_waveform, JITTER_WAVEFORMS)
         self.assertIn(settings.motion_curve, MOTION_CURVES)
 
-    def test_all_six_approved_presets_round_trip(self):
+    def test_all_eight_approved_presets_round_trip(self):
         self.assertEqual(
             tuple(MOTION_PRESETS),
-            ("Ultra Stable", "Soft", "Balanced", "Fast Response", "Strong Shake", "Extreme"),
+            ("Ultra Stable", "Training Stable", "Soft", "Balanced", "Fast Response", "Strong Shake", "Extreme", "Maximum Shake"),
         )
         for name, raw in MOTION_PRESETS.items():
             settings = motion_settings_from_mapping(raw)
             restored = motion_settings_from_mapping(motion_settings_to_mapping(settings))
             self.assertEqual(restored, settings, name)
+
+    def test_maximum_shake_is_strong_and_balanced(self):
+        settings = motion_settings_from_mapping(MOTION_PRESETS["Maximum Shake"])
+        self.assertEqual(settings.strength_pps, 80.0)
+        self.assertEqual(settings.horizontal_jitter_pps, 300.0)
+        self.assertEqual(settings.vertical_jitter_pps, 260.0)
+        self.assertEqual(settings.jitter_rate_hz, 30.0)
+        self.assertEqual(settings.jitter_randomness, 5.0)
+        self.assertEqual(settings.jitter_axis_phase_deg, 90.0)
+        self.assertEqual(settings.jitter_waveform, "Sine")
+        self.assertEqual(settings.update_rate_hz, 500.0)
+
+    def test_training_stable_has_no_drift_or_large_steps(self):
+        settings = motion_settings_from_mapping(MOTION_PRESETS["Training Stable"])
+        self.assertEqual(settings.strength_pps, 0.0)
+        self.assertEqual(settings.horizontal_jitter_pps, 80.0)
+        self.assertEqual(settings.vertical_jitter_pps, 60.0)
+        self.assertEqual(settings.jitter_rate_hz, 20.0)
+        self.assertEqual(settings.jitter_randomness, 0.0)
+        self.assertEqual(settings.jitter_axis_phase_deg, 90.0)
+        self.assertEqual(settings.jitter_waveform, "Sine")
+        self.assertEqual(settings.max_step_px, 1)
 
     def test_motion_settings_are_immutable(self):
         settings = MotionSettings()

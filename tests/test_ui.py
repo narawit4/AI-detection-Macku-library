@@ -256,22 +256,30 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.app.save_config()
         self.assertEqual(self.store.saved, [])
 
-    def test_hotkey_capture_requires_a_new_down_edge_and_skips_mouse_keys(self):
-        down = {0x77}
+    def test_hotkey_capture_accepts_each_mouse_button_on_a_new_down_edge(self):
+        down = set()
 
         def key_state(vk):
-            return 0x8000 if vk in down or vk == 0x01 else 0
+            return 0x8000 if vk in down else 0
 
         self.app._get_async_key_state = key_state
-        self.app.capture_hotkey()
-        self.assertTrue(self.app._capturing_hotkey)
-        self.assertNotEqual(self.app.hotkey_watcher.vk, 0x77)
-        down.remove(0x77)
-        self.app._poll_hotkey_capture()
-        down.add(0x77)
-        self.app._poll_hotkey_capture()
-        self.assertFalse(self.app._capturing_hotkey)
-        self.assertEqual(self.app.hotkey_watcher.vk, 0x77)
+        mouse_buttons = {
+            0x01: "Mouse Left",
+            0x02: "Mouse Right",
+            0x04: "Mouse Middle",
+            0x05: "Mouse4",
+            0x06: "Mouse5",
+        }
+        for vk, expected_name in mouse_buttons.items():
+            with self.subTest(vk=vk):
+                down.clear()
+                self.app.capture_hotkey()
+                self.assertTrue(self.app._capturing_hotkey)
+                down.add(vk)
+                self.app._poll_hotkey_capture()
+                self.assertFalse(self.app._capturing_hotkey)
+                self.assertEqual(self.app.hotkey_watcher.vk, vk)
+                self.assertEqual(self.app.hotkey_name_var.get(), expected_name)
 
     def test_stale_callbacks_do_not_raise_when_tk_scheduling_is_tearing_down(self):
         def raising_after(*_args):
