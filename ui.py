@@ -5,6 +5,7 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk
 import math
+import threading
 from typing import Mapping
 from typing import Any, Callable
 
@@ -87,12 +88,15 @@ class JitterApp(tk.Tk):
         self._capture_after_id: str | None = None
         self._capturing_hotkey = False
         self._capture_seen_down = False
+        self._capture_prev_down: dict[int, bool] = {}
         self._updating_motion_controls = False
         self._invalid_motion_keys: set[str] = set()
         self.enabled = False
         self._motion_mode: str | None = None
         self._test_restore_enabled = False
+        self._test_start_pending = False
         self._normal_motion_started = False
+        self._motion_lock = threading.RLock()
         self._motion_snapshot: MotionSettings = self.config.motion
         self._hotkey_vk = int(self.config.hotkey_vk)
 
@@ -450,6 +454,9 @@ class JitterApp(tk.Tk):
             self.footer_var.set(f"Reconnect failed: {type(exc).__name__}")
 
     def toggle_enabled(self) -> None:
+        if self._motion_mode in {"test", "test_pending"}:
+            self.footer_var.set("Test Run is active; use STOP to cancel")
+            return
         self.set_enabled(not self.enabled)
 
     def set_enabled(self, enabled: bool) -> None:
@@ -458,6 +465,9 @@ class JitterApp(tk.Tk):
             self.emergency_stop("Disabled by user")
             return
         if self._closing:
+            return
+        if enabled and self._motion_mode in {"test", "test_pending"}:
+            self.footer_var.set("Test Run is active; use STOP to cancel")
             return
         if not self.service.connected:
             self.enabled = False
@@ -482,23 +492,42 @@ class JitterApp(tk.Tk):
         if not self.service.connected:
             self.footer_var.set("Makcu device is not connected")
             return
+        if self._motion_mode in {"test", "test_pending"}:
+            self.footer_var.set("Test Run is already active")
+            return
         self._test_restore_enabled = self.enabled
-        if self._normal_motion_started:
+        normal_motion_active = self._normal_motion_started
+        if normal_motion_active:
             self.service.stop_motion("test_run")
             self._normal_motion_started = False
-        self._motion_mode = "test"
         self.runtime_status_var.set("Testing")
         self.test_button.configure(state="disabled")
-        started = self.service.start_motion(self.get_motion_settings, duration_s=3.0)
+        if normal_motion_active:
+            # The normal worker emits a queued stop event after stop_motion().
+            # Start the timed worker only after that event, so the service's
+            # idempotent start contract cannot accidentally reuse the normal
+            # worker.
+            self._motion_mode = "test_pending"
+            self._test_start_pending = True
+            return
+        started = self._begin_test_motion()
+        if not started:
+            self.footer_var.set("Test Run could not start")
+
+    def _begin_test_motion(self) -> bool:
+        self._motion_mode = "test"
+        self._test_start_pending = False
+        started = bool(self.service.start_motion(self.get_motion_settings, duration_s=3.0))
         if not started:
             self._motion_mode = None
             self.test_button.configure(state="normal")
             self._restore_after_test()
-            self.footer_var.set("Test Run could not start")
+        return started
 
     def _restore_after_test(self) -> None:
         restore = self._test_restore_enabled and bool(self.service.connected)
         self._motion_mode = None
+        self._test_start_pending = False
         self.test_button.configure(state="normal")
         if restore:
             self.enabled = True
@@ -514,6 +543,7 @@ class JitterApp(tk.Tk):
         self.enabled = False
         self._normal_motion_started = False
         self._motion_mode = None
+        self._test_start_pending = False
         self.trigger_gate.clear()
         try:
             self.service.stop_motion(str(reason or "Stopped"))
@@ -562,7 +592,10 @@ class JitterApp(tk.Tk):
         elif kind == "motion_error":
             self.emergency_stop(f"Motion error: {event.payload}")
         elif kind == "motion_stopped":
-            if self._motion_mode == "test":
+            if self._motion_mode == "test_pending" and self._test_start_pending:
+                if not self._begin_test_motion():
+                    self.footer_var.set("Test Run could not start")
+            elif self._motion_mode == "test":
                 self._restore_after_test()
                 self.footer_var.set("Test Run complete")
             elif self.enabled:
@@ -571,12 +604,24 @@ class JitterApp(tk.Tk):
 
     def queue_service_event(self, event: ServiceEvent) -> None:
         # This method is intentionally the only service-to-Tk handoff.
-        self.after(0, self.handle_service_event, event)
+        if self._closing or self._closed:
+            return
+        try:
+            self.after(0, self.handle_service_event, event)
+        except (tk.TclError, RuntimeError):
+            # A worker can race close_app() between the state check and Tk's
+            # command registration.  Teardown must remain quiet and safe.
+            return
 
     def _hotkey_pressed(self) -> None:
         if self._capturing_hotkey or self._closing:
             return
-        self.after(0, self.toggle_enabled)
+        if self._closed:
+            return
+        try:
+            self.after(0, self.toggle_enabled)
+        except (tk.TclError, RuntimeError):
+            return
 
     def _get_async_key_state(self, vk: int) -> int:
         try:
@@ -590,6 +635,7 @@ class JitterApp(tk.Tk):
             return
         self._capturing_hotkey = True
         self._capture_seen_down = False
+        self._capture_prev_down = self._capture_key_state()
         self.hotkey_button.configure(text="Press a key...", state="disabled")
         self.footer_var.set("Press a keyboard key (Esc cancels)")
         self._poll_hotkey_capture()
@@ -598,17 +644,37 @@ class JitterApp(tk.Tk):
         if not self._capturing_hotkey or self._closing:
             return
         mouse_vks = {0x01, 0x02, 0x04, 0x05, 0x06}
+        previous = self._capture_prev_down
+        current: dict[int, bool] = {}
         for vk in range(1, 256):
             if vk in mouse_vks:
                 continue
-            if not (self._get_async_key_state(vk) & 0x8000):
+            is_down = bool(self._get_async_key_state(vk) & 0x8000)
+            current[vk] = is_down
+            if not is_down or previous.get(vk, False):
                 continue
             if vk == 0x1B:
+                self._capture_prev_down = current
                 self._cancel_hotkey_capture()
                 return
+            self._capture_prev_down = current
             self.apply_captured_hotkey(vk, self._format_hotkey_name(vk))
             return
-        self._capture_after_id = self.after(40, self._poll_hotkey_capture)
+        self._capture_prev_down = current
+        self._cancel_after("_capture_after_id")
+        try:
+            self._capture_after_id = self.after(40, self._poll_hotkey_capture)
+        except (tk.TclError, RuntimeError):
+            self._capture_after_id = None
+            self._capturing_hotkey = False
+
+    def _capture_key_state(self) -> dict[int, bool]:
+        mouse_vks = {0x01, 0x02, 0x04, 0x05, 0x06}
+        return {
+            vk: bool(self._get_async_key_state(vk) & 0x8000)
+            for vk in range(1, 256)
+            if vk not in mouse_vks
+        }
 
     @staticmethod
     def _format_hotkey_name(vk: int) -> str:
@@ -643,7 +709,12 @@ class JitterApp(tk.Tk):
         self._schedule_save()
 
     def get_motion_settings(self) -> MotionSettings:
-        return self._motion_snapshot
+        with self._motion_lock:
+            return self._motion_snapshot
+
+    def _replace_motion_snapshot(self, settings: MotionSettings) -> None:
+        with self._motion_lock:
+            self._motion_snapshot = settings
 
     def _motion_changed(self, key: str) -> None:
         if self._updating_motion_controls or self._closing:
@@ -672,7 +743,7 @@ class JitterApp(tk.Tk):
                     pass
                 finally:
                     self._updating_motion_controls = False
-        self._motion_snapshot = motion_settings_from_mapping(mapping)
+        self._replace_motion_snapshot(motion_settings_from_mapping(mapping))
         if self.preset_var.get() != "Custom":
             self._updating_motion_controls = True
             try:
@@ -712,7 +783,11 @@ class JitterApp(tk.Tk):
         finally:
             self._updating_motion_controls = False
         self._invalid_motion_keys.clear()
-        self._motion_snapshot = settings
+        for key in self.motion_vars:
+            entry = getattr(self, f"{key}_entry", None)
+            if entry is not None:
+                entry.configure(style="App.TEntry")
+        self._replace_motion_snapshot(settings)
         self._schedule_save()
 
     def _schedule_save(self) -> None:
@@ -736,7 +811,7 @@ class JitterApp(tk.Tk):
         if not self._save_allowed or self._closed:
             return
         config = AppConfig(
-            motion=self._motion_snapshot,
+            motion=self.get_motion_settings(),
             trigger=self.trigger_var.get(),
             modifier=self.modifier_var.get(),
             hotkey_vk=self._current_hotkey_vk(),

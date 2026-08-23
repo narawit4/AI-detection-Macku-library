@@ -175,6 +175,26 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.assertGreaterEqual(self.service.started, 1)
         self.assertEqual(self.service.stopped, stopped_count)
 
+    def test_test_run_ignores_queued_normal_stop_before_duration_completion(self):
+        self.service.connected = True
+        self.app.set_enabled(True)
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        self.assertTrue(self.app._normal_motion_started)
+        self.app.start_test_run()
+        self.assertEqual(self.app.runtime_state_var.get(), "Testing")
+        self.app.handle_service_event(ServiceEvent("motion_stopped", "test_run"))
+        self.assertEqual(self.app.runtime_state_var.get(), "Testing")
+        self.app.handle_service_event(ServiceEvent("motion_stopped", "duration_complete"))
+        self.assertEqual(self.app.runtime_state_var.get(), "Armed")
+
+    def test_toggle_is_blocked_while_test_run_is_active(self):
+        self.service.connected = True
+        self.app.start_test_run()
+        self.assertFalse(self.app.enabled)
+        self.app.toggle_enabled()
+        self.assertFalse(self.app.enabled)
+        self.assertEqual(self.app.runtime_state_var.get(), "Testing")
+
     def test_captured_hotkey_updates_watcher_and_persisted_name(self):
         self.app.apply_captured_hotkey(0x77, "F8")
         self.assertEqual(self.app.hotkey_watcher.vk, 0x77)
@@ -236,14 +256,57 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.app.save_config()
         self.assertEqual(self.store.saved, [])
 
-    def test_hotkey_capture_skips_makcu_mouse_virtual_keys(self):
+    def test_hotkey_capture_requires_a_new_down_edge_and_skips_mouse_keys(self):
+        down = {0x77}
+
         def key_state(vk):
-            return 0x8000 if vk in (0x01, 0x77) else 0
+            return 0x8000 if vk in down or vk == 0x01 else 0
 
         self.app._get_async_key_state = key_state
         self.app.capture_hotkey()
+        self.assertTrue(self.app._capturing_hotkey)
+        self.assertNotEqual(self.app.hotkey_watcher.vk, 0x77)
+        down.remove(0x77)
+        self.app._poll_hotkey_capture()
+        down.add(0x77)
+        self.app._poll_hotkey_capture()
         self.assertFalse(self.app._capturing_hotkey)
         self.assertEqual(self.app.hotkey_watcher.vk, 0x77)
+
+    def test_stale_callbacks_do_not_raise_when_tk_scheduling_is_tearing_down(self):
+        def raising_after(*_args):
+            raise tk.TclError("application has been destroyed")
+
+        self.app.after = raising_after
+        self.app.queue_service_event(ServiceEvent("connected"))
+        self.app._hotkey_pressed()
+
+    def test_motion_snapshot_access_is_lock_protected(self):
+        class CountingLock:
+            def __init__(self):
+                self.enters = 0
+
+            def __enter__(self):
+                self.enters += 1
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        lock = CountingLock()
+        self.app._motion_lock = lock
+        self.app.get_motion_settings()
+        self.app.motion_strength_pps_var.set("81")
+        self.app.update()
+        self.assertGreaterEqual(lock.enters, 2)
+
+    def test_preset_clears_stale_invalid_entry_style(self):
+        self.app.motion_angle_deg_var.set("not-a-number")
+        self.app.update()
+        self.assertEqual(self.app.motion_angle_deg_entry.cget("style"), "Invalid.TEntry")
+        self.app.preset_var.set("Balanced")
+        self.app.apply_preset()
+        self.assertEqual(self.app.motion_angle_deg_entry.cget("style"), "App.TEntry")
 
 
 if __name__ == "__main__":
