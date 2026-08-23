@@ -8,9 +8,11 @@ main thread.
 
 from dataclasses import dataclass
 import threading
+import time
 from typing import Any, Callable
 
 from makcu import MouseButton, create_controller
+from motion import SmoothMotionEngine
 
 
 _MISSING = object()
@@ -43,9 +45,11 @@ class MakcuService:
         self,
         event_sink: Callable[[ServiceEvent], None],
         controller_factory: Callable[..., Any] = create_controller,
+        engine_factory: Callable[[], Any] = SmoothMotionEngine,
     ) -> None:
         self._event_sink = event_sink
         self._controller_factory = controller_factory
+        self._engine_factory = engine_factory
         self._lock = threading.RLock()
         self._generation = 0
         self._controller: Any | None = None
@@ -53,6 +57,11 @@ class MakcuService:
         self._closed = False
         self._setup_disconnected: set[int] = set()
         self._disconnect_notified: set[int] = set()
+        self._motion_generation = 0
+        self._motion_stop = threading.Event()
+        self._motion_thread: threading.Thread | None = None
+        self._motion_active = False
+        self._motion_stop_reasons: dict[int, str | None] = {}
 
     @property
     def connected(self) -> bool:
@@ -63,6 +72,16 @@ class MakcuService:
     def controller(self) -> Any | None:
         with self._lock:
             return self._controller
+
+    @property
+    def connection_generation(self) -> int:
+        with self._lock:
+            return self._generation
+
+    @property
+    def motion_active(self) -> bool:
+        with self._lock:
+            return self._motion_active
 
     def _emit(self, event: ServiceEvent) -> None:
         # A UI event sink normally just queues work for Tk's thread.  Keep a
@@ -120,6 +139,165 @@ class MakcuService:
             controller.disconnect()
         except Exception:
             pass
+
+    def start_motion(
+        self,
+        settings_provider: Callable[[], Any],
+        duration_s: float | None = None,
+    ) -> bool:
+        """Start one interruptible movement worker for the active controller."""
+        with self._lock:
+            if self._closed or not self._connected or self._controller is None:
+                return False
+            if self._motion_active:
+                return True
+            try:
+                duration = None if duration_s is None else max(0.0, float(duration_s))
+            except (TypeError, ValueError):
+                return False
+            self._motion_generation += 1
+            motion_generation = self._motion_generation
+            connection_generation = self._generation
+            stop_event = threading.Event()
+            self._motion_stop = stop_event
+            self._motion_stop_reasons[motion_generation] = None
+            self._motion_active = True
+            thread = threading.Thread(
+                target=self._motion_worker,
+                args=(
+                    motion_generation,
+                    connection_generation,
+                    stop_event,
+                    settings_provider,
+                    duration,
+                ),
+                name=f"MakcuMotion-{motion_generation}",
+                daemon=True,
+            )
+            self._motion_thread = thread
+        try:
+            thread.start()
+        except Exception:
+            with self._lock:
+                if self._motion_generation == motion_generation:
+                    self._motion_active = False
+                    self._motion_thread = None
+                    self._motion_stop_reasons.pop(motion_generation, None)
+            return False
+        return True
+
+    def stop_motion(self, reason: str = "manual") -> None:
+        """Request an immediate stop without waiting for the worker thread."""
+        reason = str(reason or "manual")
+        with self._lock:
+            if not self._motion_active:
+                return
+            generation = self._motion_generation
+            if self._motion_stop_reasons.get(generation) is None:
+                self._motion_stop_reasons[generation] = reason
+            self._motion_stop.set()
+
+    def join_motion(self, timeout: float | None = None) -> None:
+        """Bounded lifecycle/testing helper; do not call this from the Tk thread."""
+        with self._lock:
+            thread = self._motion_thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout)
+
+    def _motion_worker(
+        self,
+        motion_generation: int,
+        connection_generation: int,
+        stop_event: threading.Event,
+        settings_provider: Callable[[], Any],
+        duration_s: float | None,
+    ) -> None:
+        engine: Any | None = None
+        reason: str | None = None
+        error_payload: str | None = None
+        started = time.perf_counter()
+        previous_tick = started
+        try:
+            try:
+                engine = self._engine_factory()
+            except Exception as exc:
+                error_payload = f"{type(exc).__name__}: {exc}"
+            while error_payload is None:
+                now = time.perf_counter()
+                elapsed = max(0.0, now - started)
+                if duration_s is not None and elapsed >= duration_s:
+                    reason = "duration_complete"
+                    break
+                with self._lock:
+                    if stop_event.is_set():
+                        reason = self._motion_stop_reasons.get(motion_generation) or "manual"
+                        break
+                    if (
+                        motion_generation != self._motion_generation
+                        or connection_generation != self._generation
+                        or self._closed
+                        or not self._connected
+                        or self._controller is None
+                    ):
+                        reason = "disconnected"
+                        break
+                    controller = self._controller
+                try:
+                    settings = settings_provider()
+                    tick_started = time.perf_counter()
+                    dt = max(0.0, min(tick_started - previous_tick, 0.1))
+                    previous_tick = tick_started
+                    report_x, report_y = engine.step(settings, dt, elapsed)
+                except Exception as exc:
+                    error_payload = f"{type(exc).__name__}: {exc}"
+                    break
+                if report_x or report_y:
+                    # Serialize the stop check with the move call: once
+                    # stop_motion() returns, this worker cannot send another
+                    # report for this generation.
+                    with self._lock:
+                        if (
+                            stop_event.is_set()
+                            or motion_generation != self._motion_generation
+                            or connection_generation != self._generation
+                            or self._closed
+                            or not self._connected
+                            or controller is not self._controller
+                        ):
+                            reason = self._motion_stop_reasons.get(motion_generation) or "disconnected"
+                            break
+                        try:
+                            controller.move(report_x, report_y)
+                        except Exception as exc:
+                            error_payload = f"{type(exc).__name__}: {exc}"
+                            break
+                try:
+                    settings_rate = getattr(settings, "update_rate_hz", 20.0)
+                    interval = 1.0 / max(float(settings_rate), 20.0)
+                except Exception as exc:
+                    error_payload = f"{type(exc).__name__}: {exc}"
+                    break
+                stop_event.wait(max(0.0, interval - (time.perf_counter() - tick_started)))
+        finally:
+            with self._lock:
+                current = (
+                    motion_generation == self._motion_generation
+                    and self._motion_thread is threading.current_thread()
+                )
+                explicit_reason = self._motion_stop_reasons.pop(motion_generation, None)
+                if current:
+                    self._motion_active = False
+                    self._motion_thread = None
+                if reason is None:
+                    reason = explicit_reason
+                if reason is None and not current:
+                    reason = "disconnected"
+                if reason is None:
+                    reason = "manual"
+            if error_payload is not None:
+                self._emit(ServiceEvent("motion_error", error_payload))
+            elif current:
+                self._emit(ServiceEvent("motion_stopped", reason))
 
     def _setup_must_abort(self, generation: int) -> bool:
         with self._lock:
@@ -208,6 +386,8 @@ class MakcuService:
     def _connection_changed(self, generation: int, connected: bool) -> None:
         connected = bool(connected)
         event: ServiceEvent | None = None
+        wait_for_motion = False
+        controller_present = False
         with self._lock:
             if generation != self._generation or self._closed:
                 return
@@ -223,13 +403,22 @@ class MakcuService:
                     self._connected = True
                     event = ServiceEvent("reconnected")
             else:
+                controller_present = True
                 was_connected = self._connected
+                wait_for_motion = was_connected and self._motion_active
+        if wait_for_motion:
+            self.stop_motion(reason="disconnected")
+            self.join_motion(1.0)
+        if not connected and controller_present:
+            with self._lock:
+                if generation != self._generation or self._closed:
+                    return
                 self._connected = False
                 if was_connected and generation not in self._disconnect_notified:
                     self._disconnect_notified.add(generation)
                     event = ServiceEvent("disconnected")
-            if event is not None:
-                self._emit(event)
+        if event is not None:
+            self._emit(event)
 
     @staticmethod
     def _normalize_button(button: Any) -> str | None:
@@ -270,6 +459,7 @@ class MakcuService:
 
     def reconnect(self) -> int | None:
         """Invalidate the current generation, clean it up, and reconnect."""
+        self.stop_motion(reason="disconnected")
         with self._lock:
             if self._closed:
                 return None
@@ -282,6 +472,7 @@ class MakcuService:
 
     def close(self) -> None:
         """Invalidate all callbacks and asynchronously disconnect the device."""
+        self.stop_motion(reason="disconnected")
         with self._lock:
             if self._closed:
                 return

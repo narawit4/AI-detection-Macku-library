@@ -5,6 +5,7 @@ import unittest
 from makcu import MouseButton
 
 from makcu_service import BUTTON_NAMES, MakcuService, ServiceEvent
+from motion import MotionSettings
 
 
 class FakeController:
@@ -35,6 +36,11 @@ class FakeController:
 
     def disconnect(self):
         self.disconnected = True
+
+
+class ConstantEngine:
+    def step(self, _settings, _dt, _elapsed):
+        return 2, -1
 
 
 def wait_until(predicate, timeout=1.0):
@@ -131,6 +137,85 @@ class MakcuConnectionTests(unittest.TestCase):
         fresh.button_callback(MouseButton.RIGHT, True)
         self.assertEqual(events[-1], ServiceEvent("button", ("Right", True)))
 
+
+class MakcuMovementTests(unittest.TestCase):
+    def connected_service(self):
+        controller = FakeController()
+        events = []
+        service = MakcuService(
+            events.append,
+            controller_factory=lambda **_kwargs: controller,
+            engine_factory=ConstantEngine,
+        )
+        generation = service._begin_connection()
+        service._connect_worker(generation)
+        return service, controller, events
+
+    def test_start_motion_sends_reports_and_stop_is_interruptible(self):
+        service, controller, _events = self.connected_service()
+        self.assertTrue(service.start_motion(lambda: MotionSettings()))
+        deadline = threading.Event()
+        for _index in range(100):
+            if controller.moves:
+                break
+            deadline.wait(0.005)
+        service.stop_motion()
+        service.join_motion(1.0)
+        count_after_stop = len(controller.moves)
+        deadline.wait(0.03)
+        self.assertGreater(count_after_stop, 0)
+        self.assertEqual(len(controller.moves), count_after_stop)
+
+    def test_timed_motion_finishes_and_emits_test_complete(self):
+        service, controller, events = self.connected_service()
+        self.assertTrue(
+            service.start_motion(
+                lambda: MotionSettings(update_rate_hz=500), duration_s=0.02
+            )
+        )
+        service.join_motion(1.0)
+        self.assertGreater(len(controller.moves), 0)
+        self.assertEqual(events[-1], ServiceEvent("motion_stopped", "duration_complete"))
+
+    def test_start_motion_is_idempotent_and_rejects_disconnected_service(self):
+        service, _controller, _events = self.connected_service()
+        self.assertTrue(service.start_motion(lambda: MotionSettings()))
+        self.assertTrue(service.start_motion(lambda: MotionSettings()))
+        service.stop_motion()
+        service.join_motion(1.0)
+        service._connection_changed(service.connection_generation, False)
+        self.assertFalse(service.start_motion(lambda: MotionSettings()))
+
+    def test_move_exception_is_contained_and_emits_motion_error(self):
+        class FailingController(FakeController):
+            def move(self, _x, _y):
+                raise RuntimeError("move failed")
+
+        controller = FailingController()
+        events = []
+        service = MakcuService(
+            events.append,
+            controller_factory=lambda **_kwargs: controller,
+            engine_factory=ConstantEngine,
+        )
+        generation = service._begin_connection()
+        service._connect_worker(generation)
+        self.assertTrue(service.start_motion(lambda: MotionSettings()))
+        service.join_motion(1.0)
+        self.assertFalse(service.motion_active)
+        self.assertEqual(events[-1], ServiceEvent("motion_error", "RuntimeError: move failed"))
+
+    def test_disconnect_stops_motion_before_emitting_disconnected(self):
+        service, _controller, events = self.connected_service()
+        service.start_motion(lambda: MotionSettings())
+        generation = service.connection_generation
+        service._connection_changed(generation, False)
+        service.join_motion(1.0)
+        self.assertFalse(service.motion_active)
+        self.assertEqual(events[-1].kind, "disconnected")
+
+
+class MakcuConnectionLifecycleTests(unittest.TestCase):
     def test_connect_starts_a_daemon_worker(self):
         worker_seen = threading.Event()
         daemon_state = []
