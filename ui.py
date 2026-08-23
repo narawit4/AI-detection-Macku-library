@@ -24,24 +24,23 @@ from motion import (
 from settings import AppConfig, ConfigStore
 
 
-# Shared Cyber Minimal palette.  Keep these values in one place so controls
-# introduced by later runtime work use the same visual language.
-GRAPHITE = "#151a1f"
-PANEL = "#20272e"
-PANEL_ALT = "#29323b"
-BORDER = "#35424d"
-CYAN = "#18d4e7"
-GREEN = "#4bd17d"
-AMBER = "#e4b44f"
-RED = "#f05d68"
-TEXT = "#edf4f7"
-MUTED = "#9aa9b4"
+# Shared Windows XP Luna palette and typography.
+XP_WINDOW = "#ECE9D8"
+XP_PANEL = "#FFFFFF"
+XP_BLUE = "#0054E3"
+XP_BLUE_LIGHT = "#3C8CF0"
+XP_BORDER = "#7F9DB9"
+XP_TEXT = "#111111"
+XP_MUTED = "#555555"
+XP_GREEN = "#287025"
+XP_AMBER = "#A76500"
+XP_RED = "#A00000"
 
-FONT_FAMILY = "Segoe UI"
-BODY_FONT = (FONT_FAMILY, 9)
+FONT_FAMILY = "Tahoma"
+BODY_FONT = (FONT_FAMILY, 8)
 SMALL_FONT = (FONT_FAMILY, 8)
-TITLE_FONT = (FONT_FAMILY, 18, "bold")
-SECTION_FONT = (FONT_FAMILY, 10, "bold")
+TITLE_FONT = (FONT_FAMILY, 9, "bold")
+SECTION_FONT = (FONT_FAMILY, 8)
 
 
 def _display_value(value: Any) -> str:
@@ -71,9 +70,9 @@ class JitterApp(tk.Tk):
     ) -> None:
         super().__init__()
         self.title("Jitter")
-        self.geometry("720x680")
+        self.geometry("640x560")
         self.resizable(False, False)
-        self.configure(background=GRAPHITE)
+        self.configure(background=XP_WINDOW)
         self.protocol("WM_DELETE_WINDOW", self.close_app)
 
         self.config_store = config_store or ConfigStore()
@@ -128,47 +127,41 @@ class JitterApp(tk.Tk):
             style.theme_use("clam")
         except tk.TclError:
             pass
-        style.configure("App.TFrame", background=GRAPHITE)
-        style.configure("Card.TLabelframe", background=PANEL, foreground=TEXT,
-                        bordercolor=BORDER, relief="solid", borderwidth=1)
-        style.configure("Card.TLabelframe.Label", background=PANEL,
-                        foreground=TEXT, font=SECTION_FONT)
-        style.configure("App.TLabel", background=GRAPHITE, foreground=TEXT,
-                        font=BODY_FONT)
-        style.configure("Card.TLabel", background=PANEL, foreground=TEXT,
-                        font=BODY_FONT)
-        style.configure("Muted.TLabel", background=GRAPHITE, foreground=MUTED,
-                        font=SMALL_FONT)
-        style.configure("CardMuted.TLabel", background=PANEL, foreground=MUTED,
-                        font=SMALL_FONT)
-        style.configure("StatusDisconnected.TLabel", background=GRAPHITE,
-                        foreground=RED, font=BODY_FONT)
-        style.configure("StatusConnecting.TLabel", background=GRAPHITE,
-                        foreground=AMBER, font=BODY_FONT)
-        style.configure("StatusConnected.TLabel", background=GRAPHITE,
-                        foreground=GREEN, font=BODY_FONT)
-        style.configure("Primary.TButton", background=CYAN, foreground=GRAPHITE,
-                        font=(FONT_FAMILY, 9, "bold"), padding=(12, 7), borderwidth=0)
-        style.map("Primary.TButton", background=[("active", "#63e7f1"),
-                                                   ("disabled", "#43757b")])
-        style.configure("Secondary.TButton", background=PANEL_ALT,
-                        foreground=TEXT, font=BODY_FONT, padding=(9, 5), borderwidth=0)
-        style.map("Secondary.TButton", background=[("active", "#3b4b58")],
-                  foreground=[("disabled", "#8a969e")])
-        style.configure("Danger.TButton", background=RED, foreground="#ffffff",
-                        font=(FONT_FAMILY, 10, "bold"), padding=(16, 7), borderwidth=0)
-        style.map("Danger.TButton", background=[("active", "#ff7b84")])
-        style.configure("App.TEntry", fieldbackground=PANEL_ALT,
-                        foreground=TEXT, insertcolor=TEXT, padding=(5, 3),
-                        bordercolor=BORDER)
-        style.configure("Invalid.TEntry", fieldbackground="#4a252b",
-                        foreground="#ffb8bd", insertcolor="#ffb8bd",
-                        padding=(5, 3), bordercolor=RED)
-        style.configure("App.TCombobox", fieldbackground=PANEL_ALT,
-                        background=PANEL_ALT, foreground=TEXT, arrowcolor=CYAN,
-                        padding=(4, 3))
-        style.map("App.TCombobox", fieldbackground=[("readonly", PANEL_ALT)],
-                  foreground=[("readonly", TEXT)])
+        style.configure("XP.App.TFrame", background=XP_WINDOW)
+        style.configure("XP.Title.TFrame", background=XP_BLUE)
+        style.configure("XP.Title.TLabel", background=XP_BLUE, foreground="#FFFFFF",
+                        font=TITLE_FONT)
+        style.configure("XP.Group.TLabelframe", background=XP_WINDOW,
+                        foreground="#164E9E", bordercolor="#ACA899",
+                        relief="groove", borderwidth=1)
+        style.configure("XP.Group.TLabelframe.Label", background=XP_WINDOW,
+                        foreground="#164E9E", font=SECTION_FONT)
+        style.configure("XP.Group.TLabel", background=XP_WINDOW,
+                        foreground=XP_TEXT, font=BODY_FONT)
+        style.configure("XP.Muted.TLabel", background=XP_WINDOW,
+                        foreground=XP_MUTED, font=SMALL_FONT)
+        style.configure("XP.Primary.TButton", foreground=XP_TEXT,
+                        font=(FONT_FAMILY, 8, "bold"), padding=(10, 4))
+        style.configure("XP.Secondary.TButton", foreground=XP_TEXT,
+                        font=BODY_FONT, padding=(8, 3))
+        style.configure("XP.Danger.TButton", foreground=XP_RED,
+                        font=(FONT_FAMILY, 8, "bold"), padding=(10, 4))
+        style.configure("XP.StatusDisconnected.TLabel", background=XP_WINDOW,
+                        foreground=XP_RED, font=BODY_FONT)
+        style.configure("XP.StatusConnecting.TLabel", background=XP_WINDOW,
+                        foreground=XP_AMBER, font=BODY_FONT)
+        style.configure("XP.StatusConnected.TLabel", background=XP_WINDOW,
+                        foreground=XP_GREEN, font=BODY_FONT)
+        style.configure("App.TEntry", fieldbackground=XP_PANEL, foreground=XP_TEXT,
+                        insertcolor=XP_TEXT, padding=(5, 3), bordercolor=XP_BORDER)
+        style.configure("Invalid.TEntry", fieldbackground=XP_PANEL,
+                        foreground=XP_TEXT, insertcolor=XP_TEXT, padding=(5, 3),
+                        bordercolor=XP_RED)
+        style.configure("XP.TCombobox", fieldbackground=XP_PANEL, background=XP_PANEL,
+                        foreground=XP_TEXT, arrowcolor=XP_TEXT, padding=(4, 3),
+                        bordercolor=XP_BORDER)
+        style.map("XP.TCombobox", fieldbackground=[("readonly", XP_PANEL)],
+                  foreground=[("readonly", XP_TEXT)])
 
     def _create_variables(self) -> None:
         self.connection_status_var = tk.StringVar(self, "Disconnected")
@@ -205,17 +198,17 @@ class JitterApp(tk.Tk):
         return ("Custom", *MOTION_PRESETS.keys())
 
     def _build_page(self) -> None:
-        shell = ttk.Frame(self, style="App.TFrame")
+        shell = ttk.Frame(self, style="XP.App.TFrame")
         shell.pack(fill="both", expand=True)
 
-        self.canvas = tk.Canvas(shell, background=GRAPHITE, highlightthickness=0,
+        self.canvas = tk.Canvas(shell, background=XP_WINDOW, highlightthickness=0,
                                 borderwidth=0)
         scrollbar = ttk.Scrollbar(shell, orient="vertical", command=self.canvas.yview)
         self.canvas.configure(yscrollcommand=scrollbar.set)
         self.canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
-        self.content = ttk.Frame(self.canvas, style="App.TFrame", padding=(14, 12, 14, 18))
+        self.content = ttk.Frame(self.canvas, style="XP.App.TFrame", padding=(8, 8, 8, 12))
         self.content_window = self.canvas.create_window((0, 0), window=self.content,
                                                          anchor="nw")
         self.content.bind("<Configure>", self._refresh_scrollregion)
@@ -231,100 +224,102 @@ class JitterApp(tk.Tk):
         self._build_footer()
 
     def _build_header(self) -> None:
-        header = ttk.Frame(self.content, style="App.TFrame")
+        header = ttk.Frame(self.content, style="XP.Title.TFrame")
         header.pack(fill="x", pady=(0, 9))
-        ttk.Label(header, text="JITTER", style="App.TLabel", font=TITLE_FONT).pack(side="left")
-        ttk.Label(header, text="  MAKCU CONTROL", style="Muted.TLabel",
-                  font=(FONT_FAMILY, 8, "bold")).pack(side="left", pady=(5, 0))
+        ttk.Label(header, text="Jitter \N{EM DASH} Makcu Control", style="XP.Title.TLabel").pack(
+            side="left", padx=8, pady=5)
+        summary = ttk.Frame(self.content, style="XP.App.TFrame")
+        summary.pack(fill="x", pady=(0, 7))
+        ttk.Label(summary, text="Connection:", style="XP.Muted.TLabel").pack(side="left")
         self.connection_label = ttk.Label(
-            header, textvariable=self.connection_status_var,
-            style="StatusDisconnected.TLabel")
-        self.connection_label.pack(side="right", pady=(4, 0))
+            summary, textvariable=self.connection_status_var,
+            style="XP.StatusDisconnected.TLabel")
+        self.connection_label.pack(side="left", padx=(4, 0))
 
     def _card(self, title: str) -> ttk.LabelFrame:
-        card = ttk.LabelFrame(self.content, text=title, style="Card.TLabelframe",
-                              padding=(11, 8, 11, 10))
+        card = ttk.LabelFrame(self.content, text=title, style="XP.Group.TLabelframe",
+                              padding=(8, 6, 8, 8))
         card.pack(fill="x", pady=(0, 9))
         return card
 
     def _build_device_card(self) -> None:
         card = self._card("Device")
         self.device_label = ttk.Label(card, textvariable=self.device_status_var,
-                                      style="CardMuted.TLabel")
+                                      style="XP.Muted.TLabel")
         self.device_label.pack(side="left", fill="x", expand=True)
         self.reconnect_button = ttk.Button(card, text="Reconnect",
-                                            style="Secondary.TButton",
+                                            style="XP.Secondary.TButton",
                                             command=self.reconnect)
         self.reconnect_button.pack(side="right")
 
     def _build_main_control_card(self) -> None:
-        card = self._card("Main Control")
+        self.runtime_frame = self._card("Main Control")
+        card = self.runtime_frame
         self.enable_button = ttk.Button(card, text="Enable Jitter",
-                                        style="Primary.TButton",
+                                        style="XP.Primary.TButton",
                                         command=self.toggle_enabled)
         self.enable_button.pack(side="left")
-        state = ttk.Frame(card, style="Card.TLabelframe")
-        state.pack(side="right", padx=(12, 0))
-        ttk.Label(state, text="RUNTIME", style="CardMuted.TLabel").pack(anchor="e")
+        state = ttk.Frame(card, style="XP.App.TFrame")
+        state.pack(side="left", expand=True, padx=12)
+        ttk.Label(state, text="RUNTIME", style="XP.Muted.TLabel").pack(anchor="center")
         ttk.Label(state, textvariable=self.runtime_status_var,
-                  style="Card.TLabel", font=(FONT_FAMILY, 10, "bold")).pack(anchor="e")
+                  style="XP.Group.TLabel", font=(FONT_FAMILY, 8, "bold")).pack(anchor="center")
+        self.stop_button = ttk.Button(card, text="STOP", style="XP.Danger.TButton",
+                                      command=self.emergency_stop)
+        self.stop_button.pack(side="right")
 
     def _build_trigger_card(self) -> None:
         card = self._card("Trigger")
         card.columnconfigure(1, weight=1)
         card.columnconfigure(3, weight=1)
-        ttk.Label(card, text="Trigger", style="Card.TLabel").grid(row=0, column=0,
+        ttk.Label(card, text="Trigger", style="XP.Group.TLabel").grid(row=0, column=0,
                                                                      sticky="w", padx=(0, 6))
         self.trigger_combo = ttk.Combobox(card, textvariable=self.trigger_var,
                                           values=("Left", "Right", "Middle", "Mouse4", "Mouse5"),
-                                          state="readonly", style="App.TCombobox", width=11)
+                                          state="readonly", style="XP.TCombobox", width=11)
         self.trigger_combo.grid(row=0, column=1, sticky="ew", padx=(0, 12))
         self.trigger_combo.bind("<<ComboboxSelected>>", self._bindings_event)
-        ttk.Label(card, text="Modifier", style="Card.TLabel").grid(row=0, column=2,
+        ttk.Label(card, text="Modifier", style="XP.Group.TLabel").grid(row=0, column=2,
                                                                        sticky="w", padx=(0, 6))
         self.modifier_combo = ttk.Combobox(card, textvariable=self.modifier_var,
                                            values=("None", "Left", "Right", "Middle", "Mouse4", "Mouse5"),
-                                           state="readonly", style="App.TCombobox", width=11)
+                                           state="readonly", style="XP.TCombobox", width=11)
         self.modifier_combo.grid(row=0, column=3, sticky="ew", padx=(0, 12))
         self.modifier_combo.bind("<<ComboboxSelected>>", self._bindings_event)
         self.hotkey_button = ttk.Button(card, text=f"Hotkey: {self.hotkey_name_var.get()}",
-                                        style="Secondary.TButton",
+                                        style="XP.Secondary.TButton",
                                         command=self.capture_hotkey)
         self.hotkey_button.grid(row=0, column=4, sticky="e")
 
     def _build_action_card(self) -> None:
         card = self._card("Actions")
-        ttk.Label(card, text="Preset", style="Card.TLabel").pack(side="left", padx=(0, 7))
+        ttk.Label(card, text="Preset", style="XP.Group.TLabel").pack(side="left", padx=(0, 7))
         self.preset_combo = ttk.Combobox(card, textvariable=self.preset_var,
                                          values=self.preset_values, state="readonly",
-                                         style="App.TCombobox", width=17)
+                                         style="XP.TCombobox", width=17)
         self.preset_combo.pack(side="left", padx=(0, 10))
         self.preset_combo.bind("<<ComboboxSelected>>", self.apply_preset)
-        self.test_button = ttk.Button(card, text="Test 3s", style="Secondary.TButton",
-                                      command=self.test_run)
+        self.test_button = ttk.Button(card, text="Test 3s", style="XP.Secondary.TButton",
+                                       command=self.test_run)
         self.test_button.pack(side="left")
-        # STOP lives in this always-visible card, never in advanced settings.
-        self.stop_button = ttk.Button(card, text="STOP", style="Danger.TButton",
-                                      command=self.emergency_stop)
-        self.stop_button.pack(side="right")
 
     def _numeric_control(self, parent: tk.Misc, row: int, column: int,
                          label: str, key: str, low: float, high: float,
                          resolution: float = 1.0) -> None:
-        block = ttk.Frame(parent, style="Card.TLabelframe")
+        block = ttk.Frame(parent, style="XP.App.TFrame")
         block.grid(row=row, column=column, sticky="ew", padx=5, pady=4)
         parent.columnconfigure(column, weight=1)
-        top = ttk.Frame(block, style="Card.TLabelframe")
+        top = ttk.Frame(block, style="XP.App.TFrame")
         top.pack(fill="x")
-        ttk.Label(top, text=label, style="Card.TLabel").pack(side="left")
+        ttk.Label(top, text=label, style="XP.Group.TLabel").pack(side="left")
         entry = ttk.Entry(top, textvariable=self.motion_vars[key], width=8,
                           style="App.TEntry", justify="right")
         entry.pack(side="right")
         slider = tk.Scale(
             block, from_=low, to=high, resolution=resolution, orient="horizontal",
             showvalue=False, highlightthickness=0,
-            bd=0, relief="flat", troughcolor=PANEL_ALT, activebackground=CYAN,
-            background=PANEL, foreground=TEXT, sliderrelief="flat",
+            bd=0, relief="flat", troughcolor=XP_BORDER, activebackground=XP_BLUE_LIGHT,
+            background=XP_WINDOW, foreground=XP_TEXT, sliderrelief="flat",
             command=lambda value, name=key: self._scale_changed(name, value),
         )
         slider.set(float(self.motion_vars[key].get()))
@@ -334,7 +329,7 @@ class JitterApp(tk.Tk):
 
     def _build_quick_card(self) -> None:
         card = self._card("Quick Jitter")
-        grid = ttk.Frame(card, style="Card.TLabelframe")
+        grid = ttk.Frame(card, style="XP.App.TFrame")
         grid.pack(fill="x")
         controls = (
             ("Angle", "motion_angle_deg", 0, 360, 1),
@@ -348,9 +343,9 @@ class JitterApp(tk.Tk):
 
     def _build_advanced_card(self) -> None:
         self.advanced_frame = ttk.LabelFrame(
-            self.content, text="Advanced Settings", style="Card.TLabelframe",
+            self.content, text="Advanced Settings", style="XP.Group.TLabelframe",
             padding=(11, 8, 11, 10))
-        grid = ttk.Frame(self.advanced_frame, style="Card.TLabelframe")
+        grid = ttk.Frame(self.advanced_frame, style="XP.App.TFrame")
         grid.pack(fill="x")
         self._numeric_control(grid, 0, 0, "Randomness", "jitter_randomness_percent", 0, 100)
         self._numeric_control(grid, 0, 1, "Axis Phase", "jitter_axis_phase_deg", 0, 360)
@@ -361,31 +356,31 @@ class JitterApp(tk.Tk):
         self._numeric_control(grid, 3, 0, "Acceleration", "acceleration_pps2", 1, 10000)
         self._numeric_control(grid, 3, 1, "Deceleration", "deceleration_pps2", 1, 10000)
 
-        ttk.Label(grid, text="Waveform", style="Card.TLabel").grid(row=4, column=0,
+        ttk.Label(grid, text="Waveform", style="XP.Group.TLabel").grid(row=4, column=0,
                                                                        sticky="w", padx=5, pady=(8, 3))
         self.waveform_combo = ttk.Combobox(
             grid, textvariable=self.motion_vars["jitter_waveform"],
-            values=JITTER_WAVEFORMS, state="readonly", style="App.TCombobox")
+            values=JITTER_WAVEFORMS, state="readonly", style="XP.TCombobox")
         self.waveform_combo.grid(row=4, column=1, sticky="ew", padx=5, pady=(8, 3))
-        ttk.Label(grid, text="Motion Curve", style="Card.TLabel").grid(row=5, column=0,
+        ttk.Label(grid, text="Motion Curve", style="XP.Group.TLabel").grid(row=5, column=0,
                                                                           sticky="w", padx=5, pady=3)
         self.motion_curve_combo = ttk.Combobox(
             grid, textvariable=self.motion_vars["motion_curve"],
-            values=MOTION_CURVES, state="readonly", style="App.TCombobox")
+            values=MOTION_CURVES, state="readonly", style="XP.TCombobox")
         self.motion_curve_combo.grid(row=5, column=1, sticky="ew", padx=5, pady=3)
         grid.columnconfigure(0, weight=1)
         grid.columnconfigure(1, weight=1)
 
         self.advanced_toggle = ttk.Button(self.content, text="Advanced Settings",
-                                           style="Secondary.TButton",
+                                           style="XP.Secondary.TButton",
                                            command=self.toggle_advanced)
         self.advanced_toggle.pack(fill="x", pady=(0, 9))
 
     def _build_footer(self) -> None:
-        footer = ttk.Frame(self.content, style="App.TFrame")
+        footer = ttk.Frame(self.content, style="XP.App.TFrame")
         footer.pack(fill="x", pady=(0, 3))
         self.footer_label = ttk.Label(footer, textvariable=self.footer_var,
-                                      style="Muted.TLabel", anchor="w")
+                                      style="XP.Muted.TLabel", anchor="w")
         self.footer_label.pack(fill="x")
 
     # ---- shell interactions -------------------------------------------
@@ -560,16 +555,16 @@ class JitterApp(tk.Tk):
         kind = event.kind
         if kind == "connecting":
             self.connection_status_var.set("Connecting")
-            self.connection_label.configure(style="StatusConnecting.TLabel")
+            self.connection_label.configure(style="XP.StatusConnecting.TLabel")
             self.device_status_var.set("Connecting to Makcu...")
         elif kind in {"connected", "reconnected"}:
             self.connection_status_var.set("Connected")
-            self.connection_label.configure(style="StatusConnected.TLabel")
+            self.connection_label.configure(style="XP.StatusConnected.TLabel")
             self.device_status_var.set(str(event.payload or "Makcu device connected"))
             self.footer_var.set("Makcu connected")
         elif kind == "disconnected":
             self.connection_status_var.set("Disconnected")
-            self.connection_label.configure(style="StatusDisconnected.TLabel")
+            self.connection_label.configure(style="XP.StatusDisconnected.TLabel")
             self.device_status_var.set(str(event.payload or "Makcu device not connected"))
             self.emergency_stop("Device disconnected")
         elif kind == "button":
