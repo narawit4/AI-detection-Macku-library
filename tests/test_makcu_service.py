@@ -114,6 +114,23 @@ class MakcuConnectionTests(unittest.TestCase):
         service._button_event("Mouse5", False)
         self.assertEqual(events[-1], ServiceEvent("button", ("Mouse5", False)))
 
+    def test_stale_button_callback_is_ignored_after_reconnect(self):
+        old = FakeController()
+        fresh = FakeController()
+        controllers = iter((old, fresh))
+        events = []
+        service = MakcuService(events.append, controller_factory=lambda **_kwargs: next(controllers))
+        first_generation = service._begin_connection()
+        service._connect_worker(first_generation)
+        old_button_callback = old.button_callback
+        service.reconnect()
+        self.assertTrue(wait_until(lambda: service.controller is fresh))
+        events_before_stale_callback = list(events)
+        old_button_callback(MouseButton.LEFT, True)
+        self.assertEqual(events, events_before_stale_callback)
+        fresh.button_callback(MouseButton.RIGHT, True)
+        self.assertEqual(events[-1], ServiceEvent("button", ("Right", True)))
+
     def test_connect_starts_a_daemon_worker(self):
         worker_seen = threading.Event()
         daemon_state = []
@@ -170,6 +187,32 @@ class MakcuConnectionTests(unittest.TestCase):
         self.assertTrue(service.connected)
         self.assertEqual(events[-1].kind, "connected")
 
+    def test_connected_event_cannot_follow_a_disconnect_race(self):
+        controller = FakeController()
+        entered_connected_sink = threading.Event()
+        release_connected_sink = threading.Event()
+        events = []
+        service = None
+
+        def sink(event):
+            if event.kind == "connected":
+                entered_connected_sink.set()
+                self.assertTrue(release_connected_sink.wait(1.0))
+            events.append(event)
+
+        service = MakcuService(sink, controller_factory=lambda **_kwargs: controller)
+        generation = service._begin_connection()
+        worker = threading.Thread(target=service._connect_worker, args=(generation,))
+        worker.start()
+        self.assertTrue(entered_connected_sink.wait(1.0))
+        disconnect_thread = threading.Thread(target=lambda: controller.connection_callback(False))
+        disconnect_thread.start()
+        release_connected_sink.set()
+        worker.join(1.0)
+        disconnect_thread.join(1.0)
+        self.assertFalse(service.connected)
+        self.assertEqual(events[-1], ServiceEvent("disconnected"))
+
     def test_close_invalidates_generation_and_disconnects_controller(self):
         controller = FakeController()
         service = MakcuService(lambda _event: None, controller_factory=lambda **_kwargs: controller)
@@ -179,6 +222,17 @@ class MakcuConnectionTests(unittest.TestCase):
         self.assertTrue(wait_until(lambda: controller.disconnected))
         self.assertFalse(service.connected)
         self.assertIsNone(service.controller)
+
+    def test_connect_replaces_and_disconnects_existing_controller(self):
+        old = FakeController()
+        fresh = FakeController()
+        controllers = iter((old, fresh))
+        service = MakcuService(lambda _event: None, controller_factory=lambda **_kwargs: next(controllers))
+        first_generation = service._begin_connection()
+        service._connect_worker(first_generation)
+        service.connect()
+        self.assertTrue(wait_until(lambda: old.disconnected))
+        self.assertTrue(wait_until(lambda: service.controller is fresh))
 
 
 if __name__ == "__main__":

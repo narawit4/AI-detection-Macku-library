@@ -13,6 +13,9 @@ from typing import Any, Callable
 from makcu import MouseButton, create_controller
 
 
+_MISSING = object()
+
+
 BUTTON_NAMES = {
     MouseButton.LEFT: "Left",
     MouseButton.RIGHT: "Right",
@@ -49,9 +52,7 @@ class MakcuService:
         self._connected = False
         self._closed = False
         self._setup_disconnected: set[int] = set()
-        self._setup_signals: dict[int, bool] = {}
         self._disconnect_notified: set[int] = set()
-        self._last_connection_signal: tuple[int, bool] | None = None
 
     @property
     def connected(self) -> bool:
@@ -77,10 +78,8 @@ class MakcuService:
             generation = self._generation
             self._controller = None
             self._connected = False
-            self._setup_signals[generation] = False
             self._setup_disconnected.discard(generation)
             self._disconnect_notified.discard(generation)
-            self._last_connection_signal = None
         self._emit(ServiceEvent("connecting"))
         return generation
 
@@ -89,6 +88,10 @@ class MakcuService:
         with self._lock:
             if self._closed:
                 return None
+        with self._lock:
+            has_active_controller = self._controller is not None
+        if has_active_controller:
+            return self.reconnect()
         generation = self._begin_connection()
         self._start_connection_worker(generation)
         return generation
@@ -118,10 +121,6 @@ class MakcuService:
         except Exception:
             pass
 
-    def _is_current(self, generation: int) -> bool:
-        with self._lock:
-            return generation == self._generation and not self._closed
-
     def _setup_must_abort(self, generation: int) -> bool:
         with self._lock:
             return (
@@ -139,13 +138,12 @@ class MakcuService:
                 if current:
                     self._controller = None
                     self._connected = False
-            if current:
-                self._emit(
-                    ServiceEvent(
-                        "disconnected",
-                        f"{type(exc).__name__}: {exc}",
+                    self._emit(
+                        ServiceEvent(
+                            "disconnected",
+                            f"{type(exc).__name__}: {exc}",
+                        )
                     )
-                )
             return
 
         try:
@@ -153,7 +151,11 @@ class MakcuService:
                 lambda connected, g=generation: self._connection_changed(g, connected)
             )
             controller.enable_button_monitoring(True)
-            controller.set_button_callback(self._button_event)
+            controller.set_button_callback(
+                lambda button, pressed, g=generation: self._button_event(
+                    g, button, pressed
+                )
+            )
         except Exception as exc:
             # Setup failures are equivalent to a failed connection, but the
             # exact newly-created controller must still be cleaned up.
@@ -163,13 +165,12 @@ class MakcuService:
                 if current:
                     self._controller = None
                     self._connected = False
-            if current:
-                self._emit(
-                    ServiceEvent(
-                        "disconnected",
-                        f"{type(exc).__name__}: {exc}",
+                    self._emit(
+                        ServiceEvent(
+                            "disconnected",
+                            f"{type(exc).__name__}: {exc}",
+                        )
                     )
-                )
             return
 
         if self._setup_must_abort(generation):
@@ -198,13 +199,11 @@ class MakcuService:
             if can_install:
                 self._controller = controller
                 self._connected = True
+                self._emit(ServiceEvent("connected", " | ".join(diagnostics) or None))
 
         if not can_install:
             self._disconnect_controller(controller)
-            return
-
-        payload = " | ".join(diagnostics) or None
-        self._emit(ServiceEvent("connected", payload))
+        return
 
     def _connection_changed(self, generation: int, connected: bool) -> None:
         connected = bool(connected)
@@ -212,8 +211,6 @@ class MakcuService:
         with self._lock:
             if generation != self._generation or self._closed:
                 return
-            self._last_connection_signal = (generation, connected)
-            self._setup_signals[generation] = connected
             if self._controller is None:
                 if not connected:
                     self._setup_disconnected.add(generation)
@@ -221,21 +218,18 @@ class MakcuService:
                     if generation not in self._disconnect_notified:
                         self._disconnect_notified.add(generation)
                         event = ServiceEvent("disconnected")
-                return_event = event
             elif connected:
                 if not self._connected:
                     self._connected = True
                     event = ServiceEvent("reconnected")
-                return_event = event
             else:
                 was_connected = self._connected
                 self._connected = False
                 if was_connected and generation not in self._disconnect_notified:
                     self._disconnect_notified.add(generation)
                     event = ServiceEvent("disconnected")
-                return_event = event
-        if return_event is not None:
-            self._emit(return_event)
+            if event is not None:
+                self._emit(event)
 
     @staticmethod
     def _normalize_button(button: Any) -> str | None:
@@ -252,9 +246,26 @@ class MakcuService:
             except (ValueError, KeyError, TypeError):
                 return None
 
-    def _button_event(self, button: Any, pressed: bool) -> None:
+    def _button_event(
+        self,
+        generation_or_button: Any,
+        button_or_pressed: Any,
+        pressed: Any = _MISSING,
+    ) -> None:
+        if pressed is _MISSING:
+            with self._lock:
+                generation = self._generation
+            button = generation_or_button
+            pressed = button_or_pressed
+        else:
+            generation = generation_or_button
+            button = button_or_pressed
         name = self._normalize_button(button)
-        if name is not None:
+        if name is None:
+            return
+        with self._lock:
+            if generation != self._generation or self._closed:
+                return
             self._emit(ServiceEvent("button", (name, bool(pressed))))
 
     def reconnect(self) -> int | None:
@@ -281,4 +292,3 @@ class MakcuService:
             self._connected = False
         if controller is not None:
             self._start_disconnect_worker(controller)
-
