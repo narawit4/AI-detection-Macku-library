@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.venv/
+build-output/
+dist/
+*.build/
+*.dist/
+config.json
+config.json.bak
+app.log
+.superpowers/
