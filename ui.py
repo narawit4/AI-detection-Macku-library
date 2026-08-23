@@ -114,6 +114,7 @@ class JitterApp(tk.Tk):
         self._configure_styles()
         self._create_variables()
         self._build_page()
+        self.bind("<MouseWheel>", self._on_right_mousewheel, add="+")
 
         self.service_factory = service_factory or (lambda sink: MakcuService(sink))
         self.hotkey_factory = hotkey_factory or HotkeyWatcher
@@ -433,8 +434,8 @@ class JitterApp(tk.Tk):
         setattr(self, f"{key}_scale", slider)
 
     def _build_quick_card(self) -> None:
-        card = self._card("Quick Jitter", self.right_content)
-        grid = ttk.Frame(card, style="XP.App.TFrame")
+        self.quick_frame = self._card("Quick Jitter", self.right_content)
+        grid = ttk.Frame(self.quick_frame, style="XP.App.TFrame")
         grid.pack(fill="x")
         controls = (
             ("Strength", "motion_strength_pps", 0, 500, 1),
@@ -500,12 +501,42 @@ class JitterApp(tk.Tk):
             self.advanced_frame.pack_forget()
             self._advanced_visible = False
             self.advanced_state_var.set(False)
+            self.advanced_toggle.configure(text="Advanced Settings ▼")
+            self.right_canvas.yview_moveto(0.0)
         else:
             self.advanced_frame.pack(fill="x", pady=(0, 9))
             self._advanced_visible = True
             self.advanced_state_var.set(True)
+            self.advanced_toggle.configure(text="Advanced Settings ▲")
         self.update_idletasks()
         self._refresh_scrollregion()
+
+    @staticmethod
+    def _is_descendant_of(widget: tk.Misc | None, ancestor: tk.Misc) -> bool:
+        current = widget
+        while current is not None:
+            if current is ancestor:
+                return True
+            current = getattr(current, "master", None)
+        return False
+
+    def _on_right_mousewheel(self, event) -> str | None:
+        target = self.winfo_containing(event.x_root, event.y_root)
+        if target is None:
+            host_left = self.right_host.winfo_rootx()
+            host_top = self.right_host.winfo_rooty()
+            host_right = host_left + self.right_host.winfo_width()
+            host_bottom = host_top + self.right_host.winfo_height()
+            if host_left <= event.x_root < host_right and host_top <= event.y_root < host_bottom:
+                target = self.right_host
+        if not self._is_descendant_of(target, self.right_host):
+            return None
+        bounds = self.right_canvas.bbox("all")
+        if bounds is None or bounds[3] <= self.right_canvas.winfo_height():
+            return None
+        direction = -1 if event.delta > 0 else 1
+        self.right_canvas.yview_scroll(direction, "units")
+        return "break"
 
     # ---- runtime wiring -----------------------------------------------
 

@@ -1,5 +1,6 @@
 import tkinter as tk
 from tkinter import ttk
+from types import SimpleNamespace
 import unittest
 
 from ui import JitterApp
@@ -301,6 +302,57 @@ class JitterLayoutTests(unittest.TestCase):
         self.app.update_idletasks()
         after = self.app.geometry().split("+")[0]
         self.assertEqual(after, before)
+
+    def test_advanced_starts_collapsed_and_expands_below_quick(self):
+        self.assertFalse(self.app._advanced_visible)
+        self.assertFalse(self.app.advanced_state_var.get())
+        self.assertFalse(self.app.advanced_frame.winfo_manager())
+        self.assertEqual(self.app.advanced_toggle.cget("text"),
+                         "Advanced Settings ▼")
+
+        self.app.toggle_advanced()
+        self.app.update_idletasks()
+
+        self.assertTrue(self.app._advanced_visible)
+        self.assertEqual(self.app.advanced_frame.winfo_manager(), "pack")
+        children = self.app.right_content.pack_slaves()
+        self.assertLess(children.index(self.app.quick_frame),
+                        children.index(self.app.advanced_frame))
+        self.assertEqual(self.app.advanced_toggle.cget("text"),
+                         "Advanced Settings ▲")
+
+    def test_collapsing_advanced_returns_right_workspace_to_top(self):
+        self.app.deiconify()
+        self.app.toggle_advanced()
+        self.app.update()
+        self.app.right_canvas.yview_moveto(1.0)
+        self.app.toggle_advanced()
+        self.app.update()
+        self.assertEqual(self.app.right_canvas.yview()[0], 0.0)
+
+    def test_mousewheel_scrolls_only_over_right_workspace(self):
+        self.app.deiconify()
+        self.app.toggle_advanced()
+        self.app.update()
+        self.app.right_canvas.yview_moveto(0.0)
+
+        right_event = SimpleNamespace(
+            delta=-120,
+            x_root=self.app.right_canvas.winfo_rootx() + 10,
+            y_root=self.app.right_canvas.winfo_rooty() + 10,
+        )
+        self.assertEqual(self.app._on_right_mousewheel(right_event), "break")
+        self.app.update_idletasks()
+        after_right = self.app.right_canvas.yview()[0]
+        self.assertGreater(after_right, 0.0)
+
+        left_event = SimpleNamespace(
+            delta=-120,
+            x_root=self.app.left_column.winfo_rootx() + 10,
+            y_root=self.app.left_column.winfo_rooty() + 10,
+        )
+        self.assertIsNone(self.app._on_right_mousewheel(left_event))
+        self.assertEqual(self.app.right_canvas.yview()[0], after_right)
 
 
 class JitterRuntimeTests(JitterLayoutTests):
