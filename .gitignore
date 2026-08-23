@@ -9,3 +9,4 @@ config.json
 config.json.bak
 app.log
 .superpowers/
+.worktrees/
