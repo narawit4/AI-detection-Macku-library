@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 import math
+import random
 from typing import Any, Mapping
 
 
@@ -140,3 +141,131 @@ def motion_settings_to_mapping(settings: MotionSettings) -> dict[str, Any]:
     result["jitter_waveform"] = settings.jitter_waveform
     result["motion_curve"] = settings.motion_curve
     return result
+
+
+@dataclass
+class SmoothMotionEngine:
+    """Deterministic, stateful smooth motion generator."""
+
+    velocity_x: float = 0.0
+    velocity_y: float = 0.0
+    residual_x: float = 0.0
+    residual_y: float = 0.0
+    filtered_x: float = 0.0
+    filtered_y: float = 0.0
+    jitter_phase: float = 0.0
+
+    @staticmethod
+    def _wave(phase: float, waveform: str, rng: random.Random) -> float:
+        cycle = (phase / math.tau) % 1.0
+        sine = math.sin(phase)
+        if waveform == "Sine":
+            return sine
+        if waveform == "Triangle":
+            return 1.0 - 4.0 * abs(round(cycle - 0.25) - (cycle - 0.25))
+        if waveform == "Square":
+            return 1.0 if sine >= 0.0 else -1.0
+        # Random blend retains a coherent wave while adding deterministic noise.
+        return 0.5 * sine + 0.5 * rng.uniform(-1.0, 1.0)
+
+    @staticmethod
+    def _ramp(progress: float, curve: str) -> float:
+        progress = max(0.0, min(1.0, progress))
+        if curve == "Ease-in":
+            return progress * progress
+        if curve == "S-curve":
+            return progress * progress * (3.0 - 2.0 * progress)
+        return progress
+
+    def step(self, settings: MotionSettings, dt: float, elapsed: float,
+             rng: random.Random = random) -> tuple[int, int]:
+        dt = max(0.0, min(float(dt), 0.1))
+        self.jitter_phase = (self.jitter_phase + math.tau * settings.jitter_rate_hz * dt) % math.tau
+        jitter_x = jitter_y = 0.0
+        if settings.jitter_enabled:
+            randomness = max(0.0, min(100.0, settings.jitter_randomness)) / 100.0
+            phase = self.jitter_phase
+            axis_phase = math.radians(settings.jitter_axis_phase_deg)
+            wave_x = self._wave(phase, settings.jitter_waveform, rng)
+            wave_y = self._wave(phase + axis_phase, settings.jitter_waveform, rng)
+            if settings.jitter_waveform != "Random blend":
+                noise_x = rng.uniform(-1.0, 1.0)
+                noise_y = rng.uniform(-1.0, 1.0)
+                wave_x = wave_x * (1.0 - randomness) + noise_x * randomness
+                wave_y = wave_y * (1.0 - randomness) + noise_y * randomness
+            jitter_x = wave_x * settings.horizontal_jitter_pps
+            jitter_y = wave_y * settings.vertical_jitter_pps
+
+        angle = math.radians(settings.angle_deg)
+        target_x = math.cos(angle) * settings.strength_pps + jitter_x
+        target_y = math.sin(angle) * settings.strength_pps + jitter_y
+        progress = 1.0 if settings.ramp_up_ms <= 0 else min(1.0, elapsed / (settings.ramp_up_ms / 1000.0))
+        ramp = self._ramp(progress, settings.motion_curve)
+        target_x *= ramp
+        target_y *= ramp
+
+        tau = (max(0.0, min(settings.smoothness, 100.0)) / 100.0) ** 2 * 0.250
+        alpha = 1.0 if tau <= 0 else 1.0 - math.exp(-dt / tau)
+        self.filtered_x += (target_x - self.filtered_x) * alpha
+        self.filtered_y += (target_y - self.filtered_y) * alpha
+
+        target_speed = math.hypot(self.filtered_x, self.filtered_y)
+        current_speed = math.hypot(self.velocity_x, self.velocity_y)
+        limit = settings.acceleration_pps2 if target_speed >= current_speed else settings.deceleration_pps2
+        max_delta = max(0.0, limit) * dt
+        delta_x = self.filtered_x - self.velocity_x
+        delta_y = self.filtered_y - self.velocity_y
+        delta_len = math.hypot(delta_x, delta_y)
+        if delta_len > max_delta > 0:
+            scale = max_delta / delta_len
+            delta_x *= scale
+            delta_y *= scale
+        elif max_delta <= 0:
+            delta_x = delta_y = 0.0
+        self.velocity_x += delta_x
+        self.velocity_y += delta_y
+
+        total_x = self.velocity_x * dt + self.residual_x
+        total_y = self.velocity_y * dt + self.residual_y
+        raw_x = int(total_x)
+        raw_y = int(total_y)
+        self.residual_x = total_x - raw_x
+        self.residual_y = total_y - raw_y
+        cap = max(1, int(settings.max_step_px))
+        report_x = max(-cap, min(cap, raw_x))
+        report_y = max(-cap, min(cap, raw_y))
+        # A capped report must not leave hidden velocity that becomes a
+        # multi-frame backlog when the target changes or stops.
+        if dt > 0.0:
+            if report_x != raw_x:
+                self.velocity_x = report_x / dt
+            if report_y != raw_y:
+                self.velocity_y = report_y / dt
+        return report_x, report_y
+
+
+@dataclass
+class TriggerGate:
+    trigger: str = "Left"
+    modifier: str = "None"
+    trigger_held: bool = False
+    modifier_held: bool = False
+
+    @property
+    def active(self) -> bool:
+        return self.trigger_held and (self.modifier == "None" or self.modifier_held)
+
+    def update_button(self, name: str, pressed: bool) -> None:
+        if name == self.trigger:
+            self.trigger_held = pressed
+        if self.modifier != "None" and name == self.modifier:
+            self.modifier_held = pressed
+
+    def configure(self, trigger: str, modifier: str) -> None:
+        self.trigger = trigger
+        self.modifier = modifier
+        self.clear()
+
+    def clear(self) -> None:
+        self.trigger_held = False
+        self.modifier_held = False
