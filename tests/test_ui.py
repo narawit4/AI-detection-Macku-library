@@ -233,10 +233,17 @@ class JitterLayoutTests(unittest.TestCase):
                 self.assertIs(block.master, self.app.advanced_grid)
 
     def test_advanced_choices_span_the_full_grid_width(self):
-        for combo in (self.app.waveform_combo, self.app.motion_curve_combo):
+        waveform_row = self.app.waveform_combo.master
+        curve_row = self.app.motion_curve_combo.master
+        self.assertIsNot(waveform_row, curve_row)
+        for combo, expected_row in (
+            (self.app.waveform_combo, 6),
+            (self.app.motion_curve_combo, 7),
+        ):
             with self.subTest(combo=str(combo)):
                 choice_row = combo.master
                 info = choice_row.grid_info()
+                self.assertEqual(int(info["row"]), expected_row)
                 self.assertEqual(int(info["columnspan"]), 2)
                 self.assertIs(choice_row.master, self.app.advanced_grid)
 
@@ -247,8 +254,15 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertEqual(int(self.app.stop_button.grid_info()["column"]), 2)
         self.assertIn("ew", self.app.enable_button.grid_info()["sticky"])
         self.assertIn("ew", self.app.stop_button.grid_info()["sticky"])
-        self.assertEqual(self.app.runtime_frame.grid_columnconfigure(0)["weight"],
-                         self.app.runtime_frame.grid_columnconfigure(2)["weight"])
+        for column in (0, 2):
+            with self.subTest(column=column):
+                config = self.app.runtime_frame.grid_columnconfigure(column)
+                self.assertEqual(config["weight"], 1)
+                self.assertEqual(config["uniform"], "runtime_actions")
+        self.assertEqual(
+            self.app.runtime_frame.grid_columnconfigure(1)["weight"],
+            2,
+        )
 
     def test_footer_and_runtime_are_outside_scrollable_workspace(self):
         for widget in (self.app.footer_frame, self.app.runtime_frame,
