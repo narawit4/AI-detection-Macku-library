@@ -1,6 +1,7 @@
 import subprocess
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import main
 
@@ -9,12 +10,13 @@ ROOT = Path(__file__).parents[1]
 
 
 class FakeKernel32:
-    def __init__(self, last_error):
+    def __init__(self, last_error, handle=123):
         self.last_error = last_error
+        self.handle = handle
         self.closed = []
 
     def CreateMutexW(self, _security, _owner, _name):
-        return 123
+        return self.handle
 
     def GetLastError(self):
         return self.last_error
@@ -33,6 +35,29 @@ class EntryPointTests(unittest.TestCase):
         kernel32 = FakeKernel32(last_error=0)
         self.assertEqual(main.ensure_single_instance(kernel32), 123)
         self.assertEqual(kernel32.closed, [])
+
+    def test_mutex_creation_failure_is_distinct_from_duplicate(self):
+        kernel32 = FakeKernel32(last_error=5, handle=0)
+        with self.assertRaises(main.MutexCreationError) as raised:
+            main.ensure_single_instance(kernel32)
+        self.assertEqual(raised.exception.error_code, 5)
+        self.assertEqual(kernel32.closed, [])
+
+    def test_main_reports_mutex_creation_failure_as_startup_error(self):
+        with patch.object(main, "runtime_base_dir", return_value=ROOT), patch.object(
+            main, "configure_logging"
+        ), patch.object(
+            main,
+            "ensure_single_instance",
+            side_effect=main.MutexCreationError(5),
+        ), patch.object(main, "_show_startup_error") as show_error, patch.object(
+            main, "JitterApp"
+        ) as app_factory, patch.object(main.logging, "error") as _log_error:
+            main.main()
+
+        show_error.assert_called_once()
+        self.assertIn("mutex", show_error.call_args.args[0].lower())
+        app_factory.assert_not_called()
 
     def test_runtime_requirements_exclude_removed_feature_stacks(self):
         requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8").lower()

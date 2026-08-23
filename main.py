@@ -17,6 +17,14 @@ ERROR_ALREADY_EXISTS = 183
 _mutex_handle: Any | None = None
 
 
+class MutexCreationError(RuntimeError):
+    """Raised when Windows cannot create the single-instance mutex."""
+
+    def __init__(self, error_code: int) -> None:
+        self.error_code = int(error_code)
+        super().__init__(f"CreateMutexW failed with Windows error {self.error_code}")
+
+
 def ensure_single_instance(kernel32: Any | None = None) -> Any | None:
     """Acquire the process mutex, returning its handle for the first instance.
 
@@ -29,7 +37,7 @@ def ensure_single_instance(kernel32: Any | None = None) -> Any | None:
     api = kernel32 or ctypes.windll.kernel32
     handle = api.CreateMutexW(None, False, MUTEX_NAME)
     if not handle:
-        return None
+        raise MutexCreationError(api.GetLastError())
     if api.GetLastError() == ERROR_ALREADY_EXISTS:
         api.CloseHandle(handle)
         return None
@@ -70,13 +78,27 @@ def _show_duplicate_message() -> None:
         logging.error("A second Jitter instance was requested.")
 
 
+def _show_startup_error(message: str) -> None:
+    try:
+        ctypes.windll.user32.MessageBoxW(0, message, "Jitter startup error", 0x00000010)
+    except (AttributeError, OSError):
+        logging.error(message)
+
+
 def main() -> None:
     """Start Jitter from source or a packaged executable."""
 
     base_dir = runtime_base_dir()
     configure_logging(base_dir)
     logging.info("Starting Jitter from %s", base_dir)
-    if ensure_single_instance() is None:
+    try:
+        first_handle = ensure_single_instance()
+    except MutexCreationError as exc:
+        message = f"Unable to create the Jitter single-instance mutex (Windows error {exc.error_code})."
+        logging.error(message)
+        _show_startup_error(message)
+        return
+    if first_handle is None:
         _show_duplicate_message()
         return
 
