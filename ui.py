@@ -1,23 +1,23 @@
-"""Tkinter shell for the standalone Jitter dashboard.
-
-This module deliberately contains the page structure and widget bindings only.
-Connection, motion, hotkey, and persistence behavior is added by the runtime
-integration layer after the shell has a stable public surface.
-"""
+"""Tkinter dashboard and safe runtime wiring for the standalone Jitter app."""
 
 from __future__ import annotations
 
 import tkinter as tk
 from tkinter import ttk
+import math
+from typing import Mapping
 from typing import Any, Callable
 
 from hotkeys import HotkeyWatcher
-from makcu_service import MakcuService
+from makcu_service import MakcuService, ServiceEvent
 from motion import (
     JITTER_WAVEFORMS,
     MOTION_CURVES,
     MOTION_LIMITS,
     MOTION_PRESETS,
+    MotionSettings,
+    TriggerGate,
+    motion_settings_from_mapping,
     motion_settings_to_mapping,
 )
 from settings import AppConfig, ConfigStore
@@ -78,8 +78,23 @@ class JitterApp(tk.Tk):
         self.config_store = config_store or ConfigStore()
         self.load_outcome = self.config_store.load()
         self.config: AppConfig = self.load_outcome.config
+        self._save_allowed = bool(self.load_outcome.save_allowed)
         self._advanced_visible = False
         self._closed = False
+        self._runtime_started = False
+        self._closing = False
+        self._save_after_id: str | None = None
+        self._capture_after_id: str | None = None
+        self._capturing_hotkey = False
+        self._capture_seen_down = False
+        self._updating_motion_controls = False
+        self._invalid_motion_keys: set[str] = set()
+        self.enabled = False
+        self._motion_mode: str | None = None
+        self._test_restore_enabled = False
+        self._normal_motion_started = False
+        self._motion_snapshot: MotionSettings = self.config.motion
+        self._hotkey_vk = int(self.config.hotkey_vk)
 
         self._configure_styles()
         self._create_variables()
@@ -88,12 +103,18 @@ class JitterApp(tk.Tk):
         self.service_factory = service_factory or (lambda sink: MakcuService(sink))
         self.hotkey_factory = hotkey_factory or HotkeyWatcher
         self.service = self.service_factory(self.queue_service_event)
-        self.hotkey = self.hotkey_factory(
+        self.hotkey_watcher = self.hotkey_factory(
             self.config.hotkey_vk, self._hotkey_pressed
         )
+        # Keep the short alias for integrations that used the shell seam.
+        self.hotkey = self.hotkey_watcher
+        self.trigger_gate = TriggerGate(self.config.trigger, self.config.modifier)
         # Task 7 intentionally does not start background services.  Task 8
         # owns start_runtime() and the lifecycle transitions.
         self.auto_start = bool(auto_start)
+        self._install_runtime_bindings()
+        if self.auto_start:
+            self.start_runtime()
 
     # ---- setup ---------------------------------------------------------
 
@@ -136,6 +157,9 @@ class JitterApp(tk.Tk):
         style.configure("App.TEntry", fieldbackground=PANEL_ALT,
                         foreground=TEXT, insertcolor=TEXT, padding=(5, 3),
                         bordercolor=BORDER)
+        style.configure("Invalid.TEntry", fieldbackground="#4a252b",
+                        foreground="#ffb8bd", insertcolor="#ffb8bd",
+                        padding=(5, 3), bordercolor=RED)
         style.configure("App.TCombobox", fieldbackground=PANEL_ALT,
                         background=PANEL_ALT, foreground=TEXT, arrowcolor=CYAN,
                         padding=(4, 3))
@@ -145,6 +169,8 @@ class JitterApp(tk.Tk):
     def _create_variables(self) -> None:
         self.connection_status_var = tk.StringVar(self, "Disconnected")
         self.runtime_status_var = tk.StringVar(self, "Disabled")
+        self.connection_state_var = self.connection_status_var
+        self.runtime_state_var = self.runtime_status_var
         self.device_status_var = tk.StringVar(self, "Makcu device not connected")
         self.trigger_var = tk.StringVar(self, self.config.trigger)
         self.modifier_var = tk.StringVar(self, self.config.modifier)
@@ -249,13 +275,15 @@ class JitterApp(tk.Tk):
                                           values=("Left", "Right", "Middle", "Mouse4", "Mouse5"),
                                           state="readonly", style="App.TCombobox", width=11)
         self.trigger_combo.grid(row=0, column=1, sticky="ew", padx=(0, 12))
+        self.trigger_combo.bind("<<ComboboxSelected>>", self._bindings_event)
         ttk.Label(card, text="Modifier", style="Card.TLabel").grid(row=0, column=2,
                                                                        sticky="w", padx=(0, 6))
         self.modifier_combo = ttk.Combobox(card, textvariable=self.modifier_var,
                                            values=("None", "Left", "Right", "Middle", "Mouse4", "Mouse5"),
                                            state="readonly", style="App.TCombobox", width=11)
         self.modifier_combo.grid(row=0, column=3, sticky="ew", padx=(0, 12))
-        self.hotkey_button = ttk.Button(card, text="Hotkey: -",
+        self.modifier_combo.bind("<<ComboboxSelected>>", self._bindings_event)
+        self.hotkey_button = ttk.Button(card, text=f"Hotkey: {self.hotkey_name_var.get()}",
                                         style="Secondary.TButton",
                                         command=self.capture_hotkey)
         self.hotkey_button.grid(row=0, column=4, sticky="e")
@@ -267,6 +295,7 @@ class JitterApp(tk.Tk):
                                          values=self.preset_values, state="readonly",
                                          style="App.TCombobox", width=17)
         self.preset_combo.pack(side="left", padx=(0, 10))
+        self.preset_combo.bind("<<ComboboxSelected>>", self.apply_preset)
         self.test_button = ttk.Button(card, text="Test 3s", style="Secondary.TButton",
                                       command=self.test_run)
         self.test_button.pack(side="left")
@@ -289,10 +318,12 @@ class JitterApp(tk.Tk):
         entry.pack(side="right")
         slider = tk.Scale(
             block, from_=low, to=high, resolution=resolution, orient="horizontal",
-            showvalue=False, variable=self.motion_vars[key], highlightthickness=0,
+            showvalue=False, highlightthickness=0,
             bd=0, relief="flat", troughcolor=PANEL_ALT, activebackground=CYAN,
             background=PANEL, foreground=TEXT, sliderrelief="flat",
+            command=lambda value, name=key: self._scale_changed(name, value),
         )
+        slider.set(float(self.motion_vars[key].get()))
         slider.pack(fill="x", pady=(2, 0))
         setattr(self, f"{key}_entry", entry)
         setattr(self, f"{key}_scale", slider)
@@ -373,36 +404,381 @@ class JitterApp(tk.Tk):
         self.update_idletasks()
         self._refresh_scrollregion()
 
-    # The following callbacks are intentional shell seams.  Task 8 replaces
-    # their no-op behavior with the runtime state machine.
+    # ---- runtime wiring -----------------------------------------------
+
+    def _install_runtime_bindings(self) -> None:
+        """Install variable/widget callbacks after the shell exists."""
+        for key, variable in self.motion_vars.items():
+            variable.trace_add("write", lambda *_args, name=key: self._motion_changed(name))
+            entry = getattr(self, f"{key}_entry", None)
+            if entry is not None:
+                entry.bind("<FocusOut>", lambda _event, name=key: self._motion_changed(name))
+                entry.bind("<Return>", lambda _event, name=key: self._motion_changed(name))
+
+    def _scale_changed(self, key: str, value: str) -> None:
+        if self._updating_motion_controls:
+            return
+        self._updating_motion_controls = True
+        try:
+            self.motion_vars[key].set(value)
+        finally:
+            self._updating_motion_controls = False
+        self._motion_changed(key)
+
+    def _bindings_event(self, _event: tk.Event | None = None) -> None:
+        self.on_bindings_changed()
+
+    def start_runtime(self) -> None:
+        if self._runtime_started or self._closing:
+            return
+        self._runtime_started = True
+        self.hotkey_watcher.start()
+        self.service.connect()
+        if self.load_outcome.warning:
+            self.footer_var.set(self.load_outcome.warning)
+
     def reconnect(self) -> None:
-        self.footer_var.set("Reconnect is available when runtime services start.")
+        if self._closing:
+            return
+        if not self._runtime_started:
+            self.start_runtime()
+            return
+        try:
+            self.service.reconnect()
+            self.footer_var.set("Connecting to Makcu...")
+        except Exception as exc:
+            self.footer_var.set(f"Reconnect failed: {type(exc).__name__}")
 
     def toggle_enabled(self) -> None:
-        self.footer_var.set("Enable Jitter is available when runtime services start.")
+        self.set_enabled(not self.enabled)
+
+    def set_enabled(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        if not enabled:
+            self.emergency_stop("Disabled by user")
+            return
+        if self._closing:
+            return
+        if not self.service.connected:
+            self.enabled = False
+            self.runtime_status_var.set("Disabled")
+            self.enable_button.configure(text="Enable Jitter")
+            self.footer_var.set("Makcu device is not connected")
+            return
+        self.enabled = True
+        self._motion_mode = None
+        self._normal_motion_started = False
+        self.trigger_gate.clear()
+        self.runtime_status_var.set("Armed")
+        self.enable_button.configure(text="Disable Jitter")
+        self.footer_var.set("Jitter armed")
 
     def test_run(self) -> None:
-        self.footer_var.set("Test Run is available when runtime services start.")
+        self.start_test_run()
 
-    def emergency_stop(self) -> None:
-        self.footer_var.set("Stopped")
+    def start_test_run(self) -> None:
+        if self._closing:
+            return
+        if not self.service.connected:
+            self.footer_var.set("Makcu device is not connected")
+            return
+        self._test_restore_enabled = self.enabled
+        if self._normal_motion_started:
+            self.service.stop_motion("test_run")
+            self._normal_motion_started = False
+        self._motion_mode = "test"
+        self.runtime_status_var.set("Testing")
+        self.test_button.configure(state="disabled")
+        started = self.service.start_motion(self.get_motion_settings, duration_s=3.0)
+        if not started:
+            self._motion_mode = None
+            self.test_button.configure(state="normal")
+            self._restore_after_test()
+            self.footer_var.set("Test Run could not start")
 
-    def capture_hotkey(self) -> None:
-        self.footer_var.set("Hotkey capture is available when runtime services start.")
+    def _restore_after_test(self) -> None:
+        restore = self._test_restore_enabled and bool(self.service.connected)
+        self._motion_mode = None
+        self.test_button.configure(state="normal")
+        if restore:
+            self.enabled = True
+            self.runtime_status_var.set("Armed")
+            self.enable_button.configure(text="Disable Jitter")
+        else:
+            self.enabled = False
+            self.trigger_gate.clear()
+            self.runtime_status_var.set("Disabled")
+            self.enable_button.configure(text="Enable Jitter")
 
-    def queue_service_event(self, _event: Any) -> None:
-        # Service callbacks must not touch Tk from worker threads.  Runtime
-        # wiring adds the after(0, ...) handoff in Task 8.
-        return None
+    def emergency_stop(self, reason: str = "Stopped") -> None:
+        self.enabled = False
+        self._normal_motion_started = False
+        self._motion_mode = None
+        self.trigger_gate.clear()
+        try:
+            self.service.stop_motion(str(reason or "Stopped"))
+        except Exception:
+            pass
+        self.runtime_status_var.set("Disabled")
+        self.enable_button.configure(text="Enable Jitter")
+        self.test_button.configure(state="normal")
+        self.footer_var.set(str(reason or "Stopped"))
+
+    def handle_service_event(self, event: ServiceEvent) -> None:
+        if self._closing:
+            return
+        kind = event.kind
+        if kind == "connecting":
+            self.connection_status_var.set("Connecting")
+            self.connection_label.configure(style="StatusConnecting.TLabel")
+            self.device_status_var.set("Connecting to Makcu...")
+        elif kind in {"connected", "reconnected"}:
+            self.connection_status_var.set("Connected")
+            self.connection_label.configure(style="StatusConnected.TLabel")
+            self.device_status_var.set(str(event.payload or "Makcu device connected"))
+            self.footer_var.set("Makcu connected")
+        elif kind == "disconnected":
+            self.connection_status_var.set("Disconnected")
+            self.connection_label.configure(style="StatusDisconnected.TLabel")
+            self.device_status_var.set(str(event.payload or "Makcu device not connected"))
+            self.emergency_stop("Device disconnected")
+        elif kind == "button":
+            try:
+                button, pressed = event.payload
+            except (TypeError, ValueError):
+                return
+            self.trigger_gate.update_button(str(button), bool(pressed))
+            if self.enabled and self._motion_mode is None:
+                if self.trigger_gate.active and not self._normal_motion_started:
+                    self._normal_motion_started = bool(
+                        self.service.start_motion(self.get_motion_settings)
+                    )
+                    if self._normal_motion_started:
+                        self.runtime_status_var.set("Triggered")
+                elif not self.trigger_gate.active and self._normal_motion_started:
+                    self.service.stop_motion("trigger_released")
+                    self._normal_motion_started = False
+                    self.runtime_status_var.set("Armed")
+        elif kind == "motion_error":
+            self.emergency_stop(f"Motion error: {event.payload}")
+        elif kind == "motion_stopped":
+            if self._motion_mode == "test":
+                self._restore_after_test()
+                self.footer_var.set("Test Run complete")
+            elif self.enabled:
+                self._normal_motion_started = False
+                self.runtime_status_var.set("Armed")
+
+    def queue_service_event(self, event: ServiceEvent) -> None:
+        # This method is intentionally the only service-to-Tk handoff.
+        self.after(0, self.handle_service_event, event)
 
     def _hotkey_pressed(self) -> None:
-        return None
+        if self._capturing_hotkey or self._closing:
+            return
+        self.after(0, self.toggle_enabled)
+
+    def _get_async_key_state(self, vk: int) -> int:
+        try:
+            import ctypes
+            return int(ctypes.windll.user32.GetAsyncKeyState(vk))
+        except (AttributeError, OSError):
+            return 0
+
+    def capture_hotkey(self) -> None:
+        if self._capturing_hotkey or self._closing:
+            return
+        self._capturing_hotkey = True
+        self._capture_seen_down = False
+        self.hotkey_button.configure(text="Press a key...", state="disabled")
+        self.footer_var.set("Press a keyboard key (Esc cancels)")
+        self._poll_hotkey_capture()
+
+    def _poll_hotkey_capture(self) -> None:
+        if not self._capturing_hotkey or self._closing:
+            return
+        mouse_vks = {0x01, 0x02, 0x04, 0x05, 0x06}
+        for vk in range(1, 256):
+            if vk in mouse_vks:
+                continue
+            if not (self._get_async_key_state(vk) & 0x8000):
+                continue
+            if vk == 0x1B:
+                self._cancel_hotkey_capture()
+                return
+            self.apply_captured_hotkey(vk, self._format_hotkey_name(vk))
+            return
+        self._capture_after_id = self.after(40, self._poll_hotkey_capture)
+
+    @staticmethod
+    def _format_hotkey_name(vk: int) -> str:
+        if 0x70 <= vk <= 0x7B:
+            return f"F{vk - 0x6F}"
+        if 0x30 <= vk <= 0x39 or 0x41 <= vk <= 0x5A:
+            return chr(vk)
+        names = {0x20: "Space", 0x09: "Tab", 0x0D: "Enter", 0x10: "Shift",
+                 0x11: "Ctrl", 0x12: "Alt", 0x2D: "Insert", 0x2E: "Delete"}
+        return names.get(vk, f"VK {vk}")
+
+    def _cancel_hotkey_capture(self) -> None:
+        self._capturing_hotkey = False
+        self.hotkey_button.configure(text=f"Hotkey: {self.hotkey_name_var.get()}", state="normal")
+        self.footer_var.set("Hotkey capture cancelled")
+        self._cancel_after("_capture_after_id")
+
+    def apply_captured_hotkey(self, vk: int, name: str) -> None:
+        self._capturing_hotkey = False
+        self._cancel_after("_capture_after_id")
+        self.hotkey_watcher.set_vk(int(vk))
+        self._hotkey_vk = int(vk)
+        self.hotkey_name_var.set(str(name))
+        self.hotkey_button.configure(text=f"Hotkey: {name}", state="normal")
+        self.footer_var.set(f"Hotkey set to {name}")
+        self._schedule_save()
+
+    def on_bindings_changed(self) -> None:
+        trigger = self.trigger_var.get()
+        modifier = self.modifier_var.get()
+        self.trigger_gate.configure(trigger, modifier)
+        self._schedule_save()
+
+    def get_motion_settings(self) -> MotionSettings:
+        return self._motion_snapshot
+
+    def _motion_changed(self, key: str) -> None:
+        if self._updating_motion_controls or self._closing:
+            return
+        mapping = {name: variable.get() for name, variable in self.motion_vars.items()}
+        invalid = self._invalid_motion_values(mapping)
+        if invalid:
+            self._invalid_motion_keys = invalid
+            for name in invalid:
+                entry = getattr(self, f"{name}_entry", None)
+                if entry is not None:
+                    entry.configure(style="Invalid.TEntry")
+            self.footer_var.set(f"Invalid value for {key.replace('_', ' ')}")
+            return
+        self._invalid_motion_keys.clear()
+        for name in self.motion_vars:
+            entry = getattr(self, f"{name}_entry", None)
+            if entry is not None:
+                entry.configure(style="App.TEntry")
+            scale = getattr(self, f"{name}_scale", None)
+            if scale is not None:
+                try:
+                    self._updating_motion_controls = True
+                    scale.set(float(self.motion_vars[name].get()))
+                except (TypeError, ValueError, tk.TclError):
+                    pass
+                finally:
+                    self._updating_motion_controls = False
+        self._motion_snapshot = motion_settings_from_mapping(mapping)
+        if self.preset_var.get() != "Custom":
+            self._updating_motion_controls = True
+            try:
+                self.preset_var.set("Custom")
+            finally:
+                self._updating_motion_controls = False
+        self._schedule_save()
+
+    @staticmethod
+    def _invalid_motion_values(mapping: Mapping[str, Any]) -> set[str]:
+        invalid: set[str] = set()
+        for key, (low, high) in MOTION_LIMITS.items():
+            raw = mapping.get(key)
+            try:
+                value = float(raw)
+                if not math.isfinite(value) or not low <= value <= high:
+                    raise ValueError
+            except (TypeError, ValueError):
+                invalid.add(key)
+        return invalid
+
+    def apply_preset(self, _event: tk.Event | None = None) -> None:
+        name = self.preset_var.get()
+        if name == "Custom":
+            return
+        preset = MOTION_PRESETS.get(name)
+        if preset is None:
+            return
+        mapping = motion_settings_to_mapping(MotionSettings())
+        mapping.update(preset)
+        settings = motion_settings_from_mapping(mapping)
+        self._updating_motion_controls = True
+        try:
+            for key, value in motion_settings_to_mapping(settings).items():
+                variable = self.motion_vars[key]
+                variable.set(bool(value) if key == "jitter_enabled" else str(value))
+        finally:
+            self._updating_motion_controls = False
+        self._invalid_motion_keys.clear()
+        self._motion_snapshot = settings
+        self._schedule_save()
+
+    def _schedule_save(self) -> None:
+        if self._closing or not self._save_allowed:
+            return
+        self._cancel_after("_save_after_id")
+        self._save_after_id = self.after(250, self.save_config)
+
+    def _cancel_after(self, attribute: str) -> None:
+        callback_id = getattr(self, attribute, None)
+        if callback_id is None:
+            return
+        try:
+            self.after_cancel(callback_id)
+        except tk.TclError:
+            pass
+        setattr(self, attribute, None)
+
+    def save_config(self) -> None:
+        self._save_after_id = None
+        if not self._save_allowed or self._closed:
+            return
+        config = AppConfig(
+            motion=self._motion_snapshot,
+            trigger=self.trigger_var.get(),
+            modifier=self.modifier_var.get(),
+            hotkey_vk=self._current_hotkey_vk(),
+            hotkey_name=self.hotkey_name_var.get(),
+            selected_preset=self.preset_var.get() or "Custom",
+        )
+        try:
+            self.config_store.save(config)
+            self.config = config
+        except Exception as exc:
+            self.footer_var.set(f"Could not save config: {type(exc).__name__}")
 
     def close_app(self) -> None:
-        if self._closed:
+        if self._closed or self._closing:
             return
+        self._closing = True
+        self._cancel_after("_save_after_id")
+        self._cancel_after("_capture_after_id")
+        self._capturing_hotkey = False
+        self.emergency_stop("Stopped on close")
+        try:
+            self.hotkey_watcher.stop()
+        except Exception:
+            pass
+        try:
+            self.service.close()
+        except Exception:
+            pass
+        self._save_allowed = bool(self.load_outcome.save_allowed)
+        self.save_config()
         self._closed = True
         self.destroy()
+
+    def _current_hotkey_vk(self) -> int:
+        value = self._hotkey_vk
+        value = getattr(self.hotkey_watcher, "vk", value)
+        if value is None:
+            value = getattr(self.hotkey_watcher, "_vk", self.config.hotkey_vk)
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return int(self.config.hotkey_vk)
 
 
 __all__ = ["JitterApp"]
