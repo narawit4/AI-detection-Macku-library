@@ -4,6 +4,7 @@ import unittest
 
 from ui import JitterApp
 from makcu_service import ServiceEvent
+from xp_widgets import XPGlossySlider
 
 
 class StubStore:
@@ -102,7 +103,61 @@ class JitterLayoutTests(unittest.TestCase):
         self.app.update_idletasks()
         self.assertEqual(tuple(map(int, self.app.resizable())), (0, 0))
         self.assertEqual(self.app.geometry().split("+")[0], "640x560")
-        self.assertEqual(self.app.cget("background"), "#ECE9D8")
+        self.assertEqual(self.app.cget("background"), "#F4F1E6")
+
+    def test_internal_brand_banner_is_not_rendered(self):
+        brand_banners = [
+            text for text in widget_texts(self.app)
+            if text.startswith("Jitter") and "Makcu Control" in text
+        ]
+        self.assertEqual(brand_banners, [])
+
+    def test_native_window_title_carries_the_brand_name(self):
+        expected = "Jitter " + chr(0x2014) + " Makcu Control"
+        self.assertEqual(self.app.title(), expected)
+
+    def test_every_numeric_control_uses_xp_glossy_slider(self):
+        numeric_keys = (
+            "motion_angle_deg",
+            "motion_strength_pps",
+            "horizontal_jitter_pps",
+            "vertical_jitter_pps",
+            "jitter_rate_hz",
+            "jitter_randomness_percent",
+            "jitter_axis_phase_deg",
+            "smoothness_percent",
+            "ramp_up_ms",
+            "update_rate_hz",
+            "max_step_px",
+            "acceleration_pps2",
+            "deceleration_pps2",
+        )
+        for key in numeric_keys:
+            with self.subTest(key=key):
+                self.assertIsInstance(
+                    getattr(self.app, f"{key}_scale"),
+                    XPGlossySlider,
+                )
+
+    def test_glossy_slider_user_change_updates_exact_entry_and_snapshot(self):
+        slider = self.app.motion_strength_pps_scale
+        slider._set_from_user(123)
+        self.app.update()
+        self.assertEqual(self.app.motion_strength_pps_var.get(), "123")
+        self.assertEqual(self.app.get_motion_settings().strength_pps, 123.0)
+
+    def test_exact_entry_and_preset_changes_update_glossy_slider_silently(self):
+        slider = self.app.motion_strength_pps_scale
+        self.app.motion_strength_pps_var.set("77")
+        self.app.update()
+        self.assertEqual(slider.get(), 77.0)
+        self.app.preset_var.set("Balanced")
+        self.app.apply_preset()
+        self.app.update()
+        self.assertEqual(
+            slider.get(),
+            self.app.get_motion_settings().strength_pps,
+        )
 
     def _is_descendant(self, widget, ancestor):
         current = widget
@@ -184,9 +239,42 @@ class JitterLayoutTests(unittest.TestCase):
 
     def test_luna_blue_styles_are_registered(self):
         style = ttk.Style(self.app)
-        self.assertEqual(style.lookup("XP.Title.TFrame", "background"), "#0054E3")
-        self.assertEqual(style.lookup("XP.Group.TLabelframe", "background"), "#ECE9D8")
-        self.assertEqual(style.lookup("XP.Danger.TButton", "foreground"), "#A00000")
+        self.assertEqual(style.lookup("XP.Title.TFrame", "background"), "#2F69B3")
+        self.assertEqual(style.lookup("XP.Group.TLabelframe", "background"), "#F4F1E6")
+
+    def test_xp_remastered_buttons_use_high_contrast_palette(self):
+        style = ttk.Style(self.app)
+        self.assertEqual(style.lookup("XP.Primary.TButton", "background"),
+                         "#356FAF")
+        self.assertEqual(style.lookup("XP.Primary.TButton", "foreground"),
+                         "#FFFFFF")
+        self.assertEqual(style.lookup("XP.Danger.TButton", "background"),
+                         "#C74652")
+        self.assertEqual(style.lookup("XP.Danger.TButton", "foreground"),
+                         "#FFFFFF")
+        self.assertEqual(style.lookup("XP.Secondary.TButton", "background"),
+                         "#F7F3E7")
+        self.assertEqual(self.app.enable_button.cget("style"),
+                         "XP.Primary.TButton")
+        self.assertEqual(self.app.stop_button.cget("style"),
+                         "XP.Danger.TButton")
+
+    def test_xp_remastered_buttons_show_hover_press_and_focus_states(self):
+        style = ttk.Style(self.app)
+        self.assertEqual(style.lookup("XP.Primary.TButton", "background",
+                                      ("active",)), "#5B92CC")
+        self.assertEqual(style.lookup("XP.Primary.TButton", "background",
+                                      ("pressed", "active")), "#244F7D")
+        self.assertEqual(style.lookup("XP.Danger.TButton", "background",
+                                      ("active",)), "#DF6670")
+        self.assertEqual(style.lookup("XP.Danger.TButton", "background",
+                                      ("pressed", "active")), "#942F38")
+        self.assertEqual(style.lookup("XP.Secondary.TButton", "background",
+                                      ("active",)), "#E5EEF8")
+        self.assertEqual(style.lookup("XP.Secondary.TButton", "relief",
+                                      ("pressed",)), "sunken")
+        self.assertEqual(style.lookup("XP.Primary.TButton", "bordercolor",
+                                      ("focus",)), "#E4A43A")
 
     def test_required_actions_are_present_and_stop_is_outside_advanced(self):
         texts = widget_texts(self.app)

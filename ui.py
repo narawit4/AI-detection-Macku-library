@@ -22,25 +22,37 @@ from motion import (
     motion_settings_to_mapping,
 )
 from settings import AppConfig, ConfigStore
+from xp_widgets import XPGlossySlider
 
 
-# Shared Windows XP Luna palette and typography.
-XP_WINDOW = "#ECE9D8"
+# Shared Windows XP Remastered palette and typography.
+XP_WINDOW = "#F4F1E6"
 XP_PANEL = "#FFFFFF"
-XP_BLUE = "#0054E3"
-XP_BLUE_LIGHT = "#3C8CF0"
-XP_BORDER = "#7F9DB9"
-XP_TEXT = "#111111"
-XP_MUTED = "#555555"
-XP_GREEN = "#287025"
-XP_AMBER = "#A76500"
-XP_RED = "#A00000"
+XP_BLUE = "#2F69B3"
+XP_BLUE_LIGHT = "#77A7DD"
+XP_BLUE_DARK = "#214E86"
+XP_PRIMARY = "#356FAF"
+XP_PRIMARY_HOVER = "#5B92CC"
+XP_PRIMARY_PRESSED = "#244F7D"
+XP_SECONDARY = "#F7F3E7"
+XP_SECONDARY_HOVER = "#E5EEF8"
+XP_SECONDARY_PRESSED = "#CEDDED"
+XP_BORDER = "#A6B0BA"
+XP_TEXT = "#20252A"
+XP_MUTED = "#66717A"
+XP_GREEN = "#287A45"
+XP_AMBER = "#A26700"
+XP_RED = "#9C2230"
+XP_DANGER_BG = "#C74652"
+XP_DANGER_HOVER = "#DF6670"
+XP_DANGER_PRESSED = "#942F38"
+XP_FOCUS = "#E4A43A"
 
 FONT_FAMILY = "Tahoma"
-BODY_FONT = (FONT_FAMILY, 8)
+BODY_FONT = (FONT_FAMILY, 9)
 SMALL_FONT = (FONT_FAMILY, 8)
-TITLE_FONT = (FONT_FAMILY, 9, "bold")
-SECTION_FONT = (FONT_FAMILY, 8)
+TITLE_FONT = (FONT_FAMILY, 10, "bold")
+SECTION_FONT = (FONT_FAMILY, 8, "bold")
 
 
 def _display_value(value: Any) -> str:
@@ -69,7 +81,7 @@ class JitterApp(tk.Tk):
         auto_start: bool = True,
     ) -> None:
         super().__init__()
-        self.title("Jitter")
+        self.title("Jitter " + chr(0x2014) + " Makcu Control")
         self.geometry("640x560")
         self.resizable(False, False)
         self.configure(background=XP_WINDOW)
@@ -132,20 +144,53 @@ class JitterApp(tk.Tk):
         style.configure("XP.Title.TLabel", background=XP_BLUE, foreground="#FFFFFF",
                         font=TITLE_FONT)
         style.configure("XP.Group.TLabelframe", background=XP_WINDOW,
-                        foreground="#164E9E", bordercolor="#ACA899",
+                        foreground=XP_BLUE_DARK, bordercolor=XP_BORDER,
                         relief="groove", borderwidth=1)
         style.configure("XP.Group.TLabelframe.Label", background=XP_WINDOW,
-                        foreground="#164E9E", font=SECTION_FONT)
+                        foreground=XP_BLUE_DARK, font=SECTION_FONT)
         style.configure("XP.Group.TLabel", background=XP_WINDOW,
                         foreground=XP_TEXT, font=BODY_FONT)
         style.configure("XP.Muted.TLabel", background=XP_WINDOW,
                         foreground=XP_MUTED, font=SMALL_FONT)
-        style.configure("XP.Primary.TButton", foreground=XP_TEXT,
-                        font=(FONT_FAMILY, 8, "bold"), padding=(10, 4))
-        style.configure("XP.Secondary.TButton", foreground=XP_TEXT,
-                        font=BODY_FONT, padding=(8, 3))
-        style.configure("XP.Danger.TButton", foreground=XP_RED,
-                        font=(FONT_FAMILY, 8, "bold"), padding=(10, 4))
+        style.configure("XP.Primary.TButton", background=XP_PRIMARY,
+                        foreground="#FFFFFF", bordercolor=XP_BLUE_DARK,
+                        focuscolor=XP_FOCUS, focusthickness=1,
+                        relief="raised", borderwidth=1,
+                        font=(FONT_FAMILY, 9, "bold"), padding=(12, 6))
+        style.map("XP.Primary.TButton",
+                  background=[("disabled", "#C4CBD3"),
+                              ("pressed", XP_PRIMARY_PRESSED),
+                              ("active", XP_PRIMARY_HOVER)],
+                  foreground=[("disabled", XP_MUTED)],
+                  bordercolor=[("focus", XP_FOCUS),
+                               ("!focus", XP_BLUE_DARK)],
+                  relief=[("pressed", "sunken"), ("!pressed", "raised")])
+        style.configure("XP.Secondary.TButton", background=XP_SECONDARY,
+                        foreground=XP_TEXT, bordercolor=XP_BORDER,
+                        focuscolor=XP_FOCUS, focusthickness=1,
+                        relief="raised", borderwidth=1,
+                        font=BODY_FONT, padding=(10, 5))
+        style.map("XP.Secondary.TButton",
+                  background=[("disabled", "#D4D4CF"),
+                              ("pressed", XP_SECONDARY_PRESSED),
+                              ("active", XP_SECONDARY_HOVER)],
+                  foreground=[("disabled", XP_MUTED)],
+                  bordercolor=[("focus", XP_FOCUS),
+                               ("!focus", XP_BORDER)],
+                  relief=[("pressed", "sunken"), ("!pressed", "raised")])
+        style.configure("XP.Danger.TButton", background=XP_DANGER_BG,
+                        foreground="#FFFFFF", bordercolor=XP_RED,
+                        focuscolor=XP_FOCUS, focusthickness=1,
+                        relief="raised", borderwidth=1,
+                        font=(FONT_FAMILY, 9, "bold"), padding=(12, 6))
+        style.map("XP.Danger.TButton",
+                  background=[("disabled", "#C4B7B8"),
+                              ("pressed", XP_DANGER_PRESSED),
+                              ("active", XP_DANGER_HOVER)],
+                  foreground=[("disabled", "#F4EEEE")],
+                  bordercolor=[("focus", XP_FOCUS),
+                               ("!focus", XP_RED)],
+                  relief=[("pressed", "sunken"), ("!pressed", "raised")])
         style.configure("XP.StatusDisconnected.TLabel", background=XP_WINDOW,
                         foreground=XP_RED, font=BODY_FONT)
         style.configure("XP.StatusConnecting.TLabel", background=XP_WINDOW,
@@ -232,10 +277,6 @@ class JitterApp(tk.Tk):
         self._build_footer()
 
     def _build_header(self) -> None:
-        header = ttk.Frame(self.fixed_content, style="XP.Title.TFrame")
-        header.pack(fill="x", pady=(0, 9))
-        ttk.Label(header, text="Jitter \N{EM DASH} Makcu Control", style="XP.Title.TLabel").pack(
-            side="left", padx=8, pady=5)
         summary = ttk.Frame(self.fixed_content, style="XP.App.TFrame")
         summary.pack(fill="x", pady=(0, 7))
         ttk.Label(summary, text="Connection:", style="XP.Muted.TLabel").pack(side="left")
@@ -323,11 +364,11 @@ class JitterApp(tk.Tk):
         entry = ttk.Entry(top, textvariable=self.motion_vars[key], width=8,
                           style="App.TEntry", justify="right")
         entry.pack(side="right")
-        slider = tk.Scale(
-            block, from_=low, to=high, resolution=resolution, orient="horizontal",
-            showvalue=False, highlightthickness=0,
-            bd=0, relief="flat", troughcolor=XP_BORDER, activebackground=XP_BLUE_LIGHT,
-            background=XP_WINDOW, foreground=XP_TEXT, sliderrelief="flat",
+        slider = XPGlossySlider(
+            block,
+            from_=low,
+            to=high,
+            resolution=resolution,
             command=lambda value, name=key: self._scale_changed(name, value),
         )
         slider.set(float(self.motion_vars[key].get()))
@@ -784,6 +825,9 @@ class JitterApp(tk.Tk):
             for key, value in motion_settings_to_mapping(settings).items():
                 variable = self.motion_vars[key]
                 variable.set(bool(value) if key == "jitter_enabled" else str(value))
+                scale = getattr(self, f"{key}_scale", None)
+                if scale is not None:
+                    scale.set(float(value))
         finally:
             self._updating_motion_controls = False
         self._invalid_motion_keys.clear()
