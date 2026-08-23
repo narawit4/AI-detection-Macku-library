@@ -1,7 +1,7 @@
 # Jitter Windows App Design
 
 Date: 2026-08-23
-Status: Approved in chat; awaiting final written-spec review
+Status: Approved in chat on 2026-08-23
 
 ## Overview
 
