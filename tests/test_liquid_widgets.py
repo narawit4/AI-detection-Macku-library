@@ -404,6 +404,32 @@ class LiquidIconButtonTests(unittest.TestCase):
         self.button._activate()
         self.assertEqual(self.calls, [])
 
+    def test_disable_and_reenable_preserves_actual_keyboard_focus(self):
+        """Fails if a temporary disabled state loses the retained focus ring."""
+        self.root.deiconify()
+        self.root.update()
+        self.button.focus_force()
+        self.root.update()
+        self.assertIs(self.root.focus_get(), self.button)
+        self.assertTrue(self.button.find_withtag("focus-ring"))
+
+        self.button.set_enabled(False)
+        self.root.update()
+        self.assertIs(self.root.focus_get(), self.button)
+        self.assertFalse(self.button.find_withtag("focus-ring"))
+
+        self.button.set_enabled(True)
+        self.root.update()
+        self.assertIs(self.root.focus_get(), self.button)
+        self.assertTrue(self.button.find_withtag("focus-ring"))
+
+        other = tk.Entry(self.root)
+        other.pack()
+        other.focus_force()
+        self.root.update()
+        self.assertIs(self.root.focus_get(), other)
+        self.assertFalse(self.button.find_withtag("focus-ring"))
+
     def test_grab_failure_does_not_leave_button_pressed(self):
         def failing_grab():
             raise tk.TclError("grab unavailable")

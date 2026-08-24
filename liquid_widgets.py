@@ -796,7 +796,6 @@ class LiquidIconButton(tk.Canvas):
             self._release_pointer_grab()
             self._pressed = False
             self._hovered = False
-            self._focused = False
         self.configure(state=tk.NORMAL if self._enabled else tk.DISABLED)
         self._redraw()
 

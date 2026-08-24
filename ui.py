@@ -37,17 +37,21 @@ DARK_PALETTE = {
     "border": "#34465C", "text": "#EEF8FF", "muted": "#91A5B8",
     "accent": "#63E6FF", "accent_hover": "#8CECFF",
     "accent_pressed": "#3CC7E1", "green": "#42D392",
-    "amber": "#F6C85F", "red": "#FF6B78", "danger": "#D64052",
-    "focus": "#FFE08A",
+    "amber": "#F6C85F", "red": "#FF6B78", "danger": "#C23147",
+    "danger_hover": "#CF3B4E", "danger_pressed": "#A52F42",
+    "disabled_surface": "#34465C", "disabled_text": "#91A5B8",
+    "icon_disabled": "#91A5B8", "focus": "#FFE08A",
 }
 
 LIGHT_PALETTE = {
     "window": "#F2F7FA", "surface": "#E5F0F5", "raised": "#FFFFFF",
     "border": "#B9CBD5", "text": "#263640", "muted": "#617581",
     "accent": "#55DDF6", "accent_hover": "#79E8FA",
-    "accent_pressed": "#33BDD8", "green": "#238B62",
-    "amber": "#9A6500", "red": "#B83246", "danger": "#C74652",
-    "focus": "#8B5CF6",
+    "accent_pressed": "#33BDD8", "green": "#146C4D",
+    "amber": "#945F00", "red": "#B83246", "danger": "#B83246",
+    "danger_hover": "#C74652", "danger_pressed": "#9F3140",
+    "disabled_surface": "#D5E0E5", "disabled_text": "#4A5E69",
+    "icon_disabled": "#4A5E69", "focus": "#8B5CF6",
 }
 
 FONT_FAMILY = "Segoe UI"
@@ -149,10 +153,10 @@ class JitterApp(tk.Tk):
             pass
         secondary_hover = "#2A3B52" if self._theme == "dark" else "#D6F5FA"
         secondary_pressed = p["surface"] if self._theme == "dark" else "#B7EFF8"
-        danger_hover = p["red"] if self._theme == "dark" else "#DF6670"
-        danger_pressed = "#A52F42" if self._theme == "dark" else "#9F3140"
-        disabled_background = p["border"] if self._theme == "dark" else "#D5E0E5"
-        disabled_text = p["muted"] if self._theme == "dark" else "#4A5E69"
+        danger_hover = p["danger_hover"]
+        danger_pressed = p["danger_pressed"]
+        disabled_background = p["disabled_surface"]
+        disabled_text = p["disabled_text"]
 
         style.configure("Liquid.App.TFrame", background=p["window"])
         style.configure("Liquid.Surface.TFrame", background=p["surface"],
@@ -431,8 +435,8 @@ class JitterApp(tk.Tk):
                 "#2A3B52" if self._theme == "dark" else "#D6F5FA"
             ),
             "surface_pressed": p["surface"],
-            "surface_disabled": p["border"], "border": p["border"],
-            "icon": p["text"], "icon_disabled": p["muted"],
+            "surface_disabled": p["disabled_surface"], "border": p["border"],
+            "icon": p["text"], "icon_disabled": p["icon_disabled"],
             "highlight": p["surface"], "focus": p["focus"],
         }
 

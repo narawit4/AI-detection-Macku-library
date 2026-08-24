@@ -622,6 +622,79 @@ class JitterLayoutTests(unittest.TestCase):
             4.5,
         )
 
+    def test_text_contrast_across_themes_and_interaction_states(self):
+        """Fails if status or STOP text becomes unreadable in any theme state."""
+        style = ttk.Style(self.app)
+        for theme in ("light", "dark"):
+            cases = (
+                (
+                    "stop-normal",
+                    style.lookup("Liquid.Danger.TButton", "foreground"),
+                    style.lookup("Liquid.Danger.TButton", "background"),
+                ),
+                (
+                    "stop-hover",
+                    style.lookup(
+                        "Liquid.Danger.TButton", "foreground", ("active",)
+                    ),
+                    style.lookup(
+                        "Liquid.Danger.TButton", "background", ("active",)
+                    ),
+                ),
+                (
+                    "stop-pressed",
+                    style.lookup(
+                        "Liquid.Danger.TButton",
+                        "foreground",
+                        ("pressed", "active"),
+                    ),
+                    style.lookup(
+                        "Liquid.Danger.TButton",
+                        "background",
+                        ("pressed", "active"),
+                    ),
+                ),
+                *(
+                    (
+                        f"status-{state.lower()}",
+                        style.lookup(
+                            f"Liquid.Status{state}.TLabel", "foreground"
+                        ),
+                        style.lookup(
+                            f"Liquid.Status{state}.TLabel", "background"
+                        ),
+                    )
+                    for state in ("Disconnected", "Connecting", "Connected")
+                ),
+            )
+            for state, foreground, background in cases:
+                with self.subTest(theme=theme, state=state):
+                    self.assertGreaterEqual(
+                        contrast_ratio(foreground, background),
+                        4.5,
+                    )
+            self.app.toggle_theme()
+
+    def test_mini_icon_contrast_across_themes_and_interaction_states(self):
+        """Fails if a mini-action symbol lacks non-text contrast."""
+        for theme in ("light", "dark"):
+            palette = self.app._icon_palette()
+            cases = (
+                ("normal", "icon", "surface"),
+                ("hover", "icon", "surface_hover"),
+                ("pressed", "icon", "surface_pressed"),
+                ("disabled", "icon_disabled", "surface_disabled"),
+            )
+            for state, icon_role, surface_role in cases:
+                with self.subTest(theme=theme, state=state):
+                    self.assertGreaterEqual(
+                        contrast_ratio(
+                            palette[icon_role], palette[surface_role]
+                        ),
+                        3.0,
+                    )
+            self.app.toggle_theme()
+
     def test_liquid_buttons_use_high_contrast_palette(self):
         style = ttk.Style(self.app)
         self.assertEqual(style.lookup("Liquid.Primary.TButton", "background"),
@@ -629,7 +702,7 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertEqual(style.lookup("Liquid.Primary.TButton", "foreground"),
                          "#07252C")
         self.assertEqual(style.lookup("Liquid.Danger.TButton", "background"),
-                         "#C74652")
+                         "#B83246")
         self.assertEqual(style.lookup("Liquid.Danger.TButton", "foreground"),
                          "#FFFFFF")
         self.assertEqual(style.lookup("Liquid.Secondary.TButton", "background"),
@@ -646,7 +719,7 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertEqual(style.lookup("Liquid.Primary.TButton", "background",
                                       ("pressed", "active")), "#33BDD8")
         self.assertEqual(style.lookup("Liquid.Danger.TButton", "background",
-                                      ("active",)), "#DF6670")
+                                      ("active",)), "#C74652")
         self.assertEqual(style.lookup("Liquid.Danger.TButton", "background",
                                       ("pressed", "active")), "#9F3140")
         self.assertEqual(style.lookup("Liquid.Secondary.TButton", "background",
