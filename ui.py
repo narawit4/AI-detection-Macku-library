@@ -25,67 +25,36 @@ from motion import (
     motion_settings_to_mapping,
 )
 from settings import AppConfig, ConfigStore
-from liquid_widgets import LiquidNavigation, LiquidSlider
+from liquid_widgets import LiquidIconButton, LiquidNavigation, LiquidSlider
 
-
-# Shared Windows XP Remastered palette and typography.
-XP_WINDOW = "#F4F1E6"
-XP_PANEL = "#FFFFFF"
-XP_BLUE = "#2F69B3"
-XP_BLUE_LIGHT = "#77A7DD"
-XP_BLUE_DARK = "#214E86"
-XP_PRIMARY = "#356FAF"
-XP_PRIMARY_HOVER = "#5B92CC"
-XP_PRIMARY_PRESSED = "#244F7D"
-XP_SECONDARY = "#F7F3E7"
-XP_SECONDARY_HOVER = "#E5EEF8"
-XP_SECONDARY_PRESSED = "#CEDDED"
-XP_BORDER = "#A6B0BA"
-XP_TEXT = "#20252A"
-XP_MUTED = "#66717A"
-XP_GREEN = "#287A45"
-XP_AMBER = "#A26700"
-XP_RED = "#9C2230"
-XP_DANGER_BG = "#C74652"
-XP_DANGER_HOVER = "#DF6670"
-XP_DANGER_PRESSED = "#942F38"
-XP_FOCUS = "#E4A43A"
 
 _UI_QUEUE_MAX_BATCH = 50
 _UI_QUEUE_TIME_SLICE_S = 0.005
 _UI_QUEUE_IDLE_DELAY_MS = 15
 
 DARK_PALETTE = {
-    "window": "#171B22", "panel": "#222833", "blue": "#285A91",
-    "blue_dark": "#8CBCEB", "primary": "#4C8CCC", "primary_hover": "#67A5DF",
-    "primary_pressed": "#326A9E", "secondary": "#303846",
-    "secondary_hover": "#3D4858", "secondary_pressed": "#252C36",
-    "secondary_disabled": "#252C36", "secondary_disabled_text": "#AAB4C2",
-    "border": "#566273", "text": "#E7ECF3", "muted": "#AAB4C2",
-    "green": "#63C985", "amber": "#F1B84B", "red": "#FF7380",
-    "danger": "#B83E4A", "danger_hover": "#D25763", "danger_pressed": "#8F3039",
-    "focus": "#F2B84B",
+    "window": "#0D1420", "surface": "#172232", "raised": "#202F43",
+    "border": "#34465C", "text": "#EEF8FF", "muted": "#91A5B8",
+    "accent": "#63E6FF", "accent_hover": "#8CECFF",
+    "accent_pressed": "#3CC7E1", "green": "#42D392",
+    "amber": "#F6C85F", "red": "#FF6B78", "danger": "#D64052",
+    "focus": "#FFE08A",
 }
 
 LIGHT_PALETTE = {
-    "window": XP_WINDOW, "panel": XP_PANEL, "blue": XP_BLUE,
-    "blue_dark": XP_BLUE_DARK, "primary": XP_PRIMARY,
-    "primary_hover": XP_PRIMARY_HOVER, "primary_pressed": XP_PRIMARY_PRESSED,
-    "secondary": XP_SECONDARY, "secondary_hover": XP_SECONDARY_HOVER,
-    "secondary_pressed": XP_SECONDARY_PRESSED,
-    "secondary_disabled": "#D4D4CF", "secondary_disabled_text": XP_MUTED,
-    "border": XP_BORDER,
-    "text": XP_TEXT, "muted": XP_MUTED, "green": XP_GREEN,
-    "amber": XP_AMBER, "red": XP_RED, "danger": XP_DANGER_BG,
-    "danger_hover": XP_DANGER_HOVER, "danger_pressed": XP_DANGER_PRESSED,
-    "focus": XP_FOCUS,
+    "window": "#F2F7FA", "surface": "#E5F0F5", "raised": "#FFFFFF",
+    "border": "#B9CBD5", "text": "#263640", "muted": "#617581",
+    "accent": "#55DDF6", "accent_hover": "#79E8FA",
+    "accent_pressed": "#33BDD8", "green": "#238B62",
+    "amber": "#9A6500", "red": "#B83246", "danger": "#C74652",
+    "focus": "#8B5CF6",
 }
 
-FONT_FAMILY = "Tahoma"
-BODY_FONT = (FONT_FAMILY, 9)
-SMALL_FONT = (FONT_FAMILY, 8)
-TITLE_FONT = (FONT_FAMILY, 10, "bold")
-SECTION_FONT = (FONT_FAMILY, 8, "bold")
+FONT_FAMILY = "Segoe UI"
+BODY_FONT = (FONT_FAMILY, 10)
+SMALL_FONT = (FONT_FAMILY, 9)
+TITLE_FONT = (FONT_FAMILY, 18, "bold")
+SECTION_FONT = (FONT_FAMILY, 9, "bold")
 
 
 def _display_value(value: Any) -> str:
@@ -115,7 +84,7 @@ class JitterApp(tk.Tk):
     ) -> None:
         super().__init__()
         self.title("Jitter " + chr(0x2014) + " Makcu Control")
-        self.geometry("640x560")
+        self.geometry("780x640")
         self.resizable(False, False)
         self.protocol("WM_DELETE_WINDOW", self.close_app)
 
@@ -178,67 +147,87 @@ class JitterApp(tk.Tk):
             style.theme_use("clam")
         except tk.TclError:
             pass
-        style.configure("XP.App.TFrame", background=p["window"])
-        style.configure("XP.Status.TFrame", background=p["panel"],
+        secondary_hover = "#2A3B52" if self._theme == "dark" else "#D6F5FA"
+        secondary_pressed = p["surface"] if self._theme == "dark" else "#B7EFF8"
+        danger_hover = p["red"] if self._theme == "dark" else "#DF6670"
+        danger_pressed = "#A52F42" if self._theme == "dark" else "#9F3140"
+
+        style.configure("Liquid.App.TFrame", background=p["window"])
+        style.configure("Liquid.Surface.TFrame", background=p["surface"],
                         bordercolor=p["border"], relief="solid", borderwidth=1)
-        style.configure("XP.Title.TFrame", background=p["blue"])
-        style.configure("XP.Title.TLabel", background=p["blue"], foreground="#FFFFFF",
-                        font=TITLE_FONT)
-        style.configure("XP.Group.TLabelframe", background=p["window"],
-                        foreground=p["blue_dark"], bordercolor=p["border"],
-                        relief="groove", borderwidth=1)
-        style.configure("XP.Group.TLabelframe.Label", background=p["window"],
-                        foreground=p["blue_dark"], font=SECTION_FONT)
-        style.configure("XP.Group.TLabel", background=p["window"],
-                        foreground=p["text"], font=BODY_FONT)
-        style.configure("XP.Muted.TLabel", background=p["window"],
+        style.configure("Liquid.Title.TLabel", background=p["surface"],
+                        foreground=p["text"], font=TITLE_FONT)
+        style.configure("Liquid.Subtitle.TLabel", background=p["surface"],
                         foreground=p["muted"], font=SMALL_FONT)
-        style.configure("XP.Primary.TButton", background=p["primary"],
-                        foreground="#FFFFFF", bordercolor=p["blue_dark"],
+        style.configure("Liquid.Body.TLabel", background=p["window"],
+                        foreground=p["text"], font=BODY_FONT)
+        style.configure("Liquid.Muted.TLabel", background=p["window"],
+                        foreground=p["muted"], font=SMALL_FONT)
+        style.configure("Liquid.Card.TLabelframe", background=p["window"],
+                        foreground=p["text"], bordercolor=p["border"],
+                        relief="solid", borderwidth=1)
+        style.configure("Liquid.Card.TLabelframe.Label", background=p["window"],
+                        foreground=p["muted"], font=SECTION_FONT)
+        style.configure("Liquid.Primary.TButton", background=p["accent"],
+                        foreground="#07252C", bordercolor=p["accent_pressed"],
                         focuscolor=p["focus"], focusthickness=1,
                         relief="raised", borderwidth=1,
-                        font=(FONT_FAMILY, 9, "bold"), padding=(12, 6))
-        style.map("XP.Primary.TButton",
-                  background=[("disabled", "#C4CBD3"),
-                              ("pressed", p["primary_pressed"]),
-                              ("active", p["primary_hover"])],
+                        font=(FONT_FAMILY, 10, "bold"), padding=(14, 8))
+        style.map("Liquid.Primary.TButton",
+                  background=[("disabled", p["border"]),
+                              ("pressed", p["accent_pressed"]),
+                              ("active", p["accent_hover"])],
                   foreground=[("disabled", p["muted"])],
                   bordercolor=[("focus", p["focus"]),
-                               ("!focus", p["blue_dark"])],
+                               ("!focus", p["accent_pressed"])],
                   relief=[("pressed", "sunken"), ("!pressed", "raised")])
-        style.configure("XP.Secondary.TButton", background=p["secondary"],
+        style.configure("Liquid.Secondary.TButton", background=p["raised"],
                         foreground=p["text"], bordercolor=p["border"],
                         focuscolor=p["focus"], focusthickness=1,
                         relief="raised", borderwidth=1,
-                        font=BODY_FONT, padding=(10, 5))
-        style.map("XP.Secondary.TButton",
-                  background=[("disabled", p["secondary_disabled"]),
-                              ("pressed", p["secondary_pressed"]),
-                              ("active", p["secondary_hover"])],
-                  foreground=[("disabled", p["secondary_disabled_text"])],
+                        font=BODY_FONT, padding=(12, 7))
+        style.map("Liquid.Secondary.TButton",
+                  background=[("disabled", p["border"]),
+                              ("pressed", secondary_pressed),
+                              ("active", secondary_hover)],
+                  foreground=[("disabled", p["muted"])],
                   bordercolor=[("focus", p["focus"]),
                                ("!focus", p["border"])],
                   relief=[("pressed", "sunken"), ("!pressed", "raised")])
-        style.configure("XP.Danger.TButton", background=p["danger"],
+        style.configure("Liquid.Danger.TButton", background=p["danger"],
                         foreground="#FFFFFF", bordercolor=p["red"],
                         focuscolor=p["focus"], focusthickness=1,
                         relief="raised", borderwidth=1,
-                        font=(FONT_FAMILY, 9, "bold"), padding=(12, 6))
-        style.map("XP.Danger.TButton",
-                  background=[("disabled", "#C4B7B8"),
-                              ("pressed", p["danger_pressed"]),
-                              ("active", p["danger_hover"])],
-                  foreground=[("disabled", "#F4EEEE")],
+                        font=(FONT_FAMILY, 10, "bold"), padding=(14, 8))
+        style.map("Liquid.Danger.TButton",
+                  background=[("disabled", p["border"]),
+                              ("pressed", danger_pressed),
+                              ("active", danger_hover)],
+                  foreground=[("disabled", p["muted"])],
                   bordercolor=[("focus", p["focus"]),
                                ("!focus", p["red"])],
                   relief=[("pressed", "sunken"), ("!pressed", "raised")])
-        style.configure("XP.StatusDisconnected.TLabel", background=p["window"], foreground=p["red"], font=BODY_FONT)
-        style.configure("XP.StatusConnecting.TLabel", background=p["window"], foreground=p["amber"], font=BODY_FONT)
-        style.configure("XP.StatusConnected.TLabel", background=p["window"], foreground=p["green"], font=BODY_FONT)
-        style.configure("App.TEntry", fieldbackground=p["panel"], foreground=p["text"], insertcolor=p["text"], padding=(5, 3), bordercolor=p["border"])
-        style.configure("Invalid.TEntry", fieldbackground=p["panel"], foreground=p["text"], insertcolor=p["text"], padding=(5, 3), bordercolor=p["red"])
-        style.configure("XP.TCombobox", fieldbackground=p["panel"], background=p["panel"], foreground=p["text"], arrowcolor=p["text"], padding=(4, 3), bordercolor=p["border"])
-        style.map("XP.TCombobox", fieldbackground=[("readonly", p["panel"])], foreground=[("readonly", p["text"])])
+        for state, color in (
+            ("Disconnected", p["red"]),
+            ("Connecting", p["amber"]),
+            ("Connected", p["green"]),
+        ):
+            style.configure(f"Liquid.Status{state}.TLabel",
+                            background=p["surface"], foreground=color,
+                            font=(FONT_FAMILY, 10, "bold"))
+        style.configure("Liquid.Entry.TEntry", fieldbackground=p["raised"],
+                        foreground=p["text"], insertcolor=p["text"],
+                        padding=(6, 4), bordercolor=p["border"])
+        style.configure("Liquid.Invalid.TEntry", fieldbackground=p["raised"],
+                        foreground=p["text"], insertcolor=p["text"],
+                        padding=(6, 4), bordercolor=p["red"])
+        style.configure("Liquid.Readonly.TCombobox", fieldbackground=p["raised"],
+                        background=p["raised"], foreground=p["text"],
+                        arrowcolor=p["text"], padding=(5, 4),
+                        bordercolor=p["border"])
+        style.map("Liquid.Readonly.TCombobox",
+                  fieldbackground=[("readonly", p["raised"])],
+                  foreground=[("readonly", p["text"])])
 
     @property
     def _palette(self) -> Mapping[str, str]:
@@ -280,18 +269,23 @@ class JitterApp(tk.Tk):
         return ("Custom", *MOTION_PRESETS.keys())
 
     def _build_page(self) -> None:
-        self.shell = ttk.Frame(self, style="XP.App.TFrame", padding=(8, 8, 8, 8))
+        self.shell = ttk.Frame(
+            self, style="Liquid.App.TFrame", padding=(12, 12, 12, 10)
+        )
         self.shell.pack(fill="both", expand=True)
         self.shell.columnconfigure(0, weight=1)
         self.shell.rowconfigure(2, weight=1)
 
-        self.status_strip = ttk.Frame(self.shell, style="XP.Status.TFrame",
-                                      padding=(7, 5))
-        self.status_strip.grid(row=0, column=0, sticky="ew", pady=(0, 7))
-        self._build_status_strip()
+        self.identity_frame = ttk.Frame(
+            self.shell, style="Liquid.Surface.TFrame", padding=(14, 8)
+        )
+        self.identity_frame.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        self._build_identity()
 
-        self.navigation_frame = ttk.Frame(self.shell, style="XP.App.TFrame")
-        self.navigation_frame.grid(row=1, column=0, sticky="ew", pady=(0, 7))
+        self.navigation_frame = ttk.Frame(
+            self.shell, style="Liquid.App.TFrame"
+        )
+        self.navigation_frame.grid(row=1, column=0, sticky="ew", pady=(0, 8))
         self.nav = LiquidNavigation(
             self.navigation_frame,
             labels=("Control", "Motion", "Advanced"),
@@ -301,14 +295,14 @@ class JitterApp(tk.Tk):
         self.nav.pack(side="left")
         self._build_navigation_actions()
 
-        self.page_host = ttk.Frame(self.shell, style="XP.App.TFrame")
+        self.page_host = ttk.Frame(self.shell, style="Liquid.App.TFrame")
         self.page_host.grid(row=2, column=0, sticky="nsew")
         self.page_host.rowconfigure(0, weight=1)
         self.page_host.columnconfigure(0, weight=1)
-        self.setup_page = ttk.Frame(self.page_host, style="XP.App.TFrame")
-        self.motion_page = ttk.Frame(self.page_host, style="XP.App.TFrame")
-        self.advanced_page = ttk.Frame(self.page_host, style="XP.App.TFrame")
-        self.pages = (self.setup_page, self.motion_page, self.advanced_page)
+        self.control_page = ttk.Frame(self.page_host, style="Liquid.App.TFrame")
+        self.motion_page = ttk.Frame(self.page_host, style="Liquid.App.TFrame")
+        self.advanced_page = ttk.Frame(self.page_host, style="Liquid.App.TFrame")
+        self.pages = (self.control_page, self.motion_page, self.advanced_page)
         for page in self.pages:
             page.grid(row=0, column=0, sticky="nsew")
 
@@ -317,22 +311,31 @@ class JitterApp(tk.Tk):
         self._build_quick_card()
         self._build_advanced_card()
         self.select_page(0)
-        self._build_footer()
         self._build_main_control_card()
+        self._build_footer()
 
-    def _build_status_strip(self) -> None:
-        self.device_label = ttk.Label(
-            self.status_strip,
-            textvariable=self.device_status_var,
-            style="XP.Muted.TLabel",
+    def _build_identity(self) -> None:
+        identity_copy = ttk.Frame(
+            self.identity_frame, style="Liquid.Surface.TFrame"
         )
-        self.device_label.pack(side="left", fill="x", expand=True)
-        ttk.Label(self.status_strip, text="Connection:",
-                  style="XP.Muted.TLabel").pack(side="left", padx=(8, 4))
+        identity_copy.pack(side="left", fill="x", expand=True)
+        ttk.Label(
+            identity_copy, text="Jitter", style="Liquid.Title.TLabel"
+        ).pack(side="left")
+        ttk.Label(
+            identity_copy,
+            text="  Smooth Makcu motion control",
+            style="Liquid.Subtitle.TLabel",
+        ).pack(side="left", pady=(7, 0))
+        ttk.Label(
+            self.identity_frame,
+            text="MAKCU",
+            style="Liquid.Subtitle.TLabel",
+        ).pack(side="left", padx=(10, 5))
         self.connection_label = ttk.Label(
-            self.status_strip,
+            self.identity_frame,
             textvariable=self.connection_status_var,
-            style="XP.StatusDisconnected.TLabel",
+            style="Liquid.StatusDisconnected.TLabel",
         )
         self.connection_label.pack(side="right")
 
@@ -343,14 +346,20 @@ class JitterApp(tk.Tk):
         self.configure(background=self._palette["window"])
         self.advanced_canvas.configure(background=self._palette["window"])
         self.nav.set_palette(self._nav_palette())
-        self.theme_button.configure(
-            text="☀" if self._theme == "dark" else "☾"
-        )
+        self.theme_button.icon = "☀" if self._theme == "dark" else "☾"
         self.theme_tooltip_text = (
             "Switch to Light Mode" if self._theme == "dark"
             else "Switch to Dark Mode"
         )
+        self.theme_button.accessible_name = self.theme_tooltip_text
         self._hide_theme_tooltip()
+        icon_palette = self._icon_palette()
+        for button in (
+            self.reconnect_button,
+            self.test_button,
+            self.theme_button,
+        ):
+            button.set_palette(icon_palette)
         slider_palette = self._slider_palette()
         for widget in self.winfo_children():
             self._apply_slider_palette(widget, slider_palette)
@@ -366,25 +375,43 @@ class JitterApp(tk.Tk):
     def _slider_palette(self) -> dict[str, str]:
         p = self._palette
         return {
-            "background": p["window"], "rail": p["panel"],
-            "rail_outline": p["border"], "hover": p["secondary_hover"],
-            "shadow": "#0C0F14" if self._theme == "dark" else "#75828E",
-            "thumb": p["secondary"], "thumb_pressed": p["primary"],
-            "thumb_outline": p["blue_dark"], "highlight": p["text"],
-            "bubble": p["panel"], "text": p["text"], "focus": p["focus"],
+            "background": p["window"], "rail": p["border"],
+            "fill": p["accent"], "thumb": p["raised"],
+            "thumb_border": p["accent_pressed"],
+            "halo": p["surface"], "text": p["text"],
+            "bubble": p["raised"], "bubble_text": p["text"],
+            "focus": p["focus"], "disabled": p["border"],
+            "disabled_text": p["muted"],
         }
 
     def _nav_palette(self) -> dict[str, str]:
         p = self._palette
         return {
-            "background": p["window"], "capsule": p["secondary"],
-            "capsule_outline": p["border"], "pill": p["primary"],
-            "pill_highlight": "#FFFFFF", "text": p["text"],
-            "active_text": "#FFFFFF", "focus": p["focus"],
+            "background": p["window"], "surface": p["surface"],
+            "surface_highlight": p["raised"], "border": p["border"],
+            "lens": p["accent"],
+            "lens_highlight": "#B8F6FF" if self._theme == "dark" else "#C7F8FF",
+            "text": p["text"], "selected_text": "#07252C",
+            "focus": p["focus"],
+        }
+
+    def _icon_palette(self) -> dict[str, str]:
+        p = self._palette
+        return {
+            "background": p["window"], "surface": p["raised"],
+            "surface_hover": (
+                "#2A3B52" if self._theme == "dark" else "#D6F5FA"
+            ),
+            "surface_pressed": p["surface"],
+            "surface_disabled": p["border"], "border": p["border"],
+            "icon": p["text"], "icon_disabled": p["muted"],
+            "highlight": p["surface"], "focus": p["focus"],
         }
 
     def _build_advanced_workspace(self) -> None:
-        self.advanced_host = ttk.Frame(self.advanced_page, style="XP.App.TFrame")
+        self.advanced_host = ttk.Frame(
+            self.advanced_page, style="Liquid.App.TFrame"
+        )
         self.advanced_host.pack(fill="both", expand=True)
         self.advanced_host.rowconfigure(0, weight=1)
         self.advanced_host.columnconfigure(0, weight=1)
@@ -404,7 +431,7 @@ class JitterApp(tk.Tk):
         self.advanced_scrollbar.grid(row=0, column=1, sticky="ns")
         self.advanced_content = ttk.Frame(
             self.advanced_canvas,
-            style="XP.App.TFrame",
+            style="Liquid.App.TFrame",
             padding=(0, 0, 4, 8),
         )
         self.advanced_content_window = self.advanced_canvas.create_window(
@@ -426,103 +453,125 @@ class JitterApp(tk.Tk):
         self.advanced_canvas.bind("<Configure>", self._resize_content_window)
 
     def _card(self, title: str, parent: tk.Misc) -> ttk.LabelFrame:
-        card = ttk.LabelFrame(parent, text=title, style="XP.Group.TLabelframe",
-                              padding=(8, 6, 8, 8))
+        card = ttk.LabelFrame(
+            parent, text=title, style="Liquid.Card.TLabelframe",
+            padding=(12, 8, 12, 10)
+        )
         card.pack(fill="x", pady=(0, 9))
         return card
 
     def _build_main_control_card(self) -> None:
-        self.runtime_frame = ttk.Frame(self.shell, style="XP.App.TFrame")
-        self.runtime_frame.grid(row=4, column=0, sticky="ew")
+        self.runtime_frame = ttk.Frame(
+            self.shell, style="Liquid.Surface.TFrame", padding=(10, 8)
+        )
+        self.runtime_frame.grid(row=3, column=0, sticky="ew", pady=(8, 0))
         self.runtime_frame.columnconfigure(0, weight=1, uniform="runtime_actions")
         self.runtime_frame.columnconfigure(1, weight=2)
         self.runtime_frame.columnconfigure(2, weight=1, uniform="runtime_actions")
         self.enable_button = ttk.Button(self.runtime_frame, text="Enable Jitter",
-                                        style="XP.Primary.TButton",
+                                        style="Liquid.Primary.TButton",
                                         command=self.toggle_enabled)
         self.enable_button.grid(row=0, column=0, sticky="ew")
-        state = ttk.Frame(self.runtime_frame, style="XP.App.TFrame")
+        state = ttk.Frame(self.runtime_frame, style="Liquid.Surface.TFrame")
         state.grid(row=0, column=1, sticky="ew", padx=10)
-        ttk.Label(state, text="RUNTIME", style="XP.Muted.TLabel").pack(anchor="center")
+        ttk.Label(
+            state, text="RUNTIME", style="Liquid.Subtitle.TLabel"
+        ).pack(anchor="center")
         ttk.Label(state, textvariable=self.runtime_status_var,
-                  style="XP.Group.TLabel", font=(FONT_FAMILY, 8, "bold")).pack(anchor="center")
-        self.stop_button = ttk.Button(self.runtime_frame, text="STOP", style="XP.Danger.TButton",
+                  style="Liquid.Subtitle.TLabel",
+                  font=(FONT_FAMILY, 10, "bold")).pack(anchor="center")
+        self.stop_button = ttk.Button(self.runtime_frame, text="STOP",
+                                      style="Liquid.Danger.TButton",
                                       command=self.emergency_stop)
         self.stop_button.grid(row=0, column=2, sticky="ew")
 
     def _build_trigger_card(self) -> None:
-        self.setup_frame = self._card("Control Setup", self.setup_page)
-        self.setup_frame.columnconfigure(0, weight=1)
+        self.control_frame = self._card("Control", self.control_page)
+        self.control_frame.columnconfigure(0, weight=1)
+
+        device_row = ttk.Frame(
+            self.control_frame, style="Liquid.App.TFrame"
+        )
+        device_row.grid(row=0, column=0, sticky="ew", pady=(0, 9))
+        ttk.Label(
+            device_row, text="Device", style="Liquid.Muted.TLabel"
+        ).pack(side="left")
+        self.device_label = ttk.Label(
+            device_row,
+            textvariable=self.device_status_var,
+            style="Liquid.Body.TLabel",
+        )
+        self.device_label.pack(side="right")
 
         def combo_row(row, label, variable, values, width):
-            ttk.Label(self.setup_frame, text=label,
-                      style="XP.Group.TLabel").grid(row=row, column=0, sticky="w")
+            ttk.Label(self.control_frame, text=label,
+                      style="Liquid.Body.TLabel").grid(row=row, column=0, sticky="w")
             combo = ttk.Combobox(
-                self.setup_frame,
+                self.control_frame,
                 textvariable=variable,
                 values=values,
                 state="readonly",
-                style="XP.TCombobox",
+                style="Liquid.Readonly.TCombobox",
                 width=width,
             )
             combo.grid(row=row + 1, column=0, sticky="ew", pady=(2, 6))
             return combo
 
         self.trigger_combo = combo_row(
-            0, "Trigger", self.trigger_var,
+            1, "Trigger", self.trigger_var,
             ("Left", "Right", "Middle", "Mouse4", "Mouse5"), 14,
         )
         self.trigger_combo.bind("<<ComboboxSelected>>", self._bindings_event)
         self.modifier_combo = combo_row(
-            2, "Modifier", self.modifier_var,
+            3, "Modifier", self.modifier_var,
             ("None", "Left", "Right", "Middle", "Mouse4", "Mouse5"), 14,
         )
         self.modifier_combo.bind("<<ComboboxSelected>>", self._bindings_event)
         self.preset_combo = combo_row(
-            4, "Preset", self.preset_var, self.preset_values, 14,
+            5, "Preset", self.preset_var, self.preset_values, 14,
         )
         self.preset_combo.bind("<<ComboboxSelected>>", self.apply_preset)
         self.hotkey_button = ttk.Button(
-            self.setup_frame,
+            self.control_frame,
             text=f"Hotkey: {self.hotkey_name_var.get()}",
-            style="XP.Secondary.TButton",
+            style="Liquid.Secondary.TButton",
             command=self.capture_hotkey,
         )
-        self.hotkey_button.grid(row=6, column=0, sticky="ew", pady=(2, 0))
+        self.hotkey_button.grid(row=7, column=0, sticky="ew", pady=(3, 0))
 
     def _build_navigation_actions(self) -> None:
         self.navigation_actions = ttk.Frame(
-            self.navigation_frame, style="XP.App.TFrame"
+            self.navigation_frame, style="Liquid.App.TFrame"
         )
         self.navigation_actions.pack(side="right")
         self.reconnect_tooltip_text = "Reconnect Makcu"
         self.test_tooltip_text = "Test Run 3s"
         self._action_tooltip: tk.Toplevel | None = None
-        self.reconnect_button = ttk.Button(
+        self.reconnect_button = LiquidIconButton(
             self.navigation_actions,
-            text="↻",
-            style="XP.Secondary.TButton",
+            icon="↻",
+            accessible_name=self.reconnect_tooltip_text,
             command=self.reconnect,
-            width=3,
+            palette=self._icon_palette(),
         )
-        self.test_button = ttk.Button(
+        self.test_button = LiquidIconButton(
             self.navigation_actions,
-            text="▶",
-            style="XP.Secondary.TButton",
+            icon="▶",
+            accessible_name=self.test_tooltip_text,
             command=self.test_run,
-            width=3,
+            palette=self._icon_palette(),
         )
         self.theme_tooltip_text = (
             "Switch to Light Mode" if self._theme == "dark"
             else "Switch to Dark Mode"
         )
         self._theme_tooltip: tk.Toplevel | None = None
-        self.theme_button = ttk.Button(
+        self.theme_button = LiquidIconButton(
             self.navigation_actions,
-            text="☀" if self._theme == "dark" else "☾",
-            style="XP.Secondary.TButton",
+            icon="☀" if self._theme == "dark" else "☾",
+            accessible_name=self.theme_tooltip_text,
             command=self.toggle_theme,
-            width=3,
+            palette=self._icon_palette(),
         )
         self.reconnect_button.pack(side="left", padx=(0, 5))
         self.test_button.pack(side="left", padx=(0, 5))
@@ -532,33 +581,49 @@ class JitterApp(tk.Tk):
             lambda event: self._show_action_tooltip(
                 event, self.reconnect_tooltip_text
             ),
+            add="+",
         )
         self.test_button.bind(
             "<Enter>",
             lambda event: self._show_action_tooltip(
                 event, self.test_tooltip_text
             ),
+            add="+",
         )
-        self.reconnect_button.bind("<Leave>", self._hide_action_tooltip)
-        self.test_button.bind("<Leave>", self._hide_action_tooltip)
+        self.reconnect_button.bind(
+            "<Leave>", self._hide_action_tooltip, add="+"
+        )
+        self.test_button.bind("<Leave>", self._hide_action_tooltip, add="+")
         self.reconnect_button.bind(
             "<FocusIn>",
             lambda event: self._show_action_tooltip(
                 event, self.reconnect_tooltip_text
             ),
+            add="+",
         )
         self.test_button.bind(
             "<FocusIn>",
             lambda event: self._show_action_tooltip(
                 event, self.test_tooltip_text
             ),
+            add="+",
         )
-        self.reconnect_button.bind("<FocusOut>", self._hide_action_tooltip)
-        self.test_button.bind("<FocusOut>", self._hide_action_tooltip)
-        self.theme_button.bind("<Enter>", self._show_theme_tooltip)
-        self.theme_button.bind("<Leave>", self._hide_theme_tooltip)
-        self.theme_button.bind("<FocusIn>", self._show_theme_tooltip)
-        self.theme_button.bind("<FocusOut>", self._hide_theme_tooltip)
+        self.reconnect_button.bind(
+            "<FocusOut>", self._hide_action_tooltip, add="+"
+        )
+        self.test_button.bind("<FocusOut>", self._hide_action_tooltip, add="+")
+        self.theme_button.bind(
+            "<Enter>", self._show_theme_tooltip, add="+"
+        )
+        self.theme_button.bind(
+            "<Leave>", self._hide_theme_tooltip, add="+"
+        )
+        self.theme_button.bind(
+            "<FocusIn>", self._show_theme_tooltip, add="+"
+        )
+        self.theme_button.bind(
+            "<FocusOut>", self._hide_theme_tooltip, add="+"
+        )
 
     def _show_action_tooltip(self, event: tk.Event, text: str) -> None:
         self._hide_action_tooltip()
@@ -577,7 +642,7 @@ class JitterApp(tk.Tk):
             tk.Label(
                 tooltip,
                 text=text,
-                background=p["panel"],
+                background=p["raised"],
                 foreground=p["text"],
                 borderwidth=1,
                 relief="solid",
@@ -601,14 +666,14 @@ class JitterApp(tk.Tk):
     def _numeric_control(self, parent: tk.Misc, row: int, column: int,
                          label: str, key: str, low: float, high: float,
                          resolution: float = 1.0) -> None:
-        block = ttk.Frame(parent, style="XP.App.TFrame")
+        block = ttk.Frame(parent, style="Liquid.App.TFrame")
         block.grid(row=row, column=column, sticky="ew", padx=5, pady=4)
         parent.columnconfigure(column, weight=1)
-        top = ttk.Frame(block, style="XP.App.TFrame")
+        top = ttk.Frame(block, style="Liquid.App.TFrame")
         top.pack(fill="x")
-        ttk.Label(top, text=label, style="XP.Group.TLabel").pack(side="left")
+        ttk.Label(top, text=label, style="Liquid.Body.TLabel").pack(side="left")
         entry = ttk.Entry(top, textvariable=self.motion_vars[key], width=8,
-                          style="App.TEntry", justify="right")
+                          style="Liquid.Entry.TEntry", justify="right")
         entry.pack(side="right")
         slider = LiquidSlider(
             block,
@@ -624,70 +689,86 @@ class JitterApp(tk.Tk):
         setattr(self, f"{key}_scale", slider)
 
     def _build_quick_card(self) -> None:
-        self.quick_frame = self._card("Quick Jitter", self.motion_page)
-        self.quick_grid = ttk.Frame(self.quick_frame, style="XP.App.TFrame")
+        self.quick_frame = self._card("Motion", self.motion_page)
+        self.quick_grid = ttk.Frame(
+            self.quick_frame, style="Liquid.App.TFrame"
+        )
         self.quick_grid.pack(fill="x")
         self.quick_grid.columnconfigure(0, weight=1, uniform="quick")
         self.quick_grid.columnconfigure(1, weight=1, uniform="quick")
         controls = (
             ("Strength", "motion_strength_pps", 0, 500, 1),
             ("Jitter Rate", "jitter_rate_hz", 0.1, 60, 0.1),
-            ("Angle", "motion_angle_deg", 0, 360, 1),
         )
         for index, control in enumerate(controls):
             self._numeric_control(self.quick_grid, index // 2, index % 2, *control)
+        ttk.Label(
+            self.quick_frame,
+            text="Live values update the active motion snapshot immediately.",
+            style="Liquid.Muted.TLabel",
+        ).pack(anchor="w", pady=(8, 0))
 
     def _build_advanced_card(self) -> None:
         self.advanced_frame = ttk.LabelFrame(
-            self.advanced_content, text="Advanced Settings", style="XP.Group.TLabelframe",
+            self.advanced_content, text="Advanced Settings",
+            style="Liquid.Card.TLabelframe",
             padding=(11, 8, 11, 10))
         self.advanced_frame.pack(fill="x", pady=(0, 9))
-        self.advanced_grid = ttk.Frame(self.advanced_frame, style="XP.App.TFrame")
+        self.advanced_grid = ttk.Frame(
+            self.advanced_frame, style="Liquid.App.TFrame"
+        )
         self.advanced_grid.pack(fill="x")
         self.advanced_grid.columnconfigure(0, weight=1, uniform="advanced")
         self.advanced_grid.columnconfigure(1, weight=1, uniform="advanced")
         controls = (
-            (0, 0, "Horizontal", "horizontal_jitter_pps", 0, 500, 1),
-            (0, 1, "Vertical", "vertical_jitter_pps", 0, 500, 1),
-            (1, 0, "Randomness", "jitter_randomness_percent", 0, 100, 1),
-            (1, 1, "Axis Phase", "jitter_axis_phase_deg", 0, 360, 1),
-            (2, 0, "Smoothness", "smoothness_percent", 1, 100, 1),
-            (2, 1, "Ramp (ms)", "ramp_up_ms", 0, 2000, 1),
-            (3, 0, "Update Rate", "update_rate_hz", 20, 500, 1),
-            (3, 1, "Max Step", "max_step_px", 1, 50, 1),
-            (4, 0, "Acceleration", "acceleration_pps2", 1, 10000, 1),
-            (4, 1, "Deceleration", "deceleration_pps2", 1, 10000, 1),
+            (0, 0, "Angle", "motion_angle_deg", 0, 360, 1),
+            (0, 1, "Horizontal", "horizontal_jitter_pps", 0, 500, 1),
+            (1, 0, "Vertical", "vertical_jitter_pps", 0, 500, 1),
+            (1, 1, "Randomness", "jitter_randomness_percent", 0, 100, 1),
+            (2, 0, "Axis Phase", "jitter_axis_phase_deg", 0, 360, 1),
+            (2, 1, "Smoothness", "smoothness_percent", 1, 100, 1),
+            (3, 0, "Ramp (ms)", "ramp_up_ms", 0, 2000, 1),
+            (3, 1, "Update Rate", "update_rate_hz", 20, 500, 1),
+            (4, 0, "Max Step", "max_step_px", 1, 50, 1),
+            (4, 1, "Acceleration", "acceleration_pps2", 1, 10000, 1),
+            (5, 0, "Deceleration", "deceleration_pps2", 1, 10000, 1),
         )
         for row, column, label, key, low, high, resolution in controls:
             self._numeric_control(
                 self.advanced_grid, row, column, label, key, low, high, resolution
             )
 
-        waveform_row = ttk.Frame(self.advanced_grid, style="XP.App.TFrame")
-        waveform_row.grid(row=5, column=0, columnspan=2, sticky="ew", padx=5, pady=(8, 3))
+        waveform_row = ttk.Frame(
+            self.advanced_grid, style="Liquid.App.TFrame"
+        )
+        waveform_row.grid(row=6, column=0, columnspan=2, sticky="ew", padx=5, pady=(8, 3))
         ttk.Label(waveform_row, text="Waveform",
-                  style="XP.Group.TLabel").pack(side="left")
+                  style="Liquid.Body.TLabel").pack(side="left")
         self.waveform_combo = ttk.Combobox(
             waveform_row, textvariable=self.motion_vars["jitter_waveform"],
-            values=JITTER_WAVEFORMS, state="readonly", style="XP.TCombobox")
+            values=JITTER_WAVEFORMS, state="readonly",
+            style="Liquid.Readonly.TCombobox")
         self.waveform_combo.pack(side="right", fill="x", expand=True, padx=(8, 0))
 
-        curve_row = ttk.Frame(self.advanced_grid, style="XP.App.TFrame")
-        curve_row.grid(row=6, column=0, columnspan=2, sticky="ew", padx=5, pady=3)
+        curve_row = ttk.Frame(
+            self.advanced_grid, style="Liquid.App.TFrame"
+        )
+        curve_row.grid(row=7, column=0, columnspan=2, sticky="ew", padx=5, pady=3)
         ttk.Label(curve_row, text="Motion Curve",
-                  style="XP.Group.TLabel").pack(side="left")
+                  style="Liquid.Body.TLabel").pack(side="left")
         self.motion_curve_combo = ttk.Combobox(
             curve_row, textvariable=self.motion_vars["motion_curve"],
-            values=MOTION_CURVES, state="readonly", style="XP.TCombobox")
+            values=MOTION_CURVES, state="readonly",
+            style="Liquid.Readonly.TCombobox")
         self.motion_curve_combo.pack(side="right", fill="x", expand=True, padx=(8, 0))
 
     def _build_footer(self) -> None:
-        self.footer_frame = ttk.Frame(self.shell, style="XP.App.TFrame")
-        self.footer_frame.grid(row=3, column=0, sticky="ew", pady=(6, 3))
+        self.footer_frame = ttk.Frame(self.shell, style="Liquid.App.TFrame")
+        self.footer_frame.grid(row=4, column=0, sticky="ew", pady=(6, 0))
         self.footer_label = ttk.Label(
             self.footer_frame,
             textvariable=self.footer_var,
-            style="XP.Muted.TLabel",
+            style="Liquid.Muted.TLabel",
             anchor="w",
         )
         self.footer_label.pack(side="left", fill="x", expand=True)
@@ -709,7 +790,7 @@ class JitterApp(tk.Tk):
             tk.Label(
                 tooltip,
                 text=self.theme_tooltip_text,
-                background=p["panel"],
+                background=p["raised"],
                 foreground=p["text"],
                 borderwidth=1,
                 relief="solid",
@@ -877,7 +958,7 @@ class JitterApp(tk.Tk):
             self.service.stop_motion("test_run")
             self._normal_motion_started = False
         self.runtime_status_var.set("Testing")
-        self.test_button.configure(state="disabled")
+        self.test_button.set_enabled(False)
         if normal_motion_active:
             # The normal worker emits a queued stop event after stop_motion().
             # Start the timed worker only after that event, so the service's
@@ -896,7 +977,7 @@ class JitterApp(tk.Tk):
         started = bool(self.service.start_motion(self.get_motion_settings, duration_s=3.0))
         if not started:
             self._motion_mode = None
-            self.test_button.configure(state="normal")
+            self.test_button.set_enabled(True)
             self._restore_after_test()
         return started
 
@@ -904,7 +985,7 @@ class JitterApp(tk.Tk):
         restore = self._test_restore_enabled and bool(self.service.connected)
         self._motion_mode = None
         self._test_start_pending = False
-        self.test_button.configure(state="normal")
+        self.test_button.set_enabled(True)
         if restore:
             self.enabled = True
             self.runtime_status_var.set("Armed")
@@ -927,7 +1008,7 @@ class JitterApp(tk.Tk):
             pass
         self.runtime_status_var.set("Disabled")
         self.enable_button.configure(text="Enable Jitter")
-        self.test_button.configure(state="normal")
+        self.test_button.set_enabled(True)
         self.footer_var.set(str(reason or "Stopped"))
 
     def handle_service_event(self, event: ServiceEvent) -> None:
@@ -936,16 +1017,22 @@ class JitterApp(tk.Tk):
         kind = event.kind
         if kind == "connecting":
             self.connection_status_var.set("Connecting")
-            self.connection_label.configure(style="XP.StatusConnecting.TLabel")
+            self.connection_label.configure(
+                style="Liquid.StatusConnecting.TLabel"
+            )
             self.device_status_var.set("Connecting to Makcu...")
         elif kind in {"connected", "reconnected"}:
             self.connection_status_var.set("Connected")
-            self.connection_label.configure(style="XP.StatusConnected.TLabel")
+            self.connection_label.configure(
+                style="Liquid.StatusConnected.TLabel"
+            )
             self.device_status_var.set(str(event.payload or "Makcu device connected"))
             self.footer_var.set("Makcu connected")
         elif kind == "disconnected":
             self.connection_status_var.set("Disconnected")
-            self.connection_label.configure(style="XP.StatusDisconnected.TLabel")
+            self.connection_label.configure(
+                style="Liquid.StatusDisconnected.TLabel"
+            )
             self.device_status_var.set(str(event.payload or "Makcu device not connected"))
             self.emergency_stop("Device disconnected")
         elif kind == "button":
@@ -1127,7 +1214,7 @@ class JitterApp(tk.Tk):
             for name in invalid:
                 entry = getattr(self, f"{name}_entry", None)
                 if entry is not None:
-                    entry.configure(style="Invalid.TEntry")
+                    entry.configure(style="Liquid.Invalid.TEntry")
             self.footer_var.set(f"Invalid value for {key.replace('_', ' ')}")
             return
         self._invalid_motion_keys.clear()
@@ -1136,7 +1223,7 @@ class JitterApp(tk.Tk):
         for name in self.motion_vars:
             entry = getattr(self, f"{name}_entry", None)
             if entry is not None:
-                entry.configure(style="App.TEntry")
+                entry.configure(style="Liquid.Entry.TEntry")
             scale = getattr(self, f"{name}_scale", None)
             if scale is not None:
                 try:
@@ -1194,7 +1281,7 @@ class JitterApp(tk.Tk):
         for key in self.motion_vars:
             entry = getattr(self, f"{key}_entry", None)
             if entry is not None:
-                entry.configure(style="App.TEntry")
+                entry.configure(style="Liquid.Entry.TEntry")
         self._replace_motion_snapshot(settings)
         self._schedule_save()
 

@@ -6,7 +6,7 @@ import unittest
 
 from ui import JitterApp
 from makcu_service import ServiceEvent
-from liquid_widgets import LiquidSlider
+from liquid_widgets import LiquidIconButton, LiquidSlider
 
 
 class StubStore:
@@ -102,11 +102,11 @@ class JitterLayoutTests(unittest.TestCase):
         except tk.TclError:
             pass
 
-    def test_window_is_fixed_size_compact_xp_dashboard(self):
+    def test_window_is_fixed_size_liquid_control_deck(self):
         self.app.update_idletasks()
-        self.assertEqual(tuple(map(int, self.app.resizable())), (0, 0))
-        self.assertEqual(self.app.geometry().split("+")[0], "640x560")
-        self.assertEqual(self.app.cget("background"), "#F4F1E6")
+        self.assertEqual(self.app.geometry().split("+")[0], "780x640")
+        self.assertFalse(self.app.resizable()[0])
+        self.assertFalse(self.app.resizable()[1])
 
     def test_internal_brand_banner_is_not_rendered(self):
         brand_banners = [
@@ -121,30 +121,34 @@ class JitterLayoutTests(unittest.TestCase):
 
     def test_theme_toggle_applies_dark_palette_and_persists_choice(self):
         style = ttk.Style(self.app)
-        self.assertEqual(self.app.theme_button.cget("text"), "☾")
+        self.assertEqual(self.app.theme_button.icon, "☾")
         self.assertEqual(self.app.theme_tooltip_text,
                          "Switch to Dark Mode")
         self.app.toggle_theme()
         self.app.update_idletasks()
 
         self.assertEqual(self.app.theme_var.get(), "dark")
-        self.assertEqual(self.app.cget("background"), "#171B22")
-        self.assertEqual(style.lookup("XP.Group.TLabel", "foreground"),
-                         "#E7ECF3")
+        self.assertEqual(self.app.cget("background"), "#0D1420")
+        self.assertEqual(style.lookup("Liquid.Body.TLabel", "foreground"),
+                         "#EEF8FF")
         self.assertEqual(self.app.motion_strength_pps_scale.cget("background"),
-                         "#171B22")
-        self.assertEqual(self.app.theme_button.cget("text"), "☀")
+                         "#0D1420")
+        self.assertEqual(self.app.theme_button.icon, "☀")
         self.assertEqual(self.app.theme_tooltip_text,
                          "Switch to Light Mode")
-        self.assertEqual(self.app.nav.cget("background"), "#171B22")
-        self.assertEqual(self.app.nav.itemcget("capsule", "fill"), "#303846")
-        self.assertEqual(self.app.nav.itemcget("pill", "fill"), "#4C8CCC")
+        self.assertEqual(self.app.theme_button.accessible_name,
+                         "Switch to Light Mode")
+        self.assertEqual(self.app.nav.cget("background"), "#0D1420")
+        self.assertEqual(self.app.nav.itemcget("glass", "fill"), "#172232")
+        self.assertEqual(self.app.nav.itemcget("lens", "fill"), "#63E6FF")
+        self.assertEqual(self.app.theme_button.itemcget("surface", "fill"),
+                         "#202F43")
 
         self.app._cancel_after("_save_after_id")
         self.app.save_config()
         self.assertEqual(self.store.saved[-1].theme, "dark")
 
-    def test_every_numeric_control_uses_xp_glossy_slider(self):
+    def test_every_numeric_control_uses_liquid_slider(self):
         numeric_keys = (
             "motion_angle_deg",
             "motion_strength_pps",
@@ -167,14 +171,14 @@ class JitterLayoutTests(unittest.TestCase):
                     LiquidSlider,
                 )
 
-    def test_glossy_slider_user_change_updates_exact_entry_and_snapshot(self):
+    def test_liquid_slider_user_change_updates_exact_entry_and_snapshot(self):
         slider = self.app.motion_strength_pps_scale
         slider._set_from_user(123)
         self.app.update()
         self.assertEqual(self.app.motion_strength_pps_var.get(), "123")
         self.assertEqual(self.app.get_motion_settings().strength_pps, 123.0)
 
-    def test_exact_entry_and_preset_changes_update_glossy_slider_silently(self):
+    def test_exact_entry_and_preset_changes_update_liquid_slider_silently(self):
         slider = self.app.motion_strength_pps_scale
         self.app.motion_strength_pps_var.set("77")
         self.app.update()
@@ -195,42 +199,68 @@ class JitterLayoutTests(unittest.TestCase):
             current = current.master
         return False
 
-    def test_shell_uses_status_navigation_page_footer_runtime_order(self):
+    def test_shell_region_order_is_identity_nav_page_runtime_footer(self):
         regions = (
-            self.app.status_strip,
+            self.app.identity_frame,
             self.app.navigation_frame,
             self.app.page_host,
-            self.app.footer_frame,
             self.app.runtime_frame,
+            self.app.footer_frame,
         )
         self.assertEqual(
             [int(widget.grid_info()["row"]) for widget in regions],
             [0, 1, 2, 3, 4],
         )
 
-    def test_navigation_owns_three_persistent_pages(self):
+    def test_navigation_owns_control_motion_and_advanced_pages(self):
         self.assertEqual(self.app.nav.labels, ("Control", "Motion", "Advanced"))
         self.assertEqual(
             self.app.pages,
-            (self.app.setup_page, self.app.motion_page, self.app.advanced_page),
+            (self.app.control_page, self.app.motion_page, self.app.advanced_page),
         )
-        self.assertTrue(self._is_descendant(self.app.trigger_combo,
-                                            self.app.setup_page))
-        self.assertTrue(self._is_descendant(
-            self.app.motion_strength_pps_entry, self.app.motion_page))
-        self.assertTrue(self._is_descendant(
-            self.app.motion_angle_deg_entry, self.app.motion_page))
-        self.assertFalse(self._is_descendant(
-            self.app.motion_angle_deg_entry, self.app.advanced_page))
-        self.assertTrue(self._is_descendant(
-            self.app.waveform_combo, self.app.advanced_page))
+        for widget in (
+            self.app.trigger_combo,
+            self.app.modifier_combo,
+            self.app.preset_combo,
+            self.app.hotkey_button,
+            self.app.device_label,
+        ):
+            with self.subTest(widget=str(widget)):
+                self.assertTrue(self._is_descendant(widget, self.app.control_page))
+        for widget in (
+            self.app.motion_strength_pps_entry,
+            self.app.jitter_rate_hz_entry,
+        ):
+            with self.subTest(widget=str(widget)):
+                self.assertTrue(self._is_descendant(widget, self.app.motion_page))
+        for key in (
+            "motion_angle_deg",
+            "horizontal_jitter_pps",
+            "vertical_jitter_pps",
+            "jitter_randomness_percent",
+            "jitter_axis_phase_deg",
+            "smoothness_percent",
+            "ramp_up_ms",
+            "update_rate_hz",
+            "max_step_px",
+            "acceleration_pps2",
+            "deceleration_pps2",
+        ):
+            with self.subTest(key=key):
+                self.assertTrue(self._is_descendant(
+                    getattr(self.app, f"{key}_entry"), self.app.advanced_page
+                ))
+        for widget in (self.app.waveform_combo, self.app.motion_curve_combo):
+            with self.subTest(widget=str(widget)):
+                self.assertTrue(self._is_descendant(widget, self.app.advanced_page))
 
-    def test_navigation_keeps_three_mini_actions_visible(self):
+    def test_mini_actions_are_liquid_icon_buttons(self):
         for button in (self.app.reconnect_button, self.app.test_button,
                        self.app.theme_button):
+            self.assertIsInstance(button, LiquidIconButton)
             self.assertIs(button.master, self.app.navigation_actions)
         self.assertEqual(
-            [button.cget("text") for button in (
+            [button.icon for button in (
                 self.app.reconnect_button,
                 self.app.test_button,
                 self.app.theme_button,
@@ -295,10 +325,15 @@ class JitterLayoutTests(unittest.TestCase):
         for button in (self.app.reconnect_button, self.app.test_button,
                        self.app.theme_button):
             with self.subTest(button=str(button)):
-                self.assertEqual(int(button.cget("width")), 3)
+                self.assertEqual(int(button.cget("width")), 34)
                 self.assertEqual(button.pack_info()["side"], "left")
         self.assertEqual(self.app.reconnect_tooltip_text, "Reconnect Makcu")
         self.assertEqual(self.app.test_tooltip_text, "Test Run 3s")
+        self.assertEqual(self.app.reconnect_button.accessible_name,
+                         "Reconnect Makcu")
+        self.assertEqual(self.app.test_button.accessible_name, "Test Run 3s")
+        self.assertEqual(self.app.theme_button.accessible_name,
+                         "Switch to Dark Mode")
         self.assertTrue(self.app.reconnect_button.bind("<Enter>"))
         self.assertTrue(self.app.test_button.bind("<Enter>"))
 
@@ -311,6 +346,8 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertIsNone(self.app._action_tooltip)
 
     def test_mini_action_tooltips_are_available_from_keyboard_focus(self):
+        self.app.deiconify()
+        self.app.update()
         cases = (
             (self.app.reconnect_button, "Reconnect Makcu", "_action_tooltip"),
             (self.app.test_button, "Test Run 3s", "_action_tooltip"),
@@ -340,16 +377,17 @@ class JitterLayoutTests(unittest.TestCase):
 
     def test_advanced_uses_approved_two_column_grid(self):
         expected_positions = {
-            "horizontal_jitter_pps": (0, 0),
-            "vertical_jitter_pps": (0, 1),
-            "jitter_randomness_percent": (1, 0),
-            "jitter_axis_phase_deg": (1, 1),
-            "smoothness_percent": (2, 0),
-            "ramp_up_ms": (2, 1),
-            "update_rate_hz": (3, 0),
-            "max_step_px": (3, 1),
-            "acceleration_pps2": (4, 0),
-            "deceleration_pps2": (4, 1),
+            "motion_angle_deg": (0, 0),
+            "horizontal_jitter_pps": (0, 1),
+            "vertical_jitter_pps": (1, 0),
+            "jitter_randomness_percent": (1, 1),
+            "jitter_axis_phase_deg": (2, 0),
+            "smoothness_percent": (2, 1),
+            "ramp_up_ms": (3, 0),
+            "update_rate_hz": (3, 1),
+            "max_step_px": (4, 0),
+            "acceleration_pps2": (4, 1),
+            "deceleration_pps2": (5, 0),
         }
         for key, expected in expected_positions.items():
             with self.subTest(key=key):
@@ -363,8 +401,8 @@ class JitterLayoutTests(unittest.TestCase):
         curve_row = self.app.motion_curve_combo.master
         self.assertIsNot(waveform_row, curve_row)
         for combo, expected_row in (
-            (self.app.waveform_combo, 5),
-            (self.app.motion_curve_combo, 6),
+            (self.app.waveform_combo, 6),
+            (self.app.motion_curve_combo, 7),
         ):
             with self.subTest(combo=str(combo)):
                 choice_row = combo.master
@@ -394,22 +432,22 @@ class JitterLayoutTests(unittest.TestCase):
         for widget in (self.app.footer_frame, self.app.runtime_frame,
                        self.app.enable_button, self.app.stop_button):
             with self.subTest(widget=str(widget)):
-                self.assertFalse(self._is_descendant(widget, self.app.right_host))
+                self.assertFalse(self._is_descendant(widget, self.app.advanced_host))
 
-    def test_status_strip_combines_device_and_connection_state(self):
+    def test_identity_shows_connection_and_control_shows_device_summary(self):
         self.assertTrue(self._is_descendant(self.app.device_label,
-                                            self.app.status_strip))
+                                            self.app.control_page))
         self.assertTrue(self._is_descendant(self.app.connection_label,
-                                            self.app.status_strip))
+                                            self.app.identity_frame))
         self.assertFalse(self._is_descendant(self.app.reconnect_button,
-                                             self.app.status_strip))
+                                             self.app.identity_frame))
 
-    def test_theme_toggle_lives_in_navigation_not_status_strip(self):
+    def test_theme_toggle_lives_in_navigation_not_identity(self):
         self.assertIs(self.app.theme_button.master, self.app.navigation_actions)
         self.assertFalse(self._is_descendant(self.app.theme_button,
-                                             self.app.status_strip))
+                                             self.app.identity_frame))
         self.assertFalse(self._is_descendant(self.app.theme_button,
-                                             self.app.right_host))
+                                             self.app.advanced_host))
         self.assertEqual(self.app.theme_button.pack_info()["side"], "left")
 
     def test_theme_icon_tooltip_appears_on_hover_and_is_removed(self):
@@ -450,55 +488,64 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertLessEqual(stop_right, app_right)
         self.assertLessEqual(stop_bottom, app_bottom)
 
-    def test_luna_blue_styles_are_registered(self):
+    def test_liquid_styles_are_registered(self):
         style = ttk.Style(self.app)
-        self.assertEqual(style.lookup("XP.Title.TFrame", "background"), "#2F69B3")
-        self.assertEqual(style.lookup("XP.Group.TLabelframe", "background"), "#F4F1E6")
+        self.assertEqual(style.lookup("Liquid.App.TFrame", "background"), "#F2F7FA")
+        self.assertEqual(style.lookup("Liquid.Surface.TFrame", "background"),
+                         "#E5F0F5")
+        self.assertEqual(
+            self.app.tk.splitlist(
+                style.lookup("Liquid.Title.TLabel", "font")
+            ),
+            ("Segoe UI", "18", "bold"),
+        )
 
-    def test_xp_remastered_buttons_use_high_contrast_palette(self):
+    def test_liquid_buttons_use_high_contrast_palette(self):
         style = ttk.Style(self.app)
-        self.assertEqual(style.lookup("XP.Primary.TButton", "background"),
-                         "#356FAF")
-        self.assertEqual(style.lookup("XP.Primary.TButton", "foreground"),
-                         "#FFFFFF")
-        self.assertEqual(style.lookup("XP.Danger.TButton", "background"),
+        self.assertEqual(style.lookup("Liquid.Primary.TButton", "background"),
+                         "#55DDF6")
+        self.assertEqual(style.lookup("Liquid.Primary.TButton", "foreground"),
+                         "#07252C")
+        self.assertEqual(style.lookup("Liquid.Danger.TButton", "background"),
                          "#C74652")
-        self.assertEqual(style.lookup("XP.Danger.TButton", "foreground"),
+        self.assertEqual(style.lookup("Liquid.Danger.TButton", "foreground"),
                          "#FFFFFF")
-        self.assertEqual(style.lookup("XP.Secondary.TButton", "background"),
-                         "#F7F3E7")
+        self.assertEqual(style.lookup("Liquid.Secondary.TButton", "background"),
+                         "#FFFFFF")
         self.assertEqual(self.app.enable_button.cget("style"),
-                         "XP.Primary.TButton")
+                         "Liquid.Primary.TButton")
         self.assertEqual(self.app.stop_button.cget("style"),
-                         "XP.Danger.TButton")
+                         "Liquid.Danger.TButton")
 
-    def test_xp_remastered_buttons_show_hover_press_and_focus_states(self):
+    def test_liquid_buttons_show_hover_press_and_focus_states(self):
         style = ttk.Style(self.app)
-        self.assertEqual(style.lookup("XP.Primary.TButton", "background",
-                                      ("active",)), "#5B92CC")
-        self.assertEqual(style.lookup("XP.Primary.TButton", "background",
-                                      ("pressed", "active")), "#244F7D")
-        self.assertEqual(style.lookup("XP.Danger.TButton", "background",
+        self.assertEqual(style.lookup("Liquid.Primary.TButton", "background",
+                                      ("active",)), "#79E8FA")
+        self.assertEqual(style.lookup("Liquid.Primary.TButton", "background",
+                                      ("pressed", "active")), "#33BDD8")
+        self.assertEqual(style.lookup("Liquid.Danger.TButton", "background",
                                       ("active",)), "#DF6670")
-        self.assertEqual(style.lookup("XP.Danger.TButton", "background",
-                                      ("pressed", "active")), "#942F38")
-        self.assertEqual(style.lookup("XP.Secondary.TButton", "background",
-                                      ("active",)), "#E5EEF8")
-        self.assertEqual(style.lookup("XP.Secondary.TButton", "relief",
+        self.assertEqual(style.lookup("Liquid.Danger.TButton", "background",
+                                      ("pressed", "active")), "#9F3140")
+        self.assertEqual(style.lookup("Liquid.Secondary.TButton", "background",
+                                      ("active",)), "#D6F5FA")
+        self.assertEqual(style.lookup("Liquid.Secondary.TButton", "relief",
                                       ("pressed",)), "sunken")
-        self.assertEqual(style.lookup("XP.Primary.TButton", "bordercolor",
-                                      ("focus",)), "#E4A43A")
+        self.assertEqual(style.lookup("Liquid.Primary.TButton", "bordercolor",
+                                      ("focus",)), "#8B5CF6")
 
         self.app.toggle_theme()
-        self.assertEqual(style.lookup("XP.Secondary.TButton", "background",
-                                      ("disabled",)), "#252C36")
-        self.assertEqual(style.lookup("XP.Secondary.TButton", "foreground",
-                                      ("disabled",)), "#AAB4C2")
+        self.assertEqual(style.lookup("Liquid.Secondary.TButton", "background",
+                                      ("disabled",)), "#34465C")
+        self.assertEqual(style.lookup("Liquid.Secondary.TButton", "foreground",
+                                      ("disabled",)), "#91A5B8")
 
     def test_required_actions_are_present_and_stop_is_outside_advanced(self):
         texts = widget_texts(self.app)
-        for expected in ("↻", "Enable Jitter", "▶", "STOP", "Advanced Settings"):
+        for expected in ("Enable Jitter", "STOP", "Advanced Settings"):
             self.assertIn(expected, texts)
+        self.assertEqual(self.app.reconnect_button.icon, "↻")
+        self.assertEqual(self.app.test_button.icon, "▶")
         stop = self.app.stop_button
         ancestor = stop.master
         while ancestor is not self.app:
@@ -537,12 +584,12 @@ class JitterLayoutTests(unittest.TestCase):
 
         self.app.select_page(0)
         self.app.update_idletasks()
-        setup_event = SimpleNamespace(
+        control_event = SimpleNamespace(
             delta=-120,
-            x_root=self.app.setup_page.winfo_rootx() + 10,
-            y_root=self.app.setup_page.winfo_rooty() + 10,
+            x_root=self.app.control_page.winfo_rootx() + 10,
+            y_root=self.app.control_page.winfo_rooty() + 10,
         )
-        self.assertIsNone(self.app._on_advanced_mousewheel(setup_event))
+        self.assertIsNone(self.app._on_advanced_mousewheel(control_event))
         self.assertEqual(self.app.advanced_canvas.yview()[0], after_advanced)
 
 
@@ -730,22 +777,22 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.assertTrue(self.app.enabled)
 
     def test_test_run_button_is_disabled_only_while_test_is_active(self):
-        self.assertFalse(self.app.test_button.instate(("disabled",)))
+        self.assertTrue(self.app.test_button._enabled)
         self.app.start_test_run()
-        self.assertFalse(self.app.test_button.instate(("disabled",)))
+        self.assertTrue(self.app.test_button._enabled)
 
         self.service.connected = True
         self.app.start_test_run()
-        self.assertTrue(self.app.test_button.instate(("disabled",)))
+        self.assertFalse(self.app.test_button._enabled)
         self.app.handle_service_event(
             ServiceEvent("motion_stopped", "duration_complete")
         )
-        self.assertFalse(self.app.test_button.instate(("disabled",)))
+        self.assertTrue(self.app.test_button._enabled)
 
         self.app.start_test_run()
-        self.assertTrue(self.app.test_button.instate(("disabled",)))
+        self.assertFalse(self.app.test_button._enabled)
         self.app.emergency_stop("Stopped by user")
-        self.assertFalse(self.app.test_button.instate(("disabled",)))
+        self.assertTrue(self.app.test_button._enabled)
 
     def test_invalid_motion_edit_keeps_last_snapshot(self):
         previous = self.app.get_motion_settings()
@@ -845,14 +892,16 @@ class JitterRuntimeTests(JitterLayoutTests):
     def test_preset_clears_stale_invalid_entry_style(self):
         self.app.motion_angle_deg_var.set("not-a-number")
         self.app.update()
-        self.assertEqual(self.app.motion_angle_deg_entry.cget("style"), "Invalid.TEntry")
+        self.assertEqual(self.app.motion_angle_deg_entry.cget("style"),
+                         "Liquid.Invalid.TEntry")
         self.assertEqual(
             self.app.footer_var.get(),
             "Invalid value for motion angle deg",
         )
         self.app.preset_var.set("Balanced")
         self.app.apply_preset()
-        self.assertEqual(self.app.motion_angle_deg_entry.cget("style"), "App.TEntry")
+        self.assertEqual(self.app.motion_angle_deg_entry.cget("style"),
+                         "Liquid.Entry.TEntry")
         self.assertEqual(self.app.footer_var.get(), "Ready")
 
     def test_valid_motion_edit_clears_stale_invalid_footer(self):
@@ -866,7 +915,8 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.app.motion_strength_pps_var.set("75")
         self.app.update()
 
-        self.assertEqual(self.app.motion_strength_pps_entry.cget("style"), "App.TEntry")
+        self.assertEqual(self.app.motion_strength_pps_entry.cget("style"),
+                         "Liquid.Entry.TEntry")
         self.assertEqual(self.app.footer_var.get(), "Ready")
 
 
