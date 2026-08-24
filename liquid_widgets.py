@@ -6,24 +6,19 @@ import tkinter as tk
 from typing import Callable, Mapping
 
 
-DEFAULT_SLIDER_PALETTE = {
-    "background": "#F4F1E6", "rail": "#E5E2D8", "rail_outline": "#8E9AA6",
-    "hover": "#D9EAFB", "shadow": "#75828E", "thumb": "#F7F3E7",
-    "thumb_pressed": "#356FAF", "thumb_outline": "#244F7D",
-    "highlight": "#FFFFFF", "bubble": "#FFFDF5", "text": "#20252A",
-    "focus": "#E4A43A",
+DEFAULT_NAV_PALETTE = {
+    "background": "#F2F7FA", "surface": "#E5F0F5",
+    "surface_highlight": "#FFFFFF", "border": "#B9CBD5",
+    "lens": "#55DDF6", "lens_highlight": "#C7F8FF",
+    "text": "#263640", "selected_text": "#07252C", "focus": "#8B5CF6",
 }
 
 
-DEFAULT_NAV_PALETTE = {
-    "background": "#F4F1E6",
-    "capsule": "#D9EAFB",
-    "capsule_outline": "#8E9AA6",
-    "pill": "#356FAF",
-    "pill_highlight": "#FFFFFF",
-    "text": "#20252A",
-    "active_text": "#FFFFFF",
-    "focus": "#E4A43A",
+DEFAULT_SLIDER_PALETTE = {
+    "background": "#F2F7FA", "rail": "#C9D9E1", "fill": "#55DDF6",
+    "thumb": "#F8FEFF", "thumb_border": "#33BDD8", "halo": "#B7EFF8",
+    "text": "#263640", "bubble": "#244653", "bubble_text": "#FFFFFF",
+    "focus": "#8B5CF6", "disabled": "#A9B6BC", "disabled_text": "#7A878D",
 }
 
 
@@ -188,34 +183,46 @@ class LiquidNavigation(tk.Canvas):
         width = max(self.winfo_width(), self.winfo_reqwidth())
         height = max(self.winfo_height(), self.winfo_reqheight())
         inset = 1.0
-        capsule_left, capsule_top = inset, inset
-        capsule_right, capsule_bottom = width - inset, height - inset
+        glass_left, glass_top = inset, inset
+        glass_right, glass_bottom = width - inset, height - inset
         self._rounded_box(
-            capsule_left,
-            capsule_top,
-            capsule_right,
-            capsule_bottom,
-            fill=self._palette["capsule"],
-            outline=self._palette["capsule_outline"],
-            tags="capsule",
+            glass_left,
+            glass_top,
+            glass_right,
+            glass_bottom,
+            fill=self._palette["surface"],
+            outline=self._palette["border"],
+            tags="glass",
+        )
+        self.create_arc(
+            glass_left + 2,
+            glass_top + 2,
+            glass_right - 2,
+            glass_bottom - 4,
+            start=20,
+            extent=140,
+            style="arc",
+            outline=self._palette["surface_highlight"],
+            width=2,
+            tags="glass-highlight",
         )
         if not self._pill_initialized:
             self._pill_x = self._target_pill_x(self.selected_index)
             self._pill_initialized = True
         tab_width = float(width) / len(self.labels)
         pill_half_width = max(4.0, tab_width / 2.0 - 3.0)
-        pill_left = max(capsule_left + 2.0, self._pill_x - pill_half_width)
-        pill_right = min(capsule_right - 2.0, self._pill_x + pill_half_width)
-        pill_top = capsule_top + 3.0
-        pill_bottom = capsule_bottom - 3.0
+        pill_left = max(glass_left + 2.0, self._pill_x - pill_half_width)
+        pill_right = min(glass_right - 2.0, self._pill_x + pill_half_width)
+        pill_top = glass_top + 3.0
+        pill_bottom = glass_bottom - 3.0
         self._rounded_box(
             pill_left,
             pill_top,
             pill_right,
             pill_bottom,
-            fill=self._palette["pill"],
-            outline=self._palette["pill"],
-            tags="pill",
+            fill=self._palette["lens"],
+            outline=self._palette["lens"],
+            tags="lens",
         )
         highlight_y = pill_top + 2.0
         self.create_line(
@@ -223,9 +230,9 @@ class LiquidNavigation(tk.Canvas):
             highlight_y,
             pill_right - min(8.0, pill_half_width),
             highlight_y,
-            fill=self._palette["pill_highlight"],
+            fill=self._palette["lens_highlight"],
             width=1,
-            tags=("pill", "pill-highlight"),
+            tags=("lens", "lens-highlight"),
         )
         for index, label in enumerate(self.labels):
             left, right = self._tab_bounds(index)
@@ -234,7 +241,7 @@ class LiquidNavigation(tk.Canvas):
                 height / 2,
                 text=label,
                 fill=(
-                    self._palette["active_text"]
+                    self._palette["selected_text"]
                     if index == self.selected_index
                     else self._palette["text"]
                 ),
@@ -243,13 +250,13 @@ class LiquidNavigation(tk.Canvas):
             )
         if self._focused:
             self.create_rectangle(
-                inset + 2,
-                inset + 2,
-                width - inset - 2,
-                height - inset - 2,
+                glass_left + 2,
+                glass_top + 2,
+                glass_right - 2,
+                glass_bottom - 2,
                 outline=self._palette["focus"],
                 width=2,
-                tags="focus",
+                tags="focus-ring",
             )
 
     def _rounded_box(
@@ -441,6 +448,49 @@ class LiquidSlider(tk.Canvas):
         ratio = min(1.0, max(0.0, (float(x) - left) / (right - left)))
         return self._snap(self.from_ + ratio * (self.to - self.from_))
 
+    def _is_disabled(self) -> bool:
+        return str(self.cget("state")) == tk.DISABLED
+
+    def _rounded_box(
+        self,
+        left: float,
+        top: float,
+        right: float,
+        bottom: float,
+        *,
+        fill: str,
+        outline: str,
+        tags: str | tuple[str, ...],
+    ) -> None:
+        radius = max(1.0, min((bottom - top) / 2.0, (right - left) / 2.0))
+        self.create_rectangle(
+            left + radius,
+            top,
+            right - radius,
+            bottom,
+            fill=fill,
+            outline=outline,
+            tags=tags,
+        )
+        self.create_oval(
+            left,
+            top,
+            left + radius * 2.0,
+            bottom,
+            fill=fill,
+            outline=outline,
+            tags=tags,
+        )
+        self.create_oval(
+            right - radius * 2.0,
+            top,
+            right,
+            bottom,
+            fill=fill,
+            outline=outline,
+            tags=tags,
+        )
+
     def _redraw(self) -> None:
         if self._destroyed or not self.winfo_exists():
             return
@@ -449,41 +499,46 @@ class LiquidSlider(tk.Canvas):
         left, right = self._rail_bounds()
         center_y = min(height - 10, 21)
         thumb_x = self._value_to_x(self._value)
+        disabled = self._is_disabled()
+        rail_color = self._palette["disabled"] if disabled else self._palette["rail"]
+        fill_color = self._palette["disabled"] if disabled else self._palette["fill"]
+        thumb_color = self._palette["disabled"] if disabled else (
+            self._palette["fill"] if self._pressed else self._palette["thumb"]
+        )
+        thumb_border = self._palette["disabled"] if disabled else self._palette["thumb_border"]
 
-        self.create_rectangle(
+        self._rounded_box(
             left,
-            center_y - 3,
+            center_y - 4,
             right,
-            center_y + 3,
-            fill=self._palette["rail"],
-            outline=self._palette["rail_outline"],
+            center_y + 4,
+            fill=rail_color,
+            outline=rail_color,
             tags="rail",
         )
-        fill_width = max(0.0, thumb_x - left)
-        colors = (
-            "#8EB9E8",
-            "#73A7DE",
-            "#5B92CC",
-            "#356FAF",
-            "#2C6099",
-            "#244F7D",
-        )
-        if fill_width > 0:
-            segment = fill_width / len(colors)
-            for index, color in enumerate(colors):
-                x1 = left + index * segment
-                x2 = left + (index + 1) * segment
-                self.create_rectangle(
-                    x1,
-                    center_y - 2,
-                    x2,
-                    center_y + 2,
-                    fill=color,
-                    outline=color,
-                    tags="fill",
-                )
+        fill_right = max(left, thumb_x)
+        if fill_right - left >= 4:
+            self._rounded_box(
+                left,
+                center_y - 3,
+                fill_right,
+                center_y + 3,
+                fill=fill_color,
+                outline=fill_color,
+                tags="fill",
+            )
+        else:
+            self.create_rectangle(
+                left,
+                center_y - 3,
+                fill_right,
+                center_y + 3,
+                fill=fill_color,
+                outline=fill_color,
+                tags="fill",
+            )
 
-        if self._focused:
+        if self._focused and not disabled:
             self.create_oval(
                 thumb_x - 11,
                 center_y - 11,
@@ -491,41 +546,30 @@ class LiquidSlider(tk.Canvas):
                 center_y + 11,
                 outline=self._palette["focus"],
                 width=2,
-                tags="focus",
+                tags="focus-ring",
             )
-        if self._hovered and not self._pressed:
+        if self._hovered and not self._pressed and not disabled:
             self.create_oval(
                 thumb_x - 10,
                 center_y - 10,
                 thumb_x + 10,
                 center_y + 10,
-                fill=self._palette["hover"],
+                fill=self._palette["halo"],
                 outline="",
                 tags="halo",
             )
 
-        shadow_y = 2 if not self._pressed else 1
-        self.create_oval(
-            thumb_x - 8,
-            center_y - 6 + shadow_y,
-            thumb_x + 8,
-            center_y + 10,
-            fill=self._palette["shadow"],
-            outline="",
-            tags=("thumb", "thumb_shadow"),
-        )
-        body_fill = self._palette["thumb_pressed"] if self._pressed else self._palette["thumb"]
         self.create_oval(
             thumb_x - 8,
             center_y - 8,
             thumb_x + 8,
             center_y + 8,
-            fill=body_fill,
-            outline=self._palette["thumb_outline"],
+            fill=thumb_color,
+            outline=thumb_border,
             width=1,
             tags=("thumb", "thumb_body"),
         )
-        if not self._pressed:
+        if not self._pressed and not disabled:
             self.create_arc(
                 thumb_x - 6,
                 center_y - 6,
@@ -534,7 +578,7 @@ class LiquidSlider(tk.Canvas):
                 start=20,
                 extent=140,
                 style="arc",
-                outline=self._palette["highlight"],
+                outline=self._palette["halo"],
                 width=2,
                 tags=("thumb", "thumb_highlight"),
             )
@@ -549,14 +593,14 @@ class LiquidSlider(tk.Canvas):
                 thumb_x + half_width,
                 bubble_y + 7,
                 fill=self._palette["bubble"],
-                outline=self._palette["thumb_pressed"],
+                outline=fill_color,
                 tags="bubble",
             )
             self.create_text(
                 thumb_x,
                 bubble_y,
                 text=text,
-                fill=self._palette["text"],
+                fill=(self._palette["disabled_text"] if disabled else self._palette["bubble_text"]),
                 font=("Tahoma", 8),
                 tags="bubble",
             )

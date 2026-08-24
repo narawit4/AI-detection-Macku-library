@@ -2,6 +2,7 @@ import tkinter as tk
 import unittest
 from types import SimpleNamespace
 
+import liquid_widgets
 from liquid_widgets import LiquidNavigation, LiquidSlider
 
 
@@ -113,11 +114,29 @@ class LiquidSliderInteractionTests(_SliderTestCase):
         slider.event_generate("<Button-1>", x=14, y=17)
         self.root.update()
         pressed_fill = slider.itemcget("thumb_body", "fill")
-        self.assertEqual(pressed_fill, "#356FAF")
+        self.assertEqual(pressed_fill, "#55DDF6")
         slider.focus_set()
         slider.event_generate("<FocusIn>")
         self.root.update()
-        self.assertTrue(slider.find_withtag("focus"))
+        self.assertTrue(slider.find_withtag("focus-ring"))
+
+    def test_slider_palette_updates_rail_fill_thumb_and_disabled_colors(self):
+        """Fails if the slider stops rendering liquid palette roles."""
+        slider = self.make_slider()
+        slider.set_palette({
+            "background": "#111827", "rail": "#27364A", "fill": "#63E6FF",
+            "thumb": "#E8FBFF", "thumb_border": "#63E6FF",
+            "halo": "#315F70", "text": "#EDF7FF", "bubble": "#24384A",
+            "bubble_text": "#EDF7FF", "focus": "#FFE08A",
+            "disabled": "#536174", "disabled_text": "#8C99AA",
+        })
+        self.assertEqual(slider.itemcget("rail", "fill"), "#27364A")
+        self.assertEqual(slider.itemcget("fill", "fill"), "#63E6FF")
+        self.assertEqual(slider.itemcget("thumb", "fill"), "#E8FBFF")
+        slider.configure(state=tk.DISABLED)
+        slider._redraw()
+        self.assertEqual(slider.itemcget("rail", "fill"), "#536174")
+        self.assertEqual(slider.itemcget("thumb", "fill"), "#536174")
 
     def test_destroy_cancels_pending_bubble_hide(self):
         slider = self.make_slider()
@@ -171,18 +190,22 @@ class LiquidNavigationTests(unittest.TestCase):
         self.nav._on_click(SimpleNamespace(x=(left + right) / 2))
         self.assertEqual(self.nav.selected_index, 1)
 
-    def test_palette_redraws_capsule_and_active_pill(self):
+    def test_navigation_palette_updates_glass_lens_and_focus_ring(self):
+        """Fails if navigation drops a liquid surface, lens, or focus role."""
         palette = {
-            "background": "#171B22", "capsule": "#285A91",
-            "capsule_outline": "#8CBCEB", "pill": "#4C8CCC",
-            "pill_highlight": "#FFFFFF", "text": "#E7ECF3",
-            "active_text": "#FFFFFF", "focus": "#F2B84B",
+            "background": "#111827", "surface": "#1B2638",
+            "surface_highlight": "#33445E", "border": "#45566F",
+            "lens": "#63E6FF", "lens_highlight": "#B8F6FF",
+            "text": "#EDF7FF", "selected_text": "#08212A",
+            "focus": "#FFE08A",
         }
         self.nav.set_palette(palette)
+        self.nav._on_focus_in()
         self.root.update_idletasks()
-        self.assertEqual(self.nav.cget("background"), "#171B22")
-        self.assertEqual(self.nav.itemcget("capsule", "fill"), "#285A91")
-        self.assertEqual(self.nav.itemcget("pill", "fill"), "#4C8CCC")
+        self.assertEqual(self.nav.cget("background"), "#111827")
+        self.assertEqual(self.nav.itemcget("glass", "fill"), "#1B2638")
+        self.assertEqual(self.nav.itemcget("lens", "fill"), "#63E6FF")
+        self.assertEqual(self.nav.itemcget("focus-ring", "outline"), "#FFE08A")
 
     def test_new_selection_replaces_obsolete_animation(self):
         self.nav.select(2)
@@ -237,7 +260,7 @@ class LiquidNavigationTests(unittest.TestCase):
 
     def test_rounded_shapes_do_not_contain_collapsed_center_rectangles(self):
         self.nav._redraw()
-        for item_id in self.nav.find_withtag("capsule") + self.nav.find_withtag("pill"):
+        for item_id in self.nav.find_withtag("glass") + self.nav.find_withtag("lens"):
             if self.nav.type(item_id) == "rectangle":
                 coordinates = self.nav.coords(item_id)
                 self.assertLess(coordinates[1], coordinates[3])
@@ -247,3 +270,9 @@ class LiquidNavigationTests(unittest.TestCase):
         self.nav.destroy()
         self.root.update()
         self.assertIsNone(self.nav._animation_after_id)
+
+    def test_exported_widget_classes_and_palettes_have_no_xp_names(self):
+        """Fails if an XP-named public liquid-widget symbol is reintroduced."""
+        for name, value in vars(liquid_widgets).items():
+            if isinstance(value, type) or name.endswith("PALETTE"):
+                self.assertNotIn("XP", name)
