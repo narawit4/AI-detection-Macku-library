@@ -15,6 +15,13 @@ DARK_ICON_PALETTE = {
 }
 
 
+def canvas_text_font_family(canvas, tag):
+    for item_id in canvas.find_withtag(tag):
+        if canvas.type(item_id) == "text":
+            return canvas.tk.splitlist(canvas.itemcget(item_id, "font"))[0]
+    raise AssertionError(f"no text item found for Canvas tag {tag!r}")
+
+
 class _SliderTestCase(unittest.TestCase):
     slider_type = LiquidSlider
 
@@ -120,6 +127,7 @@ class LiquidSliderInteractionTests(_SliderTestCase):
         self.root.update()
         self.assertTrue(slider.find_withtag("halo"))
         self.assertTrue(slider.find_withtag("bubble"))
+        self.assertEqual(canvas_text_font_family(slider, "bubble"), "Segoe UI")
         slider.event_generate("<Button-1>", x=14, y=17)
         self.root.update()
         pressed_fill = slider.itemcget("thumb_body", "fill")
@@ -215,6 +223,10 @@ class LiquidNavigationTests(unittest.TestCase):
         self.assertEqual(self.nav.itemcget("glass", "fill"), "#1B2638")
         self.assertEqual(self.nav.itemcget("lens", "fill"), "#63E6FF")
         self.assertEqual(self.nav.itemcget("focus-ring", "outline"), "#FFE08A")
+        self.assertEqual(
+            canvas_text_font_family(self.nav, "label"),
+            "Segoe UI",
+        )
 
     def test_new_selection_replaces_obsolete_animation(self):
         self.nav.select(2)
@@ -330,6 +342,10 @@ class LiquidIconButtonTests(unittest.TestCase):
         self.assertEqual(
             self.button.itemcget("focus-ring", "outline"),
             "#FFE08A",
+        )
+        self.assertEqual(
+            canvas_text_font_family(self.button, "icon"),
+            "Segoe UI",
         )
         self.assertEqual(self.button.accessible_name, "Reconnect Makcu")
 

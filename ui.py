@@ -151,6 +151,8 @@ class JitterApp(tk.Tk):
         secondary_pressed = p["surface"] if self._theme == "dark" else "#B7EFF8"
         danger_hover = p["red"] if self._theme == "dark" else "#DF6670"
         danger_pressed = "#A52F42" if self._theme == "dark" else "#9F3140"
+        disabled_background = p["border"] if self._theme == "dark" else "#D5E0E5"
+        disabled_text = p["muted"] if self._theme == "dark" else "#4A5E69"
 
         style.configure("Liquid.App.TFrame", background=p["window"])
         style.configure("Liquid.Surface.TFrame", background=p["surface"],
@@ -174,10 +176,10 @@ class JitterApp(tk.Tk):
                         relief="raised", borderwidth=1,
                         font=(FONT_FAMILY, 10, "bold"), padding=(14, 8))
         style.map("Liquid.Primary.TButton",
-                  background=[("disabled", p["border"]),
+                  background=[("disabled", disabled_background),
                               ("pressed", p["accent_pressed"]),
                               ("active", p["accent_hover"])],
-                  foreground=[("disabled", p["muted"])],
+                  foreground=[("disabled", disabled_text)],
                   bordercolor=[("focus", p["focus"]),
                                ("!focus", p["accent_pressed"])],
                   relief=[("pressed", "sunken"), ("!pressed", "raised")])
@@ -187,10 +189,10 @@ class JitterApp(tk.Tk):
                         relief="raised", borderwidth=1,
                         font=BODY_FONT, padding=(12, 7))
         style.map("Liquid.Secondary.TButton",
-                  background=[("disabled", p["border"]),
+                  background=[("disabled", disabled_background),
                               ("pressed", secondary_pressed),
                               ("active", secondary_hover)],
-                  foreground=[("disabled", p["muted"])],
+                  foreground=[("disabled", disabled_text)],
                   bordercolor=[("focus", p["focus"]),
                                ("!focus", p["border"])],
                   relief=[("pressed", "sunken"), ("!pressed", "raised")])
@@ -200,10 +202,10 @@ class JitterApp(tk.Tk):
                         relief="raised", borderwidth=1,
                         font=(FONT_FAMILY, 10, "bold"), padding=(14, 8))
         style.map("Liquid.Danger.TButton",
-                  background=[("disabled", p["border"]),
+                  background=[("disabled", disabled_background),
                               ("pressed", danger_pressed),
                               ("active", danger_hover)],
-                  foreground=[("disabled", p["muted"])],
+                  foreground=[("disabled", disabled_text)],
                   bordercolor=[("focus", p["focus"]),
                                ("!focus", p["red"])],
                   relief=[("pressed", "sunken"), ("!pressed", "raised")])
@@ -228,6 +230,24 @@ class JitterApp(tk.Tk):
         style.map("Liquid.Readonly.TCombobox",
                   fieldbackground=[("readonly", p["raised"])],
                   foreground=[("readonly", p["text"])])
+        style.configure(
+            "Liquid.Vertical.TScrollbar",
+            background=p["raised"],
+            troughcolor=p["surface"],
+            bordercolor=p["border"],
+            arrowcolor=p["text"],
+            darkcolor=p["border"],
+            lightcolor=p["raised"],
+        )
+        style.map(
+            "Liquid.Vertical.TScrollbar",
+            background=[
+                ("disabled", disabled_background),
+                ("pressed", p["accent_pressed"]),
+                ("active", p["accent_hover"]),
+            ],
+            arrowcolor=[("disabled", disabled_text)],
+        )
 
     @property
     def _palette(self) -> Mapping[str, str]:
@@ -310,6 +330,7 @@ class JitterApp(tk.Tk):
         self._build_advanced_workspace()
         self._build_quick_card()
         self._build_advanced_card()
+        self._apply_combobox_popup_palette()
         self.select_page(0)
         self._build_main_control_card()
         self._build_footer()
@@ -353,6 +374,7 @@ class JitterApp(tk.Tk):
         )
         self.theme_button.accessible_name = self.theme_tooltip_text
         self._hide_theme_tooltip()
+        self._apply_combobox_popup_palette()
         icon_palette = self._icon_palette()
         for button in (
             self.reconnect_button,
@@ -408,6 +430,38 @@ class JitterApp(tk.Tk):
             "highlight": p["surface"], "focus": p["focus"],
         }
 
+    def _apply_combobox_popup_palette(self) -> None:
+        p = self._palette
+        for combo in (
+            self.trigger_combo,
+            self.modifier_combo,
+            self.preset_combo,
+            self.waveform_combo,
+            self.motion_curve_combo,
+        ):
+            try:
+                popdown = self.tk.call(
+                    "ttk::combobox::PopdownWindow", str(combo)
+                )
+                self.tk.call(
+                    f"{popdown}.f.l",
+                    "configure",
+                    "-background", p["raised"],
+                    "-foreground", p["text"],
+                    "-selectbackground", p["accent"],
+                    "-selectforeground", "#07252C",
+                )
+                self.tk.call(
+                    f"{popdown}.f.sb",
+                    "configure",
+                    "-style", "Liquid.Vertical.TScrollbar",
+                )
+            except tk.TclError:
+                logging.debug(
+                    "Could not apply combobox popup palette to %s", combo,
+                    exc_info=True,
+                )
+
     def _build_advanced_workspace(self) -> None:
         self.advanced_host = ttk.Frame(
             self.advanced_page, style="Liquid.App.TFrame"
@@ -425,6 +479,7 @@ class JitterApp(tk.Tk):
             self.advanced_host,
             orient="vertical",
             command=self.advanced_canvas.yview,
+            style="Liquid.Vertical.TScrollbar",
         )
         self.advanced_canvas.configure(yscrollcommand=self.advanced_scrollbar.set)
         self.advanced_canvas.grid(row=0, column=0, sticky="nsew")

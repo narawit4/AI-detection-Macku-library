@@ -79,6 +79,19 @@ def widget_texts(widget):
     return values
 
 
+def contrast_ratio(first, second):
+    def luminance(color):
+        channels = [int(color[index:index + 2], 16) / 255.0
+                    for index in (1, 3, 5)]
+        linear = [channel / 12.92 if channel <= 0.04045
+                  else ((channel + 0.055) / 1.055) ** 2.4
+                  for channel in channels]
+        return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+    lighter, darker = sorted((luminance(first), luminance(second)), reverse=True)
+    return (lighter + 0.05) / (darker + 0.05)
+
+
 class JitterLayoutTests(unittest.TestCase):
     def setUp(self):
         self.service = None
@@ -498,6 +511,87 @@ class JitterLayoutTests(unittest.TestCase):
                 style.lookup("Liquid.Title.TLabel", "font")
             ),
             ("Segoe UI", "18", "bold"),
+        )
+
+    def test_advanced_scrollbar_uses_liquid_colors_in_both_themes(self):
+        """Fails if Advanced scrolling falls back to the platform theme."""
+        style = ttk.Style(self.app)
+        self.assertEqual(
+            self.app.advanced_scrollbar.cget("style"),
+            "Liquid.Vertical.TScrollbar",
+        )
+        for expected_trough, expected_thumb, expected_arrow in (
+            ("#E5F0F5", "#FFFFFF", "#263640"),
+            ("#172232", "#202F43", "#EEF8FF"),
+        ):
+            with self.subTest(theme=self.app.theme_var.get()):
+                self.assertEqual(
+                    style.lookup("Liquid.Vertical.TScrollbar", "troughcolor"),
+                    expected_trough,
+                )
+                self.assertEqual(
+                    style.lookup("Liquid.Vertical.TScrollbar", "background"),
+                    expected_thumb,
+                )
+                self.assertEqual(
+                    style.lookup("Liquid.Vertical.TScrollbar", "arrowcolor"),
+                    expected_arrow,
+                )
+            self.app.toggle_theme()
+
+    def test_combobox_popups_use_liquid_colors_in_both_themes(self):
+        """Fails if classic Tk popup Listboxes ignore the active theme."""
+        combos = (
+            self.app.trigger_combo,
+            self.app.modifier_combo,
+            self.app.preset_combo,
+            self.app.waveform_combo,
+            self.app.motion_curve_combo,
+        )
+        for expected in (
+            ("#FFFFFF", "#263640", "#55DDF6", "#07252C"),
+            ("#202F43", "#EEF8FF", "#63E6FF", "#07252C"),
+        ):
+            for combo in combos:
+                with self.subTest(theme=self.app.theme_var.get(), combo=str(combo)):
+                    popdown = self.app.tk.call(
+                        "ttk::combobox::PopdownWindow", str(combo)
+                    )
+                    listbox = f"{popdown}.f.l"
+                    actual = tuple(
+                        self.app.tk.call(listbox, "cget", option)
+                        for option in (
+                            "-background",
+                            "-foreground",
+                            "-selectbackground",
+                            "-selectforeground",
+                        )
+                    )
+                    self.assertEqual(actual, expected)
+                    self.assertEqual(
+                        self.app.tk.call(
+                            f"{popdown}.f.sb", "cget", "-style"
+                        ),
+                        "Liquid.Vertical.TScrollbar",
+                    )
+            self.app.toggle_theme()
+
+    def test_light_disabled_secondary_button_remains_readable(self):
+        """Fails if disabled secondary text drops below readable contrast."""
+        style = ttk.Style(self.app)
+        normal_background = style.lookup(
+            "Liquid.Secondary.TButton", "background"
+        )
+        disabled_background = style.lookup(
+            "Liquid.Secondary.TButton", "background", ("disabled",)
+        )
+        disabled_foreground = style.lookup(
+            "Liquid.Secondary.TButton", "foreground", ("disabled",)
+        )
+        self.assertNotEqual(disabled_background, normal_background)
+        self.assertGreaterEqual(
+            contrast_ratio(disabled_background, disabled_foreground),
+            4.5,
         )
 
     def test_liquid_buttons_use_high_contrast_palette(self):

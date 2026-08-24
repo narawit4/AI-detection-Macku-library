@@ -254,7 +254,7 @@ class LiquidNavigation(tk.Canvas):
                     if index == self.selected_index
                     else self._palette["text"]
                 ),
-                font=("Tahoma", 9, "bold" if index == self.selected_index else "normal"),
+                font=("Segoe UI", 9, "bold" if index == self.selected_index else "normal"),
                 tags=("tab", f"tab-{index}", "label"),
             )
         if self._focused:
@@ -610,7 +610,7 @@ class LiquidSlider(tk.Canvas):
                 bubble_y,
                 text=text,
                 fill=(self._palette["disabled_text"] if disabled else self._palette["bubble_text"]),
-                font=("Tahoma", 8),
+                font=("Segoe UI", 8),
                 tags="bubble",
             )
 
@@ -845,7 +845,7 @@ class LiquidIconButton(tk.Canvas):
             height / 2,
             text=self.icon,
             fill=icon_color,
-            font=("Tahoma", max(10, round(self.size * 0.45)), "bold"),
+            font=("Segoe UI", max(10, round(self.size * 0.45)), "bold"),
             tags="icon",
         )
         if self._focused and self._enabled:
