@@ -333,27 +333,38 @@ class LiquidIconButtonTests(unittest.TestCase):
         )
         self.assertEqual(self.button.accessible_name, "Reconnect Makcu")
 
-    def test_pointer_release_activates_and_resets_pressed_state(self):
-        """Fails if pointer activation omits the command or press cleanup."""
+    def test_pointer_release_activates_and_clears_pressed_state(self):
+        """Fails if a normal release leaves a button visibly pressed."""
         self.button._on_enter()
         self.button._on_press(SimpleNamespace(x=17, y=17))
         self.button._on_release(SimpleNamespace(x=17, y=17))
         self.assertEqual(self.calls, ["called"])
-        self.assertTrue(self.button._pressed)
-        self.assertIsNotNone(self.button._press_after_id)
-        self.root.after(120, self.root.quit)
-        self.root.mainloop()
         self.assertFalse(self.button._pressed)
-        self.assertIsNone(self.button._press_after_id)
 
-    def test_destroy_cancels_pending_press_reset(self):
-        """Fails if a destroyed button leaves its scheduled callback alive."""
+    def test_command_destroying_button_leaves_no_pressed_state_or_callback(self):
+        """Fails if command teardown is followed by stale press cleanup."""
+        self.button.command = self.button.destroy
         self.button._on_press(SimpleNamespace(x=17, y=17))
         self.button._on_release(SimpleNamespace(x=17, y=17))
-        callback_id = self.button._press_after_id
-        self.assertIsNotNone(callback_id)
-        self.button.destroy()
         self.root.update()
         self.assertTrue(self.button._destroyed)
-        self.assertIsNone(self.button._press_after_id)
-        self.assertNotIn(callback_id, self.root.tk.call("after", "info"))
+        self.assertFalse(self.button._pressed)
+
+    def test_throwing_command_clears_pressed_state_before_propagating(self):
+        """Fails if a command error leaves the action visibly pressed."""
+        def raise_command_error():
+            raise RuntimeError("command failure")
+
+        self.button.command = raise_command_error
+        self.button._on_press(SimpleNamespace(x=17, y=17))
+        with self.assertRaisesRegex(RuntimeError, "command failure"):
+            self.button._on_release(SimpleNamespace(x=17, y=17))
+        self.assertFalse(self.button._pressed)
+
+    def test_release_outside_does_not_activate_and_releases_press_state(self):
+        """Fails if an outside release activates or leaves a stuck button."""
+        self.button._on_press(SimpleNamespace(x=17, y=17))
+        self.button._on_leave()
+        self.button._on_release(SimpleNamespace(x=34, y=17))
+        self.assertEqual(self.calls, [])
+        self.assertFalse(self.button._pressed)

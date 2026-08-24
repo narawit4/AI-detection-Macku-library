@@ -699,8 +699,6 @@ class LiquidSlider(tk.Canvas):
 class LiquidIconButton(tk.Canvas):
     """Compact, keyboard-accessible Canvas button for liquid icon actions."""
 
-    PRESS_RESET_MS = 90
-
     def __init__(
         self,
         parent,
@@ -734,7 +732,7 @@ class LiquidIconButton(tk.Canvas):
         self._hovered = False
         self._pressed = False
         self._focused = False
-        self._press_after_id: str | None = None
+        self._has_pointer_grab = False
 
         self.bind("<Configure>", self._on_configure)
         self.bind("<Enter>", self._on_enter)
@@ -755,7 +753,7 @@ class LiquidIconButton(tk.Canvas):
     def set_enabled(self, enabled: bool) -> None:
         self._enabled = bool(enabled)
         if not self._enabled:
-            self._cancel_press_reset()
+            self._release_pointer_grab()
             self._pressed = False
             self._hovered = False
             self._focused = False
@@ -882,15 +880,28 @@ class LiquidIconButton(tk.Canvas):
     def _on_press(self, _event=None) -> str:
         if self._enabled:
             self.focus_set()
-            self._cancel_press_reset()
             self._pressed = True
+            try:
+                self.grab_set()
+                self._has_pointer_grab = True
+            except (RuntimeError, tk.TclError):
+                self._has_pointer_grab = False
             self._redraw()
         return "break"
 
-    def _on_release(self, _event=None) -> str:
-        if self._enabled and self._pressed:
+    def _on_release(self, event=None) -> str:
+        was_pressed = self._pressed
+        self._release_pointer_grab()
+        self._pressed = False
+        if not self._destroyed:
+            self._redraw()
+        if (
+            was_pressed
+            and self._enabled
+            and not self._destroyed
+            and self._release_is_inside(event)
+        ):
             self._activate()
-            self._schedule_press_reset()
         return "break"
 
     def _on_focus_in(self, _event=None) -> None:
@@ -902,37 +913,29 @@ class LiquidIconButton(tk.Canvas):
         self._focused = False
         self._redraw()
 
-    def _schedule_press_reset(self) -> None:
-        self._cancel_press_reset()
-        try:
-            self._press_after_id = self.after(
-                self.PRESS_RESET_MS,
-                self._clear_pressed,
-            )
-        except (RuntimeError, tk.TclError):
-            self._press_after_id = None
-            self._pressed = False
-            self._redraw()
+    def _release_is_inside(self, event) -> bool:
+        if event is None:
+            return False
+        width = max(self.winfo_width(), self.winfo_reqwidth())
+        height = max(self.winfo_height(), self.winfo_reqheight())
+        return (
+            0 <= float(getattr(event, "x", -1)) < width
+            and 0 <= float(getattr(event, "y", -1)) < height
+        )
 
-    def _cancel_press_reset(self) -> None:
-        callback_id = self._press_after_id
-        self._press_after_id = None
-        if callback_id is not None:
-            try:
-                self.after_cancel(callback_id)
-            except (RuntimeError, tk.TclError):
-                pass
-
-    def _clear_pressed(self) -> None:
-        self._press_after_id = None
-        if self._destroyed:
+    def _release_pointer_grab(self) -> None:
+        if not self._has_pointer_grab:
             return
-        self._pressed = False
-        self._redraw()
+        self._has_pointer_grab = False
+        try:
+            self.grab_release()
+        except (RuntimeError, tk.TclError):
+            pass
 
     def _on_configure(self, _event=None) -> None:
         self._redraw()
 
     def _on_destroy(self, _event=None) -> None:
         self._destroyed = True
-        self._cancel_press_reset()
+        self._pressed = False
+        self._release_pointer_grab()
