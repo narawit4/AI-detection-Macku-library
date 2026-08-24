@@ -46,7 +46,9 @@ DARK_PALETTE = {
     "amber": "#F6C85F", "red": "#FF6B78", "danger": "#C23147",
     "danger_hover": "#CF3B4E", "danger_pressed": "#A52F42",
     "disabled_surface": "#34465C", "disabled_text": "#91A5B8",
-    "icon_disabled": "#91A5B8", "focus": "#FFE08A",
+    "icon_disabled": "#91A5B8", "green_glow": "#194A3B",
+    "amber_glow": "#4A3D21", "red_glow": "#4B2730",
+    "focus": "#FFE08A",
 }
 
 LIGHT_PALETTE = {
@@ -57,7 +59,14 @@ LIGHT_PALETTE = {
     "amber": "#945F00", "red": "#B83246", "danger": "#B83246",
     "danger_hover": "#C74652", "danger_pressed": "#9F3140",
     "disabled_surface": "#D5E0E5", "disabled_text": "#4A5E69",
-    "icon_disabled": "#4A5E69", "focus": "#8B5CF6",
+    "icon_disabled": "#4A5E69", "green_glow": "#B9E6D4",
+    "amber_glow": "#F1D89A", "red_glow": "#F1B8C0",
+    "focus": "#8B5CF6",
+}
+
+_BACKGROUND_BANDS = {
+    "dark": ("#0A111C", "#0C1623", "#0D1A2A", "#102035", "#12253C"),
+    "light": ("#F8FBFD", "#F4F9FB", "#EFF6F9", "#EAF4F8", "#E5F1F6"),
 }
 
 FONT_FAMILY = "Segoe UI"
@@ -90,7 +99,7 @@ def _motion_summary_text(settings: MotionSettings) -> str:
 
 
 class JitterApp(tk.Tk):
-    """Fixed-size, one-page Focused Dashboard for Jitter.
+    """Fixed-size Liquid Control Deck for Jitter.
 
     The factories make the shell hardware-free in tests and give the runtime
     layer a narrow seam for the real Makcu and global-hotkey services.
@@ -178,7 +187,7 @@ class JitterApp(tk.Tk):
 
         style.configure("Liquid.App.TFrame", background=p["window"])
         style.configure("Liquid.Surface.TFrame", background=p["surface"],
-                        bordercolor=p["border"], relief="solid", borderwidth=1)
+                        bordercolor=p["border"], relief="flat", borderwidth=0)
         style.configure("Liquid.Title.TLabel", background=p["surface"],
                         foreground=p["text"], font=TITLE_FONT)
         style.configure("Liquid.Subtitle.TLabel", background=p["surface"],
@@ -316,23 +325,32 @@ class JitterApp(tk.Tk):
         return ("Custom", *MOTION_PRESETS.keys())
 
     def _build_page(self) -> None:
-        self.shell = ttk.Frame(
-            self, style="Liquid.App.TFrame", padding=(12, 12, 12, 10)
+        self.shell = tk.Canvas(
+            self,
+            background=self._palette["window"],
+            highlightthickness=0,
+            borderwidth=0,
+            takefocus=False,
         )
         self.shell.pack(fill="both", expand=True)
         self.shell.columnconfigure(0, weight=1)
         self.shell.rowconfigure(2, weight=1)
+        self.shell.bind("<Configure>", self._redraw_shell_art, add="+")
 
         self.identity_frame = ttk.Frame(
             self.shell, style="Liquid.Surface.TFrame", padding=(14, 8)
         )
-        self.identity_frame.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        self.identity_frame.grid(
+            row=0, column=0, sticky="ew", padx=16, pady=(14, 8)
+        )
         self._build_identity()
 
         self.navigation_frame = ttk.Frame(
             self.shell, style="Liquid.App.TFrame"
         )
-        self.navigation_frame.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        self.navigation_frame.grid(
+            row=1, column=0, sticky="ew", padx=16, pady=(0, 8)
+        )
         self.nav = LiquidNavigation(
             self.navigation_frame,
             labels=("Control", "Motion", "Advanced"),
@@ -343,7 +361,7 @@ class JitterApp(tk.Tk):
         self._build_navigation_actions()
 
         self.page_host = ttk.Frame(self.shell, style="Liquid.App.TFrame")
-        self.page_host.grid(row=2, column=0, sticky="nsew")
+        self.page_host.grid(row=2, column=0, sticky="nsew", padx=16)
         self.page_host.rowconfigure(0, weight=1)
         self.page_host.columnconfigure(0, weight=1)
         self.control_page = ttk.Frame(self.page_host, style="Liquid.App.TFrame")
@@ -361,6 +379,13 @@ class JitterApp(tk.Tk):
         self.select_page(0)
         self._build_main_control_card()
         self._build_footer()
+        for panel in (
+            self.identity_frame,
+            self.page_host,
+            self.runtime_frame,
+        ):
+            panel.bind("<Configure>", self._redraw_shell_art, add="+")
+        self._redraw_shell_art()
 
     def _build_identity(self) -> None:
         identity_copy = ttk.Frame(
@@ -386,13 +411,27 @@ class JitterApp(tk.Tk):
             style="Liquid.StatusDisconnected.TLabel",
         )
         self.connection_label.pack(side="right")
+        self.connection_indicator = tk.Canvas(
+            self.identity_frame,
+            width=18,
+            height=18,
+            background=self._palette["surface"],
+            highlightthickness=0,
+            borderwidth=0,
+            takefocus=False,
+        )
+        self.connection_indicator.pack(side="right", padx=(8, 3), pady=(1, 0))
+        self._redraw_connection_indicator()
 
     def toggle_theme(self) -> None:
         self._theme = "light" if self._theme == "dark" else "dark"
         self.theme_var.set(self._theme)
         self._configure_styles()
         self.configure(background=self._palette["window"])
+        self.shell.configure(background=self._palette["window"])
         self.advanced_canvas.configure(background=self._palette["window"])
+        self._redraw_shell_art()
+        self._redraw_connection_indicator()
         self.nav.set_palette(self._navigation_palette())
         self.theme_button.icon = "☀" if self._theme == "dark" else "☾"
         self.theme_tooltip_text = (
@@ -552,7 +591,9 @@ class JitterApp(tk.Tk):
         self.runtime_frame = ttk.Frame(
             self.shell, style="Liquid.Surface.TFrame", padding=(10, 8)
         )
-        self.runtime_frame.grid(row=3, column=0, sticky="ew", pady=(8, 0))
+        self.runtime_frame.grid(
+            row=3, column=0, sticky="ew", padx=16, pady=(8, 0)
+        )
         self.runtime_frame.columnconfigure(0, weight=1, uniform="runtime_actions")
         self.runtime_frame.columnconfigure(1, weight=2)
         self.runtime_frame.columnconfigure(2, weight=1, uniform="runtime_actions")
@@ -866,7 +907,9 @@ class JitterApp(tk.Tk):
 
     def _build_footer(self) -> None:
         self.footer_frame = ttk.Frame(self.shell, style="Liquid.App.TFrame")
-        self.footer_frame.grid(row=4, column=0, sticky="ew", pady=(6, 0))
+        self.footer_frame.grid(
+            row=4, column=0, sticky="ew", padx=16, pady=(6, 10)
+        )
         self.footer_label = ttk.Label(
             self.footer_frame,
             textvariable=self.footer_var,
@@ -914,6 +957,122 @@ class JitterApp(tk.Tk):
             self._theme_tooltip = None
 
     # ---- shell interactions -------------------------------------------
+
+    def _redraw_shell_art(self, _event: tk.Event | None = None) -> None:
+        if not hasattr(self, "shell"):
+            return
+        self.shell.delete("shell-art")
+        width = max(self.shell.winfo_width(), self.shell.winfo_reqwidth())
+        height = max(self.shell.winfo_height(), self.shell.winfo_reqheight())
+        bands = _BACKGROUND_BANDS[self._theme]
+        for index, color in enumerate(bands):
+            top = round(height * index / len(bands))
+            bottom = round(height * (index + 1) / len(bands))
+            self.shell.create_rectangle(
+                0,
+                top,
+                width,
+                bottom,
+                fill=color,
+                outline=color,
+                tags=("shell-art", "background-band", f"background-band-{index}"),
+            )
+
+        p = self._palette
+        for name, attribute in (
+            ("identity", "identity_frame"),
+            ("page", "page_host"),
+            ("runtime", "runtime_frame"),
+        ):
+            panel = getattr(self, attribute, None)
+            if panel is None:
+                continue
+            left = panel.winfo_x() - 4
+            top = panel.winfo_y() - 4
+            right = left + max(panel.winfo_width(), panel.winfo_reqwidth()) + 8
+            bottom = top + max(panel.winfo_height(), panel.winfo_reqheight()) + 8
+            if right <= left or bottom <= top:
+                continue
+            radius = min(18, max(4, (bottom - top) // 3))
+            points = (
+                left + radius, top, right - radius, top,
+                right, top, right, top + radius,
+                right, bottom - radius, right, bottom,
+                right - radius, bottom, left + radius, bottom,
+                left, bottom, left, bottom - radius,
+                left, top + radius, left, top,
+            )
+            self.shell.create_polygon(
+                points,
+                smooth=True,
+                splinesteps=24,
+                fill=p["surface"],
+                outline=p["border"],
+                width=1,
+                tags=(
+                    "shell-art",
+                    "rounded-surface",
+                    "floating-panel",
+                    f"floating-panel-{name}",
+                ),
+            )
+            self.shell.create_line(
+                left + radius,
+                top + 2,
+                right - radius,
+                top + 2,
+                fill=p["raised"],
+                width=1,
+                tags=("shell-art", "panel-highlight", f"panel-highlight-{name}"),
+            )
+        self.shell.tag_lower("shell-art")
+
+    def _redraw_connection_indicator(self) -> None:
+        indicator = getattr(self, "connection_indicator", None)
+        if indicator is None:
+            return
+        state = self.connection_status_var.get().lower()
+        role = {
+            "connected": "green",
+            "connecting": "amber",
+        }.get(state, "red")
+        p = self._palette
+        indicator.configure(background=p["surface"])
+        indicator.delete("all")
+        state_tag = f"status-{state if state in {'connected', 'connecting'} else 'disconnected'}"
+        indicator.create_oval(
+            1,
+            1,
+            17,
+            17,
+            fill=p[f"{role}_glow"],
+            outline="",
+            tags=("status-glow", state_tag),
+        )
+        indicator.create_oval(
+            5,
+            5,
+            13,
+            13,
+            fill=p[role],
+            outline=p["raised"],
+            width=1,
+            tags=("status-marker", state_tag),
+        )
+        indicator.create_oval(
+            7,
+            6,
+            9,
+            8,
+            fill=p["raised"],
+            outline="",
+            tags=("status-highlight", state_tag),
+        )
+
+    def _set_connection_state(self, state: str) -> None:
+        self.connection_status_var.set(state)
+        self.connection_label.configure(style=f"Liquid.Status{state}.TLabel")
+        self._redraw_connection_indicator()
 
     def select_page(self, index: int) -> None:
         selected = min(len(self.pages) - 1, max(0, int(index)))
@@ -1121,23 +1280,14 @@ class JitterApp(tk.Tk):
             return
         kind = event.kind
         if kind == "connecting":
-            self.connection_status_var.set("Connecting")
-            self.connection_label.configure(
-                style="Liquid.StatusConnecting.TLabel"
-            )
+            self._set_connection_state("Connecting")
             self.device_status_var.set("Connecting to Makcu...")
         elif kind in {"connected", "reconnected"}:
-            self.connection_status_var.set("Connected")
-            self.connection_label.configure(
-                style="Liquid.StatusConnected.TLabel"
-            )
+            self._set_connection_state("Connected")
             self.device_status_var.set(str(event.payload or "Makcu device connected"))
             self.footer_var.set("Makcu connected")
         elif kind == "disconnected":
-            self.connection_status_var.set("Disconnected")
-            self.connection_label.configure(
-                style="Liquid.StatusDisconnected.TLabel"
-            )
+            self._set_connection_state("Disconnected")
             self.device_status_var.set(str(event.payload or "Makcu device not connected"))
             self.emergency_stop("Device disconnected")
         elif kind == "button":

@@ -238,6 +238,55 @@ class JitterLayoutTests(unittest.TestCase):
             [0, 1, 2, 3, 4],
         )
 
+    def test_shell_canvas_exposes_semantic_liquid_visual_layers(self):
+        """Fails if the shell drops its graded and rounded Canvas surfaces."""
+        shell = getattr(self.app, "shell", None)
+        self.assertIsInstance(shell, tk.Canvas)
+        self.app.deiconify()
+        self.app.update()
+
+        for tag in (
+            "background-band",
+            "rounded-surface",
+            "floating-panel",
+            "panel-highlight",
+            "floating-panel-identity",
+            "floating-panel-page",
+            "floating-panel-runtime",
+        ):
+            with self.subTest(tag=tag):
+                self.assertTrue(shell.find_withtag(tag))
+
+        light_bands = tuple(
+            shell.itemcget(item, "fill")
+            for item in shell.find_withtag("background-band")
+        )
+        self.app.toggle_theme()
+        self.app.update()
+        dark_bands = tuple(
+            shell.itemcget(item, "fill")
+            for item in shell.find_withtag("background-band")
+        )
+        self.assertNotEqual(dark_bands, light_bands)
+
+    def test_connection_indicator_has_glow_and_semantic_state_tags(self):
+        """Fails if connection state returns to a text-only indicator."""
+        indicator = getattr(self.app, "connection_indicator", None)
+        self.assertIsInstance(indicator, tk.Canvas)
+        self.assertLessEqual(indicator.winfo_reqwidth(), 24)
+        self.assertTrue(indicator.find_withtag("status-glow"))
+        self.assertTrue(indicator.find_withtag("status-marker"))
+        self.assertTrue(indicator.find_withtag("status-disconnected"))
+
+        disconnected_fill = indicator.itemcget("status-marker", "fill")
+        self.app.handle_service_event(ServiceEvent("connecting"))
+        self.assertTrue(indicator.find_withtag("status-connecting"))
+        connecting_fill = indicator.itemcget("status-marker", "fill")
+        self.app.handle_service_event(ServiceEvent("connected", "Fake Makcu"))
+        self.assertTrue(indicator.find_withtag("status-connected"))
+        connected_fill = indicator.itemcget("status-marker", "fill")
+        self.assertEqual(len({disconnected_fill, connecting_fill, connected_fill}), 3)
+
     def test_navigation_owns_control_motion_and_advanced_pages(self):
         self.assertEqual(self.app.nav.labels, ("Control", "Motion", "Advanced"))
         self.assertEqual(
