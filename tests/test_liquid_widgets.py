@@ -212,6 +212,57 @@ class LiquidNavigationTests(unittest.TestCase):
     def tearDown(self):
         self.root.destroy()
 
+    def make_vertical_nav(self):
+        return LiquidNavigation(
+            self.root,
+            labels=("Control", "Motion", "Advanced"),
+            command=self.selected.append,
+            orientation="vertical",
+            width=152,
+            height=216,
+        )
+
+    def test_rejects_unknown_orientation(self):
+        with self.assertRaisesRegex(ValueError, "orientation"):
+            LiquidNavigation(
+                self.root,
+                labels=("A",),
+                command=lambda _index: None,
+                orientation="diagonal",
+            )
+
+    def test_vertical_navigation_stacks_destinations_and_moves_lens_on_y_axis(self):
+        nav = self.make_vertical_nav()
+        nav.pack()
+        self.root.update()
+        first = nav._target_lens_position(0)
+        last = nav._target_lens_position(2)
+        self.assertEqual(first[0], last[0])
+        self.assertLess(first[1], last[1])
+
+    def test_vertical_pointer_selects_the_destination_hit_on_y_axis(self):
+        nav = self.make_vertical_nav()
+        nav.pack()
+        self.root.update()
+        left, top, right, bottom = nav._item_bounds(2)
+        nav._on_click(SimpleNamespace(x=(left + right) / 2, y=(top + bottom) / 2))
+        self.assertEqual(nav.selected_index, 2)
+
+    def test_vertical_up_down_home_end_and_activation(self):
+        nav = self.make_vertical_nav()
+        nav.pack()
+        self.root.deiconify()
+        self.root.update()
+        nav.focus_force()
+        nav.select(1, animate=False)
+        nav.event_generate("<Down>")
+        nav.event_generate("<Up>")
+        nav.event_generate("<End>")
+        nav.event_generate("<Return>")
+        self.root.update()
+        self.assertEqual(nav.selected_index, 2)
+        self.assertEqual(self.selected[-1], 2)
+
     def test_select_clamps_index_and_notifies_once(self):
         self.nav.select(2, animate=False)
         self.assertEqual(self.nav.selected_index, 2)

@@ -46,6 +46,7 @@ class LiquidNavigation(tk.Canvas):
         animation_ms: int = 160,
         width: int = 330,
         height: int = 38,
+        orientation: str = "horizontal",
     ) -> None:
         self.labels = tuple(labels)
         if not self.labels or any(
@@ -53,6 +54,9 @@ class LiquidNavigation(tk.Canvas):
             for label in self.labels
         ):
             raise ValueError("navigation labels must be non-empty")
+        if orientation not in {"horizontal", "vertical"}:
+            raise ValueError("orientation must be 'horizontal' or 'vertical'")
+        self.orientation = orientation
 
         self._palette = dict(DEFAULT_NAV_PALETTE)
         if palette:
@@ -73,14 +77,19 @@ class LiquidNavigation(tk.Canvas):
         self._focused = False
         self._animation_after_id: str | None = None
         self._pill_x = 0.0
+        self._pill_y = 0.0
         self._pill_initialized = False
 
         self.bind("<Configure>", self._on_configure)
         self.bind("<Button-1>", self._on_click)
         self.bind("<FocusIn>", self._on_focus_in)
         self.bind("<FocusOut>", self._on_focus_out)
-        self.bind("<Left>", lambda _event: self._on_key(-1))
-        self.bind("<Right>", lambda _event: self._on_key(1))
+        if self.orientation == "horizontal":
+            self.bind("<Left>", lambda _event: self._on_key(-1))
+            self.bind("<Right>", lambda _event: self._on_key(1))
+        else:
+            self.bind("<Up>", lambda _event: self._on_key(-1))
+            self.bind("<Down>", lambda _event: self._on_key(1))
         self.bind("<Home>", lambda _event: self._on_boundary(0))
         self.bind("<End>", lambda _event: self._on_boundary(len(self.labels) - 1))
         self.bind("<Return>", self._on_activate)
@@ -90,12 +99,25 @@ class LiquidNavigation(tk.Canvas):
     def _clamp_index(self, index: int) -> int:
         return min(len(self.labels) - 1, max(0, int(index)))
 
-    def _tab_bounds(self, index: int) -> tuple[float, float]:
+    def _item_bounds(self, index: int) -> tuple[float, float, float, float]:
         if not 0 <= index < len(self.labels):
             raise IndexError(index)
         width = max(self.winfo_width(), self.winfo_reqwidth())
-        tab_width = float(width) / len(self.labels)
-        return index * tab_width, (index + 1) * tab_width
+        height = max(self.winfo_height(), self.winfo_reqheight())
+        if self.orientation == "horizontal":
+            item_width = float(width) / len(self.labels)
+            return index * item_width, 0.0, (index + 1) * item_width, float(height)
+        item_height = float(height) / len(self.labels)
+        return 0.0, index * item_height, float(width), (index + 1) * item_height
+
+    def _tab_bounds(self, index: int) -> tuple[float, float]:
+        """Retain the horizontal bounds helper for existing consumers."""
+        left, _top, right, _bottom = self._item_bounds(index)
+        return left, right
+
+    def _target_lens_position(self, index: int) -> tuple[float, float]:
+        left, top, right, bottom = self._item_bounds(self._clamp_index(index))
+        return (left + right) / 2.0, (top + bottom) / 2.0
 
     def select(
         self,
@@ -111,11 +133,12 @@ class LiquidNavigation(tk.Canvas):
         self.selected_index = target
         try:
             self._redraw()
-            target_x = self._target_pill_x(target)
+            target_x, target_y = self._target_lens_position(target)
             if animate and self.animation_ms > 0 and self._pill_initialized:
-                self._animate_pill_to(target_x)
+                self._animate_pill_to(target_x, target_y)
             else:
                 self._pill_x = target_x
+                self._pill_y = target_y
                 self._redraw()
         finally:
             if notify and self.command is not None:
@@ -151,32 +174,46 @@ class LiquidNavigation(tk.Canvas):
     def _on_click(self, event) -> str:
         self.focus_set()
         for index in range(len(self.labels)):
-            left, right = self._tab_bounds(index)
-            if left <= float(event.x) < right or (
-                index == len(self.labels) - 1 and float(event.x) == right
+            left, top, right, bottom = self._item_bounds(index)
+            x = float(getattr(event, "x", 0.0))
+            y = float(getattr(event, "y", 0.0))
+            if (
+                left <= x < right
+                and top <= y < bottom
+            ) or (
+                index == len(self.labels) - 1
+                and (
+                    (self.orientation == "horizontal" and x == right)
+                    or (self.orientation == "vertical" and y == bottom)
+                )
             ):
                 self.select(index)
                 break
         return "break"
 
     def _target_pill_x(self, index: int) -> float:
-        left, right = self._tab_bounds(self._clamp_index(index))
-        return (left + right) / 2.0
+        return self._target_lens_position(index)[0]
 
-    def _animate_pill_to(self, target_x: float) -> None:
+    def _animate_pill_to(self, target_x: float, target_y: float) -> None:
         start_x = self._pill_x
-        if abs(target_x - start_x) < 0.01:
+        start_y = self._pill_y
+        if abs(target_x - start_x) < 0.01 and abs(target_y - start_y) < 0.01:
             self._pill_x = target_x
+            self._pill_y = target_y
             self._redraw()
             return
         steps = 10
         interval = max(1, int(round(self.animation_ms / steps)))
-        self._schedule_pill_step(start_x, target_x, steps, interval, 1)
+        self._schedule_pill_step(
+            start_x, start_y, target_x, target_y, steps, interval, 1,
+        )
 
     def _schedule_pill_step(
         self,
         start_x: float,
+        start_y: float,
         target_x: float,
+        target_y: float,
         steps: int,
         interval: int,
         step: int,
@@ -184,7 +221,9 @@ class LiquidNavigation(tk.Canvas):
         callback = partial(
             self._advance_pill,
             start_x,
+            start_y,
             target_x,
+            target_y,
             steps,
             interval,
             step,
@@ -194,12 +233,15 @@ class LiquidNavigation(tk.Canvas):
         except tk.TclError:
             self._animation_after_id = None
             self._pill_x = target_x
+            self._pill_y = target_y
             self._redraw()
 
     def _advance_pill(
         self,
         start_x: float,
+        start_y: float,
         target_x: float,
+        target_y: float,
         steps: int,
         interval: int,
         step: int,
@@ -209,13 +251,17 @@ class LiquidNavigation(tk.Canvas):
             return
         fraction = min(1.0, step / steps)
         self._pill_x = start_x + (target_x - start_x) * fraction
+        self._pill_y = start_y + (target_y - start_y) * fraction
         self._redraw()
         if step >= steps:
             self._pill_x = target_x
+            self._pill_y = target_y
             return
         self._schedule_pill_step(
             start_x,
+            start_y,
             target_x,
+            target_y,
             steps,
             interval,
             step + 1,
@@ -252,14 +298,24 @@ class LiquidNavigation(tk.Canvas):
             tags="glass-highlight",
         )
         if not self._pill_initialized:
-            self._pill_x = self._target_pill_x(self.selected_index)
+            self._pill_x, self._pill_y = self._target_lens_position(
+                self.selected_index,
+            )
             self._pill_initialized = True
-        tab_width = float(width) / len(self.labels)
-        pill_half_width = max(4.0, tab_width / 2.0 - 3.0)
-        pill_left = max(glass_left + 2.0, self._pill_x - pill_half_width)
-        pill_right = min(glass_right - 2.0, self._pill_x + pill_half_width)
-        pill_top = glass_top + 3.0
-        pill_bottom = glass_bottom - 3.0
+        if self.orientation == "horizontal":
+            item_width = float(width) / len(self.labels)
+            lens_half_width = max(4.0, item_width / 2.0 - 3.0)
+            pill_left = max(glass_left + 2.0, self._pill_x - lens_half_width)
+            pill_right = min(glass_right - 2.0, self._pill_x + lens_half_width)
+            pill_top = glass_top + 3.0
+            pill_bottom = glass_bottom - 3.0
+        else:
+            item_height = float(height) / len(self.labels)
+            lens_half_height = max(4.0, item_height / 2.0 - 3.0)
+            pill_left = glass_left + 3.0
+            pill_right = glass_right - 3.0
+            pill_top = max(glass_top + 2.0, self._pill_y - lens_half_height)
+            pill_bottom = min(glass_bottom - 2.0, self._pill_y + lens_half_height)
         self._rounded_box(
             pill_left,
             pill_top,
@@ -269,21 +325,31 @@ class LiquidNavigation(tk.Canvas):
             outline=self._palette["lens"],
             tags="lens",
         )
-        highlight_y = pill_top + 2.0
-        self.create_line(
-            pill_left + min(8.0, pill_half_width),
-            highlight_y,
-            pill_right - min(8.0, pill_half_width),
-            highlight_y,
-            fill=self._palette["lens_highlight"],
-            width=1,
-            tags=("lens", "lens-highlight"),
-        )
+        if self.orientation == "horizontal":
+            self.create_line(
+                pill_left + min(8.0, lens_half_width),
+                pill_top + 2.0,
+                pill_right - min(8.0, lens_half_width),
+                pill_top + 2.0,
+                fill=self._palette["lens_highlight"],
+                width=1,
+                tags=("lens", "lens-highlight"),
+            )
+        else:
+            self.create_line(
+                pill_left + 2.0,
+                pill_top + min(8.0, lens_half_height),
+                pill_left + 2.0,
+                pill_bottom - min(8.0, lens_half_height),
+                fill=self._palette["lens_highlight"],
+                width=1,
+                tags=("lens", "lens-highlight"),
+            )
         for index, label in enumerate(self.labels):
-            left, right = self._tab_bounds(index)
+            left, top, right, bottom = self._item_bounds(index)
             self.create_text(
                 (left + right) / 2,
-                height / 2,
+                (top + bottom) / 2,
                 text=label,
                 fill=(
                     self._palette["selected_text"]
