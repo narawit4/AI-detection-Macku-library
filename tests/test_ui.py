@@ -244,6 +244,46 @@ class JitterLayoutTests(unittest.TestCase):
                     self.app.theme_button,
                 )))
 
+    def test_stop_is_visible_on_every_navigation_page(self):
+        self.app.deiconify()
+        for index in range(3):
+            with self.subTest(index=index):
+                self.app.select_page(index)
+                self.app.update()
+                self.assertEqual(self.app.stop_button.winfo_ismapped(), 1)
+
+    def test_close_cancels_navigation_animation(self):
+        self.app.deiconify()
+        self.app.update()
+        self.app.nav.select(2)
+        self.assertIsNotNone(self.app.nav._animation_after_id)
+        animation_states_at_service_close = []
+        original_close = self.service.close
+
+        def observe_service_close():
+            animation_states_at_service_close.append(
+                self.app.nav._animation_after_id
+            )
+            original_close()
+
+        self.service.close = observe_service_close
+        self.app.close_app()
+        self.assertEqual(animation_states_at_service_close, [None])
+        self.assertIsNone(self.app.nav._animation_after_id)
+
+    def test_advanced_canvas_belongs_only_to_advanced_page(self):
+        self.assertTrue(self._is_descendant(self.app.advanced_canvas,
+                                            self.app.advanced_page))
+        self.assertFalse(self._is_descendant(self.app.stop_button,
+                                             self.app.advanced_page))
+
+    def test_invalid_advanced_edit_does_not_change_page(self):
+        self.app.select_page(2)
+        self.app.horizontal_jitter_pps_var.set("not-a-number")
+        self.app._motion_changed("horizontal_jitter_pps")
+        self.assertEqual(self.app.nav.selected_index, 2)
+        self.assertTrue(self.app.footer_var.get().startswith("Invalid value for "))
+
     def test_mini_actions_keep_icon_button_size_and_tooltips(self):
         for button in (self.app.reconnect_button, self.app.test_button,
                        self.app.theme_button):
@@ -458,7 +498,7 @@ class JitterLayoutTests(unittest.TestCase):
             x_root=self.app.advanced_canvas.winfo_rootx() + 10,
             y_root=self.app.advanced_canvas.winfo_rooty() + 10,
         )
-        self.assertEqual(self.app._on_right_mousewheel(advanced_event), "break")
+        self.assertEqual(self.app._on_advanced_mousewheel(advanced_event), "break")
         self.app.update_idletasks()
         after_advanced = self.app.advanced_canvas.yview()[0]
         self.assertGreater(after_advanced, 0.0)
@@ -470,7 +510,7 @@ class JitterLayoutTests(unittest.TestCase):
             x_root=self.app.setup_page.winfo_rootx() + 10,
             y_root=self.app.setup_page.winfo_rooty() + 10,
         )
-        self.assertIsNone(self.app._on_right_mousewheel(setup_event))
+        self.assertIsNone(self.app._on_advanced_mousewheel(setup_event))
         self.assertEqual(self.app.advanced_canvas.yview()[0], after_advanced)
 
 

@@ -141,7 +141,7 @@ class JitterApp(tk.Tk):
         self._configure_styles()
         self._create_variables()
         self._build_page()
-        self.bind("<MouseWheel>", self._on_right_mousewheel, add="+")
+        self.bind("<MouseWheel>", self._on_advanced_mousewheel, add="+")
 
         self.service_factory = service_factory or (lambda sink: MakcuService(sink))
         self.hotkey_factory = hotkey_factory or HotkeyWatcher
@@ -725,22 +725,24 @@ class JitterApp(tk.Tk):
             current = getattr(current, "master", None)
         return False
 
-    def _on_right_mousewheel(self, event) -> str | None:
+    def _on_advanced_mousewheel(self, event) -> str | None:
+        if self.nav.selected_index != 2:
+            return None
         target = self.winfo_containing(event.x_root, event.y_root)
         if target is None and self.advanced_host.winfo_ismapped():
-            host_left = self.right_host.winfo_rootx()
-            host_top = self.right_host.winfo_rooty()
-            host_right = host_left + self.right_host.winfo_width()
-            host_bottom = host_top + self.right_host.winfo_height()
+            host_left = self.advanced_host.winfo_rootx()
+            host_top = self.advanced_host.winfo_rooty()
+            host_right = host_left + self.advanced_host.winfo_width()
+            host_bottom = host_top + self.advanced_host.winfo_height()
             if host_left <= event.x_root < host_right and host_top <= event.y_root < host_bottom:
-                target = self.right_host
-        if not self._is_descendant_of(target, self.right_host):
+                target = self.advanced_host
+        if not self._is_descendant_of(target, self.advanced_host):
             return None
-        bounds = self.right_canvas.bbox("all")
-        if bounds is None or bounds[3] <= self.right_canvas.winfo_height():
+        bounds = self.advanced_canvas.bbox("all")
+        if bounds is None or bounds[3] <= self.advanced_canvas.winfo_height():
             return None
         direction = -1 if event.delta > 0 else 1
-        self.right_canvas.yview_scroll(direction, "units")
+        self.advanced_canvas.yview_scroll(direction, "units")
         return "break"
 
     # ---- runtime wiring -----------------------------------------------
@@ -1175,6 +1177,7 @@ class JitterApp(tk.Tk):
         if self._closed or self._closing:
             return
         self._closing = True
+        self.nav.cancel_animation()
         self._cancel_after("_save_after_id")
         self._cancel_after("_capture_after_id")
         self._cancel_after("_ui_pump_after_id")
