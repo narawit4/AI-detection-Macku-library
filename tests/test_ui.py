@@ -6,7 +6,7 @@ import unittest
 
 from ui import JitterApp
 from makcu_service import ServiceEvent
-from xp_widgets import XPGlossySlider
+from liquid_widgets import LiquidSlider
 
 
 class StubStore:
@@ -164,7 +164,7 @@ class JitterLayoutTests(unittest.TestCase):
             with self.subTest(key=key):
                 self.assertIsInstance(
                     getattr(self.app, f"{key}_scale"),
-                    XPGlossySlider,
+                    LiquidSlider,
                 )
 
     def test_glossy_slider_user_change_updates_exact_entry_and_snapshot(self):
@@ -209,7 +209,7 @@ class JitterLayoutTests(unittest.TestCase):
         )
 
     def test_navigation_owns_three_persistent_pages(self):
-        self.assertEqual(self.app.nav.labels, ("Setup", "Motion", "Advanced"))
+        self.assertEqual(self.app.nav.labels, ("Control", "Motion", "Advanced"))
         self.assertEqual(
             self.app.pages,
             (self.app.setup_page, self.app.motion_page, self.app.advanced_page),

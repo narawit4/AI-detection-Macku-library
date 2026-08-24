@@ -25,7 +25,7 @@ from motion import (
     motion_settings_to_mapping,
 )
 from settings import AppConfig, ConfigStore
-from xp_widgets import LiquidXPNav, XPGlossySlider
+from liquid_widgets import LiquidNavigation, LiquidSlider
 
 
 # Shared Windows XP Remastered palette and typography.
@@ -292,9 +292,9 @@ class JitterApp(tk.Tk):
 
         self.navigation_frame = ttk.Frame(self.shell, style="XP.App.TFrame")
         self.navigation_frame.grid(row=1, column=0, sticky="ew", pady=(0, 7))
-        self.nav = LiquidXPNav(
+        self.nav = LiquidNavigation(
             self.navigation_frame,
-            labels=("Setup", "Motion", "Advanced"),
+            labels=("Control", "Motion", "Advanced"),
             command=self.select_page,
             palette=self._nav_palette(),
         )
@@ -358,7 +358,7 @@ class JitterApp(tk.Tk):
 
     def _apply_slider_palette(self, widget: tk.Misc,
                               palette: Mapping[str, str]) -> None:
-        if isinstance(widget, XPGlossySlider):
+        if isinstance(widget, LiquidSlider):
             widget.set_palette(palette)
         for child in widget.winfo_children():
             self._apply_slider_palette(child, palette)
@@ -610,7 +610,7 @@ class JitterApp(tk.Tk):
         entry = ttk.Entry(top, textvariable=self.motion_vars[key], width=8,
                           style="App.TEntry", justify="right")
         entry.pack(side="right")
-        slider = XPGlossySlider(
+        slider = LiquidSlider(
             block,
             from_=low,
             to=high,

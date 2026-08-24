@@ -6,7 +6,7 @@ import tkinter as tk
 from typing import Callable, Mapping
 
 
-LIGHT_SLIDER_PALETTE = {
+DEFAULT_SLIDER_PALETTE = {
     "background": "#F4F1E6", "rail": "#E5E2D8", "rail_outline": "#8E9AA6",
     "hover": "#D9EAFB", "shadow": "#75828E", "thumb": "#F7F3E7",
     "thumb_pressed": "#356FAF", "thumb_outline": "#244F7D",
@@ -15,7 +15,7 @@ LIGHT_SLIDER_PALETTE = {
 }
 
 
-LIGHT_NAV_PALETTE = {
+DEFAULT_NAV_PALETTE = {
     "background": "#F4F1E6",
     "capsule": "#D9EAFB",
     "capsule_outline": "#8E9AA6",
@@ -27,8 +27,8 @@ LIGHT_NAV_PALETTE = {
 }
 
 
-class LiquidXPNav(tk.Canvas):
-    """A small, keyboard-accessible tab strip for the Liquid XP layout."""
+class LiquidNavigation(tk.Canvas):
+    """Keyboard-accessible animated navigation for the liquid dashboard."""
 
     def __init__(
         self,
@@ -49,7 +49,7 @@ class LiquidXPNav(tk.Canvas):
         ):
             raise ValueError("navigation labels must be non-empty")
 
-        self._palette = dict(LIGHT_NAV_PALETTE)
+        self._palette = dict(DEFAULT_NAV_PALETTE)
         if palette:
             self._palette.update(palette)
         super().__init__(
@@ -123,7 +123,7 @@ class LiquidXPNav(tk.Canvas):
                 self.command(target)
 
     def set_palette(self, palette: Mapping[str, str]) -> None:
-        self._palette = {**LIGHT_NAV_PALETTE, **palette}
+        self._palette = {**DEFAULT_NAV_PALETTE, **palette}
         self.configure(background=self._palette["background"])
         self._redraw()
 
@@ -318,7 +318,8 @@ class LiquidXPNav(tk.Canvas):
         self._destroyed = True
 
 
-class XPGlossySlider(tk.Canvas):
+class LiquidSlider(tk.Canvas):
+    """Exact-value Canvas slider for the liquid dashboard."""
     THUMB_RADIUS = 8
     RAIL_INSET = 14
 
@@ -347,9 +348,9 @@ class XPGlossySlider(tk.Canvas):
             highlightthickness=0,
             borderwidth=0,
             takefocus=True,
-            background=(palette or LIGHT_SLIDER_PALETTE)["background"],
+            background=(palette or DEFAULT_SLIDER_PALETTE)["background"],
         )
-        self._palette = dict(LIGHT_SLIDER_PALETTE)
+        self._palette = dict(DEFAULT_SLIDER_PALETTE)
         if palette:
             self._palette.update(palette)
         self.from_ = float(from_)
@@ -417,7 +418,7 @@ class XPGlossySlider(tk.Canvas):
         self._redraw()
 
     def set_palette(self, palette: Mapping[str, str]) -> None:
-        self._palette = {**LIGHT_SLIDER_PALETTE, **palette}
+        self._palette = {**DEFAULT_SLIDER_PALETTE, **palette}
         self.configure(background=self._palette["background"])
         self._redraw()
 

@@ -2,10 +2,12 @@ import tkinter as tk
 import unittest
 from types import SimpleNamespace
 
-from xp_widgets import LiquidXPNav, XPGlossySlider
+from liquid_widgets import LiquidNavigation, LiquidSlider
 
 
 class _SliderTestCase(unittest.TestCase):
+    slider_type = LiquidSlider
+
     def setUp(self):
         self.root = tk.Tk()
         self.root.withdraw()
@@ -22,13 +24,13 @@ class _SliderTestCase(unittest.TestCase):
             "height": 34,
         }
         options.update(kwargs)
-        slider = XPGlossySlider(self.root, **options)
+        slider = self.slider_type(self.root, **options)
         slider.pack()
         self.root.update_idletasks()
         return slider
 
 
-class XPGlossySliderValueTests(_SliderTestCase):
+class LiquidSliderValueTests(_SliderTestCase):
     def test_rejects_invalid_range_and_resolution(self):
         with self.assertRaises(ValueError):
             self.make_slider(from_=1, to=1)
@@ -67,7 +69,7 @@ class XPGlossySliderValueTests(_SliderTestCase):
         self.assertEqual(slider._x_to_value(right + 50), 100)
 
 
-class XPGlossySliderInteractionTests(_SliderTestCase):
+class LiquidSliderInteractionTests(_SliderTestCase):
     def test_pointer_click_and_drag_emit_snapped_values(self):
         emitted = []
         slider = self.make_slider(command=emitted.append)
@@ -131,14 +133,14 @@ class XPGlossySliderInteractionTests(_SliderTestCase):
         self.assertIsNone(slider._bubble_after_id)
 
 
-class LiquidXPNavTests(unittest.TestCase):
+class LiquidNavigationTests(unittest.TestCase):
     def setUp(self):
         self.root = tk.Tk()
         self.root.withdraw()
         self.selected = []
-        self.nav = LiquidXPNav(
+        self.nav = LiquidNavigation(
             self.root,
-            labels=("Setup", "Motion", "Advanced"),
+            labels=("Control", "Motion", "Advanced"),
             command=self.selected.append,
             width=330,
         )
