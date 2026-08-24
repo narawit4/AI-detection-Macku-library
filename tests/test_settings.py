@@ -16,6 +16,7 @@ class ConfigStoreTests(unittest.TestCase):
         self.assertEqual(outcome.config.trigger, "Left")
         self.assertEqual(outcome.config.modifier, "None")
         self.assertEqual(outcome.config.selected_preset, "Custom")
+        self.assertEqual(outcome.config.theme, "light")
         self.assertTrue(outcome.save_allowed)
 
     def test_valid_config_round_trips_without_runtime_state(self):
@@ -25,15 +26,26 @@ class ConfigStoreTests(unittest.TestCase):
             config = AppConfig(
                 motion=replace(MotionSettings(), strength_pps=123.0),
                 trigger="Mouse4", modifier="Right", hotkey_vk=0x77,
-                hotkey_name="F8", selected_preset="Custom",
+                hotkey_name="F8", selected_preset="Custom", theme="dark",
             )
             store.save(config)
             document = json.loads(path.read_text(encoding="utf-8"))
             outcome = store.load()
         self.assertEqual(document["schema_version"], SCHEMA_VERSION)
+        self.assertEqual(document["theme"], "dark")
         self.assertNotIn("enabled", document)
         self.assertNotIn("moving", document)
         self.assertEqual(outcome.config, config)
+
+    def test_invalid_theme_uses_safe_light_default(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            path.write_text(json.dumps({
+                "schema_version": SCHEMA_VERSION,
+                "theme": "midnight",
+            }), encoding="utf-8")
+            config = ConfigStore(path).load().config
+        self.assertEqual(config.theme, "light")
 
     def test_second_save_keeps_previous_document_as_backup(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -1,6 +1,7 @@
 import tkinter as tk
 from tkinter import ttk
 from types import SimpleNamespace
+import threading
 import unittest
 
 from ui import JitterApp
@@ -9,12 +10,13 @@ from xp_widgets import XPGlossySlider
 
 
 class StubStore:
-    def __init__(self):
+    def __init__(self, config=None):
         self.saved = []
+        self.config = config
 
     def load(self):
         from settings import AppConfig, LoadOutcome
-        return LoadOutcome(AppConfig())
+        return LoadOutcome(self.config or AppConfig())
 
     def save(self, config):
         self.saved.append(config)
@@ -117,6 +119,28 @@ class JitterLayoutTests(unittest.TestCase):
         expected = "Jitter " + chr(0x2014) + " Makcu Control"
         self.assertEqual(self.app.title(), expected)
 
+    def test_theme_toggle_applies_dark_palette_and_persists_choice(self):
+        style = ttk.Style(self.app)
+        self.assertEqual(self.app.theme_button.cget("text"), "☾")
+        self.assertEqual(self.app.theme_tooltip_text,
+                         "Switch to Dark Mode")
+        self.app.toggle_theme()
+        self.app.update_idletasks()
+
+        self.assertEqual(self.app.theme_var.get(), "dark")
+        self.assertEqual(self.app.cget("background"), "#171B22")
+        self.assertEqual(style.lookup("XP.Group.TLabel", "foreground"),
+                         "#E7ECF3")
+        self.assertEqual(self.app.motion_strength_pps_scale.cget("background"),
+                         "#171B22")
+        self.assertEqual(self.app.theme_button.cget("text"), "☀")
+        self.assertEqual(self.app.theme_tooltip_text,
+                         "Switch to Light Mode")
+
+        self.app._cancel_after("_save_after_id")
+        self.app.save_config()
+        self.assertEqual(self.store.saved[-1].theme, "dark")
+
     def test_every_numeric_control_uses_xp_glossy_slider(self):
         numeric_keys = (
             "motion_angle_deg",
@@ -196,6 +220,27 @@ class JitterLayoutTests(unittest.TestCase):
             with self.subTest(widget=str(widget)):
                 self.assertTrue(self._is_descendant(widget, self.app.left_column))
                 self.assertFalse(self._is_descendant(widget, self.app.right_content))
+
+    def test_reconnect_and_test_are_side_by_side_mini_icon_buttons(self):
+        self.assertEqual(self.app.reconnect_button.cget("text"), "↻")
+        self.assertEqual(self.app.test_button.cget("text"), "▶")
+        for button in (self.app.reconnect_button, self.app.test_button):
+            with self.subTest(button=str(button)):
+                self.assertEqual(int(button.cget("width")), 3)
+                self.assertIs(button.master, self.app.tools_icon_row)
+                self.assertEqual(button.pack_info()["side"], "left")
+        self.assertEqual(self.app.reconnect_tooltip_text, "Reconnect Makcu")
+        self.assertEqual(self.app.test_tooltip_text, "Test Run 3s")
+        self.assertTrue(self.app.reconnect_button.bind("<Enter>"))
+        self.assertTrue(self.app.test_button.bind("<Enter>"))
+
+        event = SimpleNamespace(widget=self.app.reconnect_button)
+        self.app._show_action_tooltip(event, self.app.reconnect_tooltip_text)
+        tooltip = self.app._action_tooltip
+        self.assertEqual(tooltip.winfo_children()[0].cget("text"),
+                         "Reconnect Makcu")
+        self.app._hide_action_tooltip()
+        self.assertIsNone(self.app._action_tooltip)
 
     def test_quick_and_advanced_controls_live_in_right_workspace(self):
         right_widgets = (
@@ -278,6 +323,25 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertFalse(self._is_descendant(self.app.reconnect_button,
                                              self.app.status_strip))
 
+    def test_theme_toggle_lives_in_fixed_footer_not_status_strip(self):
+        self.assertIs(self.app.theme_button.master, self.app.footer_frame)
+        self.assertFalse(self._is_descendant(self.app.theme_button,
+                                             self.app.status_strip))
+        self.assertFalse(self._is_descendant(self.app.theme_button,
+                                             self.app.right_host))
+        self.assertEqual(self.app.theme_button.pack_info()["side"], "right")
+
+    def test_theme_icon_tooltip_appears_on_hover_and_is_removed(self):
+        self.app._show_theme_tooltip()
+        tooltip = self.app._theme_tooltip
+        self.assertIsNotNone(tooltip)
+        self.assertEqual(tooltip.winfo_children()[0].cget("text"),
+                         "Switch to Dark Mode")
+
+        self.app._hide_theme_tooltip()
+        self.assertIsNone(self.app._theme_tooltip)
+        self.assertEqual(tooltip.winfo_exists(), 0)
+
     def test_runtime_group_keeps_stop_always_visible(self):
         self.assertTrue(self._is_descendant(self.app.stop_button,
                                             self.app.runtime_frame))
@@ -346,7 +410,7 @@ class JitterLayoutTests(unittest.TestCase):
 
     def test_required_actions_are_present_and_stop_is_outside_advanced(self):
         texts = widget_texts(self.app)
-        for expected in ("Reconnect", "Enable Jitter", "Test 3s", "STOP", "Advanced Settings"):
+        for expected in ("↻", "Enable Jitter", "▶", "STOP", "Advanced Settings"):
             self.assertIn(expected, texts)
         stop = self.app.stop_button
         ancestor = stop.master
@@ -579,6 +643,34 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.app.after = raising_after
         self.app.queue_service_event(ServiceEvent("connected"))
         self.app._hotkey_pressed()
+
+    def test_worker_callbacks_never_call_tk_scheduling_directly(self):
+        release = threading.Event()
+        after_called = threading.Event()
+
+        def blocking_after(*_args):
+            after_called.set()
+            release.wait(1.0)
+
+        self.app.after = blocking_after
+        workers = (
+            threading.Thread(
+                target=self.app.queue_service_event,
+                args=(ServiceEvent("connected"),),
+            ),
+            threading.Thread(target=self.app._hotkey_pressed),
+        )
+        try:
+            for worker in workers:
+                worker.start()
+            for worker in workers:
+                worker.join(0.1)
+            self.assertFalse(after_called.is_set())
+            self.assertTrue(all(not worker.is_alive() for worker in workers))
+        finally:
+            release.set()
+            for worker in workers:
+                worker.join(1.0)
 
     def test_motion_snapshot_access_is_lock_protected(self):
         class CountingLock:

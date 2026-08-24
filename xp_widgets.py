@@ -3,7 +3,16 @@ from __future__ import annotations
 from decimal import Decimal, ROUND_HALF_UP
 import math
 import tkinter as tk
-from typing import Callable
+from typing import Callable, Mapping
+
+
+LIGHT_SLIDER_PALETTE = {
+    "background": "#F4F1E6", "rail": "#E5E2D8", "rail_outline": "#8E9AA6",
+    "hover": "#D9EAFB", "shadow": "#75828E", "thumb": "#F7F3E7",
+    "thumb_pressed": "#356FAF", "thumb_outline": "#244F7D",
+    "highlight": "#FFFFFF", "bubble": "#FFFDF5", "text": "#20252A",
+    "focus": "#E4A43A",
+}
 
 
 class XPGlossySlider(tk.Canvas):
@@ -20,6 +29,7 @@ class XPGlossySlider(tk.Canvas):
         command: Callable[[str], None] | None = None,
         width: int = 220,
         height: int = 34,
+        palette: Mapping[str, str] | None = None,
     ) -> None:
         if not math.isfinite(float(from_)) or not math.isfinite(float(to)):
             raise ValueError("slider range must be finite")
@@ -34,8 +44,11 @@ class XPGlossySlider(tk.Canvas):
             highlightthickness=0,
             borderwidth=0,
             takefocus=True,
-            background="#F4F1E6",
+            background=(palette or LIGHT_SLIDER_PALETTE)["background"],
         )
+        self._palette = dict(LIGHT_SLIDER_PALETTE)
+        if palette:
+            self._palette.update(palette)
         self.from_ = float(from_)
         self.to = float(to)
         self.resolution = float(resolution)
@@ -100,6 +113,11 @@ class XPGlossySlider(tk.Canvas):
         self._value = self._snap(value)
         self._redraw()
 
+    def set_palette(self, palette: Mapping[str, str]) -> None:
+        self._palette = {**LIGHT_SLIDER_PALETTE, **palette}
+        self.configure(background=self._palette["background"])
+        self._redraw()
+
     def _rail_bounds(self) -> tuple[float, float]:
         width = max(self.winfo_width(), self.winfo_reqwidth())
         return (
@@ -133,8 +151,8 @@ class XPGlossySlider(tk.Canvas):
             center_y - 3,
             right,
             center_y + 3,
-            fill="#E5E2D8",
-            outline="#8E9AA6",
+            fill=self._palette["rail"],
+            outline=self._palette["rail_outline"],
             tags="rail",
         )
         fill_width = max(0.0, thumb_x - left)
@@ -167,7 +185,7 @@ class XPGlossySlider(tk.Canvas):
                 center_y - 11,
                 thumb_x + 11,
                 center_y + 11,
-                outline="#E4A43A",
+                outline=self._palette["focus"],
                 width=2,
                 tags="focus",
             )
@@ -177,7 +195,7 @@ class XPGlossySlider(tk.Canvas):
                 center_y - 10,
                 thumb_x + 10,
                 center_y + 10,
-                fill="#D9EAFB",
+                fill=self._palette["hover"],
                 outline="",
                 tags="halo",
             )
@@ -188,18 +206,18 @@ class XPGlossySlider(tk.Canvas):
             center_y - 6 + shadow_y,
             thumb_x + 8,
             center_y + 10,
-            fill="#75828E",
+            fill=self._palette["shadow"],
             outline="",
             tags=("thumb", "thumb_shadow"),
         )
-        body_fill = "#356FAF" if self._pressed else "#F7F3E7"
+        body_fill = self._palette["thumb_pressed"] if self._pressed else self._palette["thumb"]
         self.create_oval(
             thumb_x - 8,
             center_y - 8,
             thumb_x + 8,
             center_y + 8,
             fill=body_fill,
-            outline="#244F7D",
+            outline=self._palette["thumb_outline"],
             width=1,
             tags=("thumb", "thumb_body"),
         )
@@ -212,7 +230,7 @@ class XPGlossySlider(tk.Canvas):
                 start=20,
                 extent=140,
                 style="arc",
-                outline="#FFFFFF",
+                outline=self._palette["highlight"],
                 width=2,
                 tags=("thumb", "thumb_highlight"),
             )
@@ -226,15 +244,15 @@ class XPGlossySlider(tk.Canvas):
                 bubble_y - 7,
                 thumb_x + half_width,
                 bubble_y + 7,
-                fill="#FFFDF5",
-                outline="#356FAF",
+                fill=self._palette["bubble"],
+                outline=self._palette["thumb_pressed"],
                 tags="bubble",
             )
             self.create_text(
                 thumb_x,
                 bubble_y,
                 text=text,
-                fill="#20252A",
+                fill=self._palette["text"],
                 font=("Tahoma", 8),
                 tags="bubble",
             )

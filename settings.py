@@ -15,6 +15,7 @@ from motion import MotionSettings, motion_settings_from_mapping, motion_settings
 
 SCHEMA_VERSION = 1
 VALID_BUTTONS = ("Left", "Right", "Middle", "Mouse4", "Mouse5")
+VALID_THEMES = ("light", "dark")
 
 
 @dataclass(frozen=True)
@@ -27,6 +28,7 @@ class AppConfig:
     # The numeric defaults are intentionally a custom combination rather than
     # the Strong Shake preset, so the label must describe the actual values.
     selected_preset: str = "Custom"
+    theme: str = "light"
 
 
 @dataclass(frozen=True)
@@ -112,6 +114,9 @@ class ConfigStore:
         selected_preset = document.get("selected_preset", "Custom")
         if not isinstance(selected_preset, str) or not selected_preset:
             selected_preset = "Custom"
+        theme = document.get("theme", "light")
+        if theme not in VALID_THEMES:
+            theme = "light"
         config = AppConfig(
             motion=motion,
             trigger=trigger,
@@ -119,6 +124,7 @@ class ConfigStore:
             hotkey_vk=_safe_int(document.get("hotkey_vk", 0xBD), 0xBD, 1, 255),
             hotkey_name=hotkey_name,
             selected_preset=selected_preset,
+            theme=theme,
         )
         return LoadOutcome(config)
 
@@ -134,6 +140,7 @@ class ConfigStore:
             "hotkey_vk": _safe_int(config.hotkey_vk, 0xBD, 1, 255),
             "hotkey_name": config.hotkey_name if isinstance(config.hotkey_name, str) else "-",
             "selected_preset": config.selected_preset if isinstance(config.selected_preset, str) and config.selected_preset else "Custom",
+            "theme": config.theme if config.theme in VALID_THEMES else "light",
         }
         temporary = Path(str(self.path) + ".tmp")
         backup = Path(str(self.path) + ".bak")

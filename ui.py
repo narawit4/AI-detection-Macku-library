@@ -5,6 +5,7 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk
 import math
+import queue
 import threading
 from typing import Mapping
 from typing import Any, Callable
@@ -48,6 +49,29 @@ XP_DANGER_HOVER = "#DF6670"
 XP_DANGER_PRESSED = "#942F38"
 XP_FOCUS = "#E4A43A"
 
+DARK_PALETTE = {
+    "window": "#171B22", "panel": "#222833", "blue": "#285A91",
+    "blue_dark": "#8CBCEB", "primary": "#4C8CCC", "primary_hover": "#67A5DF",
+    "primary_pressed": "#326A9E", "secondary": "#303846",
+    "secondary_hover": "#3D4858", "secondary_pressed": "#252C36",
+    "border": "#566273", "text": "#E7ECF3", "muted": "#AAB4C2",
+    "green": "#63C985", "amber": "#F1B84B", "red": "#FF7380",
+    "danger": "#B83E4A", "danger_hover": "#D25763", "danger_pressed": "#8F3039",
+    "focus": "#F2B84B",
+}
+
+LIGHT_PALETTE = {
+    "window": XP_WINDOW, "panel": XP_PANEL, "blue": XP_BLUE,
+    "blue_dark": XP_BLUE_DARK, "primary": XP_PRIMARY,
+    "primary_hover": XP_PRIMARY_HOVER, "primary_pressed": XP_PRIMARY_PRESSED,
+    "secondary": XP_SECONDARY, "secondary_hover": XP_SECONDARY_HOVER,
+    "secondary_pressed": XP_SECONDARY_PRESSED, "border": XP_BORDER,
+    "text": XP_TEXT, "muted": XP_MUTED, "green": XP_GREEN,
+    "amber": XP_AMBER, "red": XP_RED, "danger": XP_DANGER_BG,
+    "danger_hover": XP_DANGER_HOVER, "danger_pressed": XP_DANGER_PRESSED,
+    "focus": XP_FOCUS,
+}
+
 FONT_FAMILY = "Tahoma"
 BODY_FONT = (FONT_FAMILY, 9)
 SMALL_FONT = (FONT_FAMILY, 8)
@@ -84,12 +108,13 @@ class JitterApp(tk.Tk):
         self.title("Jitter " + chr(0x2014) + " Makcu Control")
         self.geometry("640x560")
         self.resizable(False, False)
-        self.configure(background=XP_WINDOW)
         self.protocol("WM_DELETE_WINDOW", self.close_app)
 
         self.config_store = config_store or ConfigStore()
         self.load_outcome = self.config_store.load()
         self.config: AppConfig = self.load_outcome.config
+        self._theme = self.config.theme
+        self.configure(background=self._palette["window"])
         self._save_allowed = bool(self.load_outcome.save_allowed)
         self._advanced_visible = False
         self._closed = False
@@ -97,6 +122,8 @@ class JitterApp(tk.Tk):
         self._closing = False
         self._save_after_id: str | None = None
         self._capture_after_id: str | None = None
+        self._ui_pump_after_id: str | None = None
+        self._ui_queue: queue.SimpleQueue[tuple[str, Any]] = queue.SimpleQueue()
         self._capturing_hotkey = False
         self._capture_seen_down = False
         self._capture_prev_down: dict[int, bool] = {}
@@ -129,87 +156,84 @@ class JitterApp(tk.Tk):
         # owns start_runtime() and the lifecycle transitions.
         self.auto_start = bool(auto_start)
         self._install_runtime_bindings()
+        self._ui_pump_after_id = self.after(0, self._drain_ui_queue)
         if self.auto_start:
             self.start_runtime()
 
     # ---- setup ---------------------------------------------------------
 
     def _configure_styles(self) -> None:
+        p = self._palette
         style = ttk.Style(self)
         try:
             style.theme_use("clam")
         except tk.TclError:
             pass
-        style.configure("XP.App.TFrame", background=XP_WINDOW)
-        style.configure("XP.Status.TFrame", background=XP_PANEL,
-                        bordercolor=XP_BORDER, relief="solid", borderwidth=1)
-        style.configure("XP.Title.TFrame", background=XP_BLUE)
-        style.configure("XP.Title.TLabel", background=XP_BLUE, foreground="#FFFFFF",
+        style.configure("XP.App.TFrame", background=p["window"])
+        style.configure("XP.Status.TFrame", background=p["panel"],
+                        bordercolor=p["border"], relief="solid", borderwidth=1)
+        style.configure("XP.Title.TFrame", background=p["blue"])
+        style.configure("XP.Title.TLabel", background=p["blue"], foreground="#FFFFFF",
                         font=TITLE_FONT)
-        style.configure("XP.Group.TLabelframe", background=XP_WINDOW,
-                        foreground=XP_BLUE_DARK, bordercolor=XP_BORDER,
+        style.configure("XP.Group.TLabelframe", background=p["window"],
+                        foreground=p["blue_dark"], bordercolor=p["border"],
                         relief="groove", borderwidth=1)
-        style.configure("XP.Group.TLabelframe.Label", background=XP_WINDOW,
-                        foreground=XP_BLUE_DARK, font=SECTION_FONT)
-        style.configure("XP.Group.TLabel", background=XP_WINDOW,
-                        foreground=XP_TEXT, font=BODY_FONT)
-        style.configure("XP.Muted.TLabel", background=XP_WINDOW,
-                        foreground=XP_MUTED, font=SMALL_FONT)
-        style.configure("XP.Primary.TButton", background=XP_PRIMARY,
-                        foreground="#FFFFFF", bordercolor=XP_BLUE_DARK,
-                        focuscolor=XP_FOCUS, focusthickness=1,
+        style.configure("XP.Group.TLabelframe.Label", background=p["window"],
+                        foreground=p["blue_dark"], font=SECTION_FONT)
+        style.configure("XP.Group.TLabel", background=p["window"],
+                        foreground=p["text"], font=BODY_FONT)
+        style.configure("XP.Muted.TLabel", background=p["window"],
+                        foreground=p["muted"], font=SMALL_FONT)
+        style.configure("XP.Primary.TButton", background=p["primary"],
+                        foreground="#FFFFFF", bordercolor=p["blue_dark"],
+                        focuscolor=p["focus"], focusthickness=1,
                         relief="raised", borderwidth=1,
                         font=(FONT_FAMILY, 9, "bold"), padding=(12, 6))
         style.map("XP.Primary.TButton",
                   background=[("disabled", "#C4CBD3"),
-                              ("pressed", XP_PRIMARY_PRESSED),
-                              ("active", XP_PRIMARY_HOVER)],
-                  foreground=[("disabled", XP_MUTED)],
-                  bordercolor=[("focus", XP_FOCUS),
-                               ("!focus", XP_BLUE_DARK)],
+                              ("pressed", p["primary_pressed"]),
+                              ("active", p["primary_hover"])],
+                  foreground=[("disabled", p["muted"])],
+                  bordercolor=[("focus", p["focus"]),
+                               ("!focus", p["blue_dark"])],
                   relief=[("pressed", "sunken"), ("!pressed", "raised")])
-        style.configure("XP.Secondary.TButton", background=XP_SECONDARY,
-                        foreground=XP_TEXT, bordercolor=XP_BORDER,
-                        focuscolor=XP_FOCUS, focusthickness=1,
+        style.configure("XP.Secondary.TButton", background=p["secondary"],
+                        foreground=p["text"], bordercolor=p["border"],
+                        focuscolor=p["focus"], focusthickness=1,
                         relief="raised", borderwidth=1,
                         font=BODY_FONT, padding=(10, 5))
         style.map("XP.Secondary.TButton",
                   background=[("disabled", "#D4D4CF"),
-                              ("pressed", XP_SECONDARY_PRESSED),
-                              ("active", XP_SECONDARY_HOVER)],
-                  foreground=[("disabled", XP_MUTED)],
-                  bordercolor=[("focus", XP_FOCUS),
-                               ("!focus", XP_BORDER)],
+                              ("pressed", p["secondary_pressed"]),
+                              ("active", p["secondary_hover"])],
+                  foreground=[("disabled", p["muted"])],
+                  bordercolor=[("focus", p["focus"]),
+                               ("!focus", p["border"])],
                   relief=[("pressed", "sunken"), ("!pressed", "raised")])
-        style.configure("XP.Danger.TButton", background=XP_DANGER_BG,
-                        foreground="#FFFFFF", bordercolor=XP_RED,
-                        focuscolor=XP_FOCUS, focusthickness=1,
+        style.configure("XP.Danger.TButton", background=p["danger"],
+                        foreground="#FFFFFF", bordercolor=p["red"],
+                        focuscolor=p["focus"], focusthickness=1,
                         relief="raised", borderwidth=1,
                         font=(FONT_FAMILY, 9, "bold"), padding=(12, 6))
         style.map("XP.Danger.TButton",
                   background=[("disabled", "#C4B7B8"),
-                              ("pressed", XP_DANGER_PRESSED),
-                              ("active", XP_DANGER_HOVER)],
+                              ("pressed", p["danger_pressed"]),
+                              ("active", p["danger_hover"])],
                   foreground=[("disabled", "#F4EEEE")],
-                  bordercolor=[("focus", XP_FOCUS),
-                               ("!focus", XP_RED)],
+                  bordercolor=[("focus", p["focus"]),
+                               ("!focus", p["red"])],
                   relief=[("pressed", "sunken"), ("!pressed", "raised")])
-        style.configure("XP.StatusDisconnected.TLabel", background=XP_WINDOW,
-                        foreground=XP_RED, font=BODY_FONT)
-        style.configure("XP.StatusConnecting.TLabel", background=XP_WINDOW,
-                        foreground=XP_AMBER, font=BODY_FONT)
-        style.configure("XP.StatusConnected.TLabel", background=XP_WINDOW,
-                        foreground=XP_GREEN, font=BODY_FONT)
-        style.configure("App.TEntry", fieldbackground=XP_PANEL, foreground=XP_TEXT,
-                        insertcolor=XP_TEXT, padding=(5, 3), bordercolor=XP_BORDER)
-        style.configure("Invalid.TEntry", fieldbackground=XP_PANEL,
-                        foreground=XP_TEXT, insertcolor=XP_TEXT, padding=(5, 3),
-                        bordercolor=XP_RED)
-        style.configure("XP.TCombobox", fieldbackground=XP_PANEL, background=XP_PANEL,
-                        foreground=XP_TEXT, arrowcolor=XP_TEXT, padding=(4, 3),
-                        bordercolor=XP_BORDER)
-        style.map("XP.TCombobox", fieldbackground=[("readonly", XP_PANEL)],
-                  foreground=[("readonly", XP_TEXT)])
+        style.configure("XP.StatusDisconnected.TLabel", background=p["window"], foreground=p["red"], font=BODY_FONT)
+        style.configure("XP.StatusConnecting.TLabel", background=p["window"], foreground=p["amber"], font=BODY_FONT)
+        style.configure("XP.StatusConnected.TLabel", background=p["window"], foreground=p["green"], font=BODY_FONT)
+        style.configure("App.TEntry", fieldbackground=p["panel"], foreground=p["text"], insertcolor=p["text"], padding=(5, 3), bordercolor=p["border"])
+        style.configure("Invalid.TEntry", fieldbackground=p["panel"], foreground=p["text"], insertcolor=p["text"], padding=(5, 3), bordercolor=p["red"])
+        style.configure("XP.TCombobox", fieldbackground=p["panel"], background=p["panel"], foreground=p["text"], arrowcolor=p["text"], padding=(4, 3), bordercolor=p["border"])
+        style.map("XP.TCombobox", fieldbackground=[("readonly", p["panel"])], foreground=[("readonly", p["text"])])
+
+    @property
+    def _palette(self) -> Mapping[str, str]:
+        return DARK_PALETTE if self._theme == "dark" else LIGHT_PALETTE
 
     def _create_variables(self) -> None:
         self.connection_status_var = tk.StringVar(self, "Disconnected")
@@ -223,6 +247,7 @@ class JitterApp(tk.Tk):
         self.preset_var = tk.StringVar(self, self._selected_preset())
         self.footer_var = tk.StringVar(self, "Ready")
         self.advanced_state_var = tk.BooleanVar(self, False)
+        self.theme_var = tk.StringVar(self, self._theme)
 
         mapping = motion_settings_to_mapping(self.config.motion)
         self.motion_vars: dict[str, tk.Variable] = {}
@@ -289,6 +314,43 @@ class JitterApp(tk.Tk):
         )
         self.connection_label.pack(side="right")
 
+    def toggle_theme(self) -> None:
+        self._theme = "light" if self._theme == "dark" else "dark"
+        self.theme_var.set(self._theme)
+        self._configure_styles()
+        self.configure(background=self._palette["window"])
+        self.right_canvas.configure(background=self._palette["window"])
+        self.theme_button.configure(
+            text="☀" if self._theme == "dark" else "☾"
+        )
+        self.theme_tooltip_text = (
+            "Switch to Light Mode" if self._theme == "dark"
+            else "Switch to Dark Mode"
+        )
+        self._hide_theme_tooltip()
+        slider_palette = self._slider_palette()
+        for widget in self.winfo_children():
+            self._apply_slider_palette(widget, slider_palette)
+        self._schedule_save()
+
+    def _apply_slider_palette(self, widget: tk.Misc,
+                              palette: Mapping[str, str]) -> None:
+        if isinstance(widget, XPGlossySlider):
+            widget.set_palette(palette)
+        for child in widget.winfo_children():
+            self._apply_slider_palette(child, palette)
+
+    def _slider_palette(self) -> dict[str, str]:
+        p = self._palette
+        return {
+            "background": p["window"], "rail": p["panel"],
+            "rail_outline": p["border"], "hover": p["secondary_hover"],
+            "shadow": "#0C0F14" if self._theme == "dark" else "#75828E",
+            "thumb": p["secondary"], "thumb_pressed": p["primary"],
+            "thumb_outline": p["blue_dark"], "highlight": p["text"],
+            "bubble": p["panel"], "text": p["text"], "focus": p["focus"],
+        }
+
     def _build_right_workspace(self) -> None:
         self.right_host = ttk.Frame(self.command_center, style="XP.App.TFrame")
         self.right_host.grid(row=0, column=1, sticky="nsew")
@@ -296,7 +358,7 @@ class JitterApp(tk.Tk):
         self.right_host.columnconfigure(0, weight=1)
         self.right_canvas = tk.Canvas(
             self.right_host,
-            background=XP_WINDOW,
+            background=self._palette["window"],
             highlightthickness=0,
             borderwidth=0,
         )
@@ -391,26 +453,81 @@ class JitterApp(tk.Tk):
 
     def _build_action_card(self) -> None:
         self.tools_frame = self._card("Tools", self.left_column)
+        self.tools_icon_row = ttk.Frame(
+            self.tools_frame, style="XP.App.TFrame"
+        )
+        self.tools_icon_row.pack(fill="x", pady=(0, 5))
+        self.reconnect_tooltip_text = "Reconnect Makcu"
+        self.test_tooltip_text = "Test Run 3s"
+        self._action_tooltip: tk.Toplevel | None = None
         self.reconnect_button = ttk.Button(
-            self.tools_frame,
-            text="Reconnect",
+            self.tools_icon_row,
+            text="↻",
             style="XP.Secondary.TButton",
             command=self.reconnect,
+            width=3,
         )
         self.test_button = ttk.Button(
-            self.tools_frame,
-            text="Test 3s",
+            self.tools_icon_row,
+            text="▶",
             style="XP.Secondary.TButton",
             command=self.test_run,
+            width=3,
         )
+        self.reconnect_button.pack(side="left", padx=(0, 5))
+        self.test_button.pack(side="left")
+        self.reconnect_button.bind(
+            "<Enter>",
+            lambda event: self._show_action_tooltip(
+                event, self.reconnect_tooltip_text
+            ),
+        )
+        self.test_button.bind(
+            "<Enter>",
+            lambda event: self._show_action_tooltip(
+                event, self.test_tooltip_text
+            ),
+        )
+        self.reconnect_button.bind("<Leave>", self._hide_action_tooltip)
+        self.test_button.bind("<Leave>", self._hide_action_tooltip)
         self.advanced_toggle = ttk.Button(
             self.tools_frame,
             text="Advanced Settings ▼",
             style="XP.Secondary.TButton",
             command=self.toggle_advanced,
         )
-        for button in (self.reconnect_button, self.test_button, self.advanced_toggle):
-            button.pack(fill="x", pady=(0, 5))
+        self.advanced_toggle.pack(fill="x", pady=(0, 5))
+
+    def _show_action_tooltip(self, event: tk.Event, text: str) -> None:
+        self._hide_action_tooltip()
+        widget = event.widget
+        tooltip = tk.Toplevel(self)
+        tooltip.wm_overrideredirect(True)
+        tooltip.wm_geometry(
+            f"+{widget.winfo_rootx()}+{widget.winfo_rooty() - 26}"
+        )
+        p = self._palette
+        tk.Label(
+            tooltip,
+            text=text,
+            background=p["panel"],
+            foreground=p["text"],
+            borderwidth=1,
+            relief="solid",
+            font=SMALL_FONT,
+            padx=5,
+            pady=2,
+        ).pack()
+        self._action_tooltip = tooltip
+
+    def _hide_action_tooltip(self, _event: tk.Event | None = None) -> None:
+        tooltip = getattr(self, "_action_tooltip", None)
+        if tooltip is not None:
+            try:
+                tooltip.destroy()
+            except tk.TclError:
+                pass
+            self._action_tooltip = None
 
     def _numeric_control(self, parent: tk.Misc, row: int, column: int,
                          label: str, key: str, low: float, high: float,
@@ -430,6 +547,7 @@ class JitterApp(tk.Tk):
             to=high,
             resolution=resolution,
             command=lambda value, name=key: self._scale_changed(name, value),
+            palette=self._slider_palette(),
         )
         slider.set(float(self.motion_vars[key].get()))
         slider.pack(fill="x", pady=(2, 0))
@@ -496,13 +614,59 @@ class JitterApp(tk.Tk):
     def _build_footer(self) -> None:
         self.footer_frame = ttk.Frame(self.shell, style="XP.App.TFrame")
         self.footer_frame.grid(row=2, column=0, sticky="ew", pady=(6, 3))
+        self.theme_tooltip_text = (
+            "Switch to Light Mode" if self._theme == "dark"
+            else "Switch to Dark Mode"
+        )
+        self._theme_tooltip: tk.Toplevel | None = None
+        self.theme_button = ttk.Button(
+            self.footer_frame,
+            text="☀" if self._theme == "dark" else "☾",
+            style="XP.Secondary.TButton",
+            command=self.toggle_theme,
+            width=3,
+        )
+        self.theme_button.pack(side="right", padx=(8, 0))
+        self.theme_button.bind("<Enter>", self._show_theme_tooltip)
+        self.theme_button.bind("<Leave>", self._hide_theme_tooltip)
         self.footer_label = ttk.Label(
             self.footer_frame,
             textvariable=self.footer_var,
             style="XP.Muted.TLabel",
             anchor="w",
         )
-        self.footer_label.pack(fill="x")
+        self.footer_label.pack(side="left", fill="x", expand=True)
+
+    def _show_theme_tooltip(self, _event: tk.Event | None = None) -> None:
+        self._hide_theme_tooltip()
+        tooltip = tk.Toplevel(self)
+        tooltip.wm_overrideredirect(True)
+        tooltip.wm_geometry(
+            f"+{self.theme_button.winfo_rootx()}+"
+            f"{self.theme_button.winfo_rooty() - 26}"
+        )
+        p = self._palette
+        tk.Label(
+            tooltip,
+            text=self.theme_tooltip_text,
+            background=p["panel"],
+            foreground=p["text"],
+            borderwidth=1,
+            relief="solid",
+            font=SMALL_FONT,
+            padx=5,
+            pady=2,
+        ).pack()
+        self._theme_tooltip = tooltip
+
+    def _hide_theme_tooltip(self, _event: tk.Event | None = None) -> None:
+        tooltip = getattr(self, "_theme_tooltip", None)
+        if tooltip is not None:
+            try:
+                tooltip.destroy()
+            except tk.TclError:
+                pass
+            self._theme_tooltip = None
 
     # ---- shell interactions -------------------------------------------
 
@@ -752,22 +916,29 @@ class JitterApp(tk.Tk):
         # This method is intentionally the only service-to-Tk handoff.
         if self._closing or self._closed:
             return
-        try:
-            self.after(0, self.handle_service_event, event)
-        except (tk.TclError, RuntimeError):
-            # A worker can race close_app() between the state check and Tk's
-            # command registration.  Teardown must remain quiet and safe.
-            return
+        self._ui_queue.put(("service", event))
 
     def _hotkey_pressed(self) -> None:
         if self._capturing_hotkey or self._closing:
             return
         if self._closed:
             return
-        try:
-            self.after(0, self.toggle_enabled)
-        except (tk.TclError, RuntimeError):
+        self._ui_queue.put(("hotkey", None))
+
+    def _drain_ui_queue(self) -> None:
+        self._ui_pump_after_id = None
+        if self._closing or self._closed:
             return
+        while True:
+            try:
+                kind, payload = self._ui_queue.get_nowait()
+            except queue.Empty:
+                break
+            if kind == "service":
+                self.handle_service_event(payload)
+            elif kind == "hotkey":
+                self.toggle_enabled()
+        self._ui_pump_after_id = self.after(15, self._drain_ui_queue)
 
     def _get_async_key_state(self, vk: int) -> int:
         try:
@@ -967,6 +1138,7 @@ class JitterApp(tk.Tk):
             hotkey_vk=self._current_hotkey_vk(),
             hotkey_name=self.hotkey_name_var.get(),
             selected_preset=self.preset_var.get() or "Custom",
+            theme=self.theme_var.get(),
         )
         try:
             self.config_store.save(config)
@@ -980,6 +1152,7 @@ class JitterApp(tk.Tk):
         self._closing = True
         self._cancel_after("_save_after_id")
         self._cancel_after("_capture_after_id")
+        self._cancel_after("_ui_pump_after_id")
         self._capturing_hotkey = False
         self.emergency_stop("Stopped on close")
         try:
