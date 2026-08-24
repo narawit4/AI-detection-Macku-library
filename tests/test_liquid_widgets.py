@@ -3,7 +3,16 @@ import unittest
 from types import SimpleNamespace
 
 import liquid_widgets
-from liquid_widgets import LiquidNavigation, LiquidSlider
+from liquid_widgets import LiquidIconButton, LiquidNavigation, LiquidSlider
+
+
+DARK_ICON_PALETTE = {
+    "background": "#111827", "surface": "#243247",
+    "surface_hover": "#31506B", "surface_pressed": "#1B2A3A",
+    "surface_disabled": "#364152", "border": "#4B6380",
+    "icon": "#EAF7FF", "icon_disabled": "#93A4B8",
+    "highlight": "#719AB8", "focus": "#FFE08A",
+}
 
 
 class _SliderTestCase(unittest.TestCase):
@@ -276,3 +285,75 @@ class LiquidNavigationTests(unittest.TestCase):
         for name, value in vars(liquid_widgets).items():
             if isinstance(value, type) or name.endswith("PALETTE"):
                 self.assertNotIn("XP", name)
+
+
+class LiquidIconButtonTests(unittest.TestCase):
+    def setUp(self):
+        self.root = tk.Tk()
+        self.root.withdraw()
+        self.calls = []
+        self.button = LiquidIconButton(
+            self.root,
+            icon="↻",
+            accessible_name="Reconnect Makcu",
+            command=lambda: self.calls.append("called"),
+        )
+        self.button.pack()
+        self.root.update_idletasks()
+
+    def tearDown(self):
+        self.root.destroy()
+
+    def test_click_enter_and_space_activate_when_enabled(self):
+        """Fails if an enabled action stops invoking its real command."""
+        self.root.deiconify()
+        self.root.update()
+        self.button.focus_force()
+        self.button._activate()
+        self.button.event_generate("<Return>")
+        self.button.event_generate("<space>")
+        self.root.update()
+        self.assertEqual(self.calls, ["called", "called", "called"])
+
+    def test_disabled_button_does_not_activate(self):
+        """Fails if disabled actions can still invoke their command."""
+        self.button.set_enabled(False)
+        self.button._activate()
+        self.assertEqual(self.calls, [])
+
+    def test_palette_redraws_surface_icon_and_focus(self):
+        """Fails if a palette update does not redraw visible icon controls."""
+        self.button.set_palette(DARK_ICON_PALETTE)
+        self.button._on_focus_in()
+        self.assertEqual(self.button.itemcget("surface", "fill"), "#243247")
+        self.assertEqual(self.button.itemcget("icon", "fill"), "#EAF7FF")
+        self.assertEqual(
+            self.button.itemcget("focus-ring", "outline"),
+            "#FFE08A",
+        )
+        self.assertEqual(self.button.accessible_name, "Reconnect Makcu")
+
+    def test_pointer_release_activates_and_resets_pressed_state(self):
+        """Fails if pointer activation omits the command or press cleanup."""
+        self.button._on_enter()
+        self.button._on_press(SimpleNamespace(x=17, y=17))
+        self.button._on_release(SimpleNamespace(x=17, y=17))
+        self.assertEqual(self.calls, ["called"])
+        self.assertTrue(self.button._pressed)
+        self.assertIsNotNone(self.button._press_after_id)
+        self.root.after(120, self.root.quit)
+        self.root.mainloop()
+        self.assertFalse(self.button._pressed)
+        self.assertIsNone(self.button._press_after_id)
+
+    def test_destroy_cancels_pending_press_reset(self):
+        """Fails if a destroyed button leaves its scheduled callback alive."""
+        self.button._on_press(SimpleNamespace(x=17, y=17))
+        self.button._on_release(SimpleNamespace(x=17, y=17))
+        callback_id = self.button._press_after_id
+        self.assertIsNotNone(callback_id)
+        self.button.destroy()
+        self.root.update()
+        self.assertTrue(self.button._destroyed)
+        self.assertIsNone(self.button._press_after_id)
+        self.assertNotIn(callback_id, self.root.tk.call("after", "info"))

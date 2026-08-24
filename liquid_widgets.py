@@ -22,6 +22,15 @@ DEFAULT_SLIDER_PALETTE = {
 }
 
 
+DEFAULT_ICON_PALETTE = {
+    "background": "#F2F7FA", "surface": "#E5F0F5",
+    "surface_hover": "#D6F5FA", "surface_pressed": "#B7EFF8",
+    "surface_disabled": "#D5E0E5", "border": "#B9CBD5",
+    "icon": "#263640", "icon_disabled": "#7A878D",
+    "highlight": "#FFFFFF", "focus": "#8B5CF6",
+}
+
+
 class LiquidNavigation(tk.Canvas):
     """Keyboard-accessible animated navigation for the liquid dashboard."""
 
@@ -685,3 +694,245 @@ class LiquidSlider(tk.Canvas):
     def _on_destroy(self, _event=None) -> None:
         self._cancel_bubble_hide()
         self._destroyed = True
+
+
+class LiquidIconButton(tk.Canvas):
+    """Compact, keyboard-accessible Canvas button for liquid icon actions."""
+
+    PRESS_RESET_MS = 90
+
+    def __init__(
+        self,
+        parent,
+        *,
+        icon: str,
+        accessible_name: str,
+        command: Callable[[], None],
+        palette: Mapping[str, str] | None = None,
+        size: int = 34,
+    ) -> None:
+        self._palette = dict(DEFAULT_ICON_PALETTE)
+        if palette:
+            self._palette.update(palette)
+        self.size = int(size)
+        if self.size <= 0:
+            raise ValueError("icon button size must be positive")
+        super().__init__(
+            parent,
+            width=self.size,
+            height=self.size,
+            highlightthickness=0,
+            borderwidth=0,
+            takefocus=True,
+            background=self._palette["background"],
+        )
+        self.icon = icon
+        self.accessible_name = accessible_name
+        self.command = command
+        self._enabled = True
+        self._destroyed = False
+        self._hovered = False
+        self._pressed = False
+        self._focused = False
+        self._press_after_id: str | None = None
+
+        self.bind("<Configure>", self._on_configure)
+        self.bind("<Enter>", self._on_enter)
+        self.bind("<Leave>", self._on_leave)
+        self.bind("<Button-1>", self._on_press)
+        self.bind("<ButtonRelease-1>", self._on_release)
+        self.bind("<Return>", self._on_key_activate)
+        self.bind("<space>", self._on_key_activate)
+        self.bind("<FocusIn>", self._on_focus_in)
+        self.bind("<FocusOut>", self._on_focus_out)
+        self.bind("<Destroy>", self._on_destroy, add="+")
+
+    def set_palette(self, palette: Mapping[str, str]) -> None:
+        self._palette = {**DEFAULT_ICON_PALETTE, **palette}
+        self.configure(background=self._palette["background"])
+        self._redraw()
+
+    def set_enabled(self, enabled: bool) -> None:
+        self._enabled = bool(enabled)
+        if not self._enabled:
+            self._cancel_press_reset()
+            self._pressed = False
+            self._hovered = False
+            self._focused = False
+        self.configure(state=tk.NORMAL if self._enabled else tk.DISABLED)
+        self._redraw()
+
+    def _rounded_box(
+        self,
+        left: float,
+        top: float,
+        right: float,
+        bottom: float,
+        *,
+        fill: str,
+        outline: str,
+        tags: str | tuple[str, ...],
+    ) -> None:
+        radius = max(1.0, min((bottom - top) / 2.0, (right - left) / 2.0))
+        self.create_rectangle(
+            left + radius,
+            top,
+            right - radius,
+            bottom,
+            fill=fill,
+            outline=outline,
+            tags=tags,
+        )
+        self.create_oval(
+            left,
+            top,
+            left + radius * 2.0,
+            bottom,
+            fill=fill,
+            outline=outline,
+            tags=tags,
+        )
+        self.create_oval(
+            right - radius * 2.0,
+            top,
+            right,
+            bottom,
+            fill=fill,
+            outline=outline,
+            tags=tags,
+        )
+
+    def _redraw(self) -> None:
+        if self._destroyed or not self.winfo_exists():
+            return
+        self.delete("all")
+        width = max(self.winfo_width(), self.winfo_reqwidth())
+        height = max(self.winfo_height(), self.winfo_reqheight())
+        inset = 1.0
+        if not self._enabled:
+            surface = self._palette["surface_disabled"]
+            icon_color = self._palette["icon_disabled"]
+        elif self._pressed:
+            surface = self._palette["surface_pressed"]
+            icon_color = self._palette["icon"]
+        elif self._hovered:
+            surface = self._palette["surface_hover"]
+            icon_color = self._palette["icon"]
+        else:
+            surface = self._palette["surface"]
+            icon_color = self._palette["icon"]
+        self._rounded_box(
+            inset,
+            inset,
+            width - inset,
+            height - inset,
+            fill=surface,
+            outline=self._palette["border"],
+            tags="surface",
+        )
+        self.create_arc(
+            inset + 3,
+            inset + 3,
+            width - inset - 3,
+            height - inset - 5,
+            start=20,
+            extent=140,
+            style="arc",
+            outline=self._palette["highlight"],
+            width=1,
+            tags="surface-highlight",
+        )
+        self.create_text(
+            width / 2,
+            height / 2,
+            text=self.icon,
+            fill=icon_color,
+            font=("Tahoma", max(10, round(self.size * 0.45)), "bold"),
+            tags="icon",
+        )
+        if self._focused and self._enabled:
+            self._rounded_box(
+                2,
+                2,
+                width - 2,
+                height - 2,
+                fill="",
+                outline=self._palette["focus"],
+                tags="focus-ring",
+            )
+
+    def _activate(self) -> None:
+        if self._enabled and not self._destroyed:
+            self.command()
+
+    def _on_key_activate(self, _event=None) -> str:
+        self._activate()
+        return "break"
+
+    def _on_enter(self, _event=None) -> None:
+        if self._enabled:
+            self._hovered = True
+            self._redraw()
+
+    def _on_leave(self, _event=None) -> None:
+        if self._enabled:
+            self._hovered = False
+            self._redraw()
+
+    def _on_press(self, _event=None) -> str:
+        if self._enabled:
+            self.focus_set()
+            self._cancel_press_reset()
+            self._pressed = True
+            self._redraw()
+        return "break"
+
+    def _on_release(self, _event=None) -> str:
+        if self._enabled and self._pressed:
+            self._activate()
+            self._schedule_press_reset()
+        return "break"
+
+    def _on_focus_in(self, _event=None) -> None:
+        if self._enabled:
+            self._focused = True
+            self._redraw()
+
+    def _on_focus_out(self, _event=None) -> None:
+        self._focused = False
+        self._redraw()
+
+    def _schedule_press_reset(self) -> None:
+        self._cancel_press_reset()
+        try:
+            self._press_after_id = self.after(
+                self.PRESS_RESET_MS,
+                self._clear_pressed,
+            )
+        except (RuntimeError, tk.TclError):
+            self._press_after_id = None
+            self._pressed = False
+            self._redraw()
+
+    def _cancel_press_reset(self) -> None:
+        callback_id = self._press_after_id
+        self._press_after_id = None
+        if callback_id is not None:
+            try:
+                self.after_cancel(callback_id)
+            except (RuntimeError, tk.TclError):
+                pass
+
+    def _clear_pressed(self) -> None:
+        self._press_after_id = None
+        if self._destroyed:
+            return
+        self._pressed = False
+        self._redraw()
+
+    def _on_configure(self, _event=None) -> None:
+        self._redraw()
+
+    def _on_destroy(self, _event=None) -> None:
+        self._destroyed = True
+        self._cancel_press_reset()
