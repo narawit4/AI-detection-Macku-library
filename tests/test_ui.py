@@ -224,6 +224,11 @@ class JitterLayoutTests(unittest.TestCase):
             current = current.master
         return False
 
+    def _descendants(self, widget):
+        for child in widget.winfo_children():
+            yield child
+            yield from self._descendants(child)
+
     def test_shell_uses_persistent_rail_and_console_columns(self):
         self.assertIs(self.app.navigation_rail.master, self.app.shell)
         self.assertIs(self.app.console_workspace.master, self.app.shell)
@@ -272,14 +277,14 @@ class JitterLayoutTests(unittest.TestCase):
             with self.subTest(widget=str(widget)):
                 self.assertIs(widget.master, self.app.console_workspace)
 
-    def test_shell_canvas_exposes_semantic_liquid_visual_layers(self):
+    def test_split_console_shell_preserves_semantic_layers_in_both_themes(self):
         """Fails if the shell drops its graded and rounded Canvas surfaces."""
         shell = getattr(self.app, "shell", None)
         self.assertIsInstance(shell, tk.Canvas)
         self.app.deiconify()
         self.app.update()
 
-        for tag in (
+        required_tags = (
             "rail-surface",
             "workspace-band",
             "rounded-surface",
@@ -288,21 +293,25 @@ class JitterLayoutTests(unittest.TestCase):
             "floating-panel-rail",
             "floating-panel-page",
             "floating-panel-runtime",
-        ):
-            with self.subTest(tag=tag):
-                self.assertTrue(shell.find_withtag(tag))
-
-        light_bands = tuple(
-            shell.itemcget(item, "fill")
-            for item in shell.find_withtag("workspace-band")
         )
-        self.app.toggle_theme()
-        self.app.update()
-        dark_bands = tuple(
-            shell.itemcget(item, "fill")
-            for item in shell.find_withtag("workspace-band")
-        )
-        self.assertNotEqual(dark_bands, light_bands)
+        themed_layers = {}
+        for theme in ("light", "dark"):
+            with self.subTest(theme=theme):
+                self.assertEqual(self.app.theme_var.get(), theme)
+                for tag in required_tags:
+                    self.assertTrue(shell.find_withtag(tag), tag)
+                rail_fill = shell.itemcget(
+                    shell.find_withtag("rail-surface")[0], "fill"
+                )
+                workspace_fills = tuple(
+                    shell.itemcget(item, "fill")
+                    for item in shell.find_withtag("workspace-band")
+                )
+                self.assertNotIn(rail_fill, workspace_fills)
+                themed_layers[theme] = (rail_fill, workspace_fills)
+            self.app.toggle_theme()
+            self.app.update()
+        self.assertNotEqual(themed_layers["light"], themed_layers["dark"])
 
     def test_connection_indicator_has_glow_and_semantic_state_tags(self):
         """Fails if connection state returns to a text-only indicator."""
@@ -364,16 +373,19 @@ class JitterLayoutTests(unittest.TestCase):
             with self.subTest(widget=str(widget)):
                 self.assertTrue(self._is_descendant(widget, self.app.advanced_page))
 
-    def test_control_uses_asymmetric_bindings_and_device_columns(self):
+    def test_split_console_control_uses_exact_three_to_two_columns(self):
         self.assertEqual(
             int(self.app.control_bindings_card.grid_info()["column"]), 0
         )
         self.assertEqual(
             int(self.app.control_device_card.grid_info()["column"]), 1
         )
-        self.assertGreater(
-            int(self.app.control_page.grid_columnconfigure(0)["weight"]),
-            int(self.app.control_page.grid_columnconfigure(1)["weight"]),
+        self.assertEqual(
+            tuple(
+                int(self.app.control_page.grid_columnconfigure(column)["weight"])
+                for column in (0, 1)
+            ),
+            (3, 2),
         )
         for widget in (
             self.app.trigger_combo,
@@ -387,28 +399,77 @@ class JitterLayoutTests(unittest.TestCase):
             self._is_descendant(self.app.preset_combo,
                                 self.app.control_device_card)
         )
+        self.assertTrue(
+            self._is_descendant(self.app.device_label,
+                                self.app.control_device_card)
+        )
 
-    def test_motion_uses_hero_controls_and_snapshot_side_card(self):
+    def test_split_console_device_summary_stays_inside_device_card(self):
+        """Fails if real Makcu diagnostics overflow the Device card."""
+        self.app.handle_service_event(ServiceEvent(
+            "connected",
+            "{'port': 'COM3', 'description': 'USB-Enhanced-SERIAL CH343 "
+            "(COM3)', 'vid': '0x1a86', 'pid': '0x55d3'}",
+        ))
+        self.assertEqual(self.app.device_status_var.get(), "Makcu on COM3")
+        self.app.deiconify()
+        self.app.update()
+
+        label_right = (
+            self.app.device_label.winfo_rootx()
+            + self.app.device_label.winfo_width()
+        )
+        card_right = (
+            self.app.control_device_card.winfo_rootx()
+            + self.app.control_device_card.winfo_width()
+        )
+        self.assertGreater(
+            self.app.control_bindings_card.winfo_width(),
+            self.app.control_device_card.winfo_width(),
+        )
+        self.assertLessEqual(label_right, card_right)
+
+    def test_split_console_motion_uses_exact_three_to_two_columns(self):
         self.assertEqual(int(self.app.motion_hero_card.grid_info()["column"]), 0)
         self.assertEqual(
             int(self.app.motion_summary_card.grid_info()["column"]), 1
         )
+        self.assertEqual(
+            tuple(
+                int(self.app.motion_page.grid_columnconfigure(column)["weight"])
+                for column in (0, 1)
+            ),
+            (3, 2),
+        )
         for key in ("motion_strength_pps", "jitter_rate_hz"):
-            self.assertTrue(
-                self._is_descendant(
-                    getattr(self.app, f"{key}_scale"),
-                    self.app.motion_hero_card,
-                )
-            )
+            for suffix in ("scale", "entry"):
+                with self.subTest(key=key, suffix=suffix):
+                    self.assertTrue(
+                        self._is_descendant(
+                            getattr(self.app, f"{key}_{suffix}"),
+                            self.app.motion_hero_card,
+                        )
+                    )
         self.assertTrue(
             self._is_descendant(
                 self.app.motion_summary_label, self.app.motion_summary_card
             )
         )
 
-    def test_advanced_remains_the_only_scrollable_page(self):
-        self.assertTrue(
-            self._is_descendant(self.app.advanced_canvas, self.app.advanced_page)
+    def test_split_console_advanced_is_the_only_page_with_a_scroll_canvas(self):
+        scroll_canvases = {
+            page: [
+                widget for widget in self._descendants(page)
+                if isinstance(widget, tk.Canvas)
+                and str(widget.cget("yscrollcommand"))
+            ]
+            for page in self.app.pages
+        }
+        self.assertEqual(scroll_canvases[self.app.control_page], [])
+        self.assertEqual(scroll_canvases[self.app.motion_page], [])
+        self.assertEqual(
+            scroll_canvases[self.app.advanced_page],
+            [self.app.advanced_canvas],
         )
         self.assertFalse(
             self._is_descendant(self.app.footer_frame, self.app.advanced_canvas)
@@ -468,17 +529,21 @@ class JitterLayoutTests(unittest.TestCase):
             ["↻", "▶", "☾"],
         )
 
-    def test_mini_actions_remain_visible_on_every_page(self):
+    def test_split_console_keeps_actions_footer_runtime_and_stop_on_every_page(self):
         self.app.deiconify()
         self.app.update()
         for index in range(3):
             with self.subTest(index=index):
                 self.app.select_page(index)
                 self.app.update_idletasks()
-                self.assertTrue(all(button.winfo_ismapped() for button in (
+                self.assertTrue(all(widget.winfo_ismapped() for widget in (
+                    self.app.navigation_actions,
                     self.app.reconnect_button,
                     self.app.test_button,
                     self.app.theme_button,
+                    self.app.footer_frame,
+                    self.app.runtime_frame,
+                    self.app.stop_button,
                 )))
 
     def test_stop_is_visible_on_every_navigation_page(self):
@@ -489,14 +554,19 @@ class JitterLayoutTests(unittest.TestCase):
                 self.app.update()
                 self.assertEqual(self.app.stop_button.winfo_ismapped(), 1)
 
-    def test_close_cancels_custom_widget_callbacks_before_service_close(self):
+    def test_split_console_close_cancels_all_widget_callbacks_before_service_close(self):
         self.app.deiconify()
         self.app.update()
         self.app.nav.select(2)
         self.assertIsNotNone(self.app.nav._animation_after_id)
-        slider = self.app.motion_strength_pps_scale
-        slider._schedule_hide_bubble()
-        self.assertIsNotNone(slider._bubble_after_id)
+        sliders = [
+            widget for widget in self._descendants(self.app)
+            if isinstance(widget, LiquidSlider)
+        ]
+        self.assertTrue(sliders)
+        for slider in sliders:
+            slider._schedule_hide_bubble()
+            self.assertIsNotNone(slider._bubble_after_id)
         self.app._show_action_tooltip(
             SimpleNamespace(widget=self.app.reconnect_button),
             self.app.reconnect_tooltip_text,
@@ -509,7 +579,7 @@ class JitterLayoutTests(unittest.TestCase):
             callback_states_at_service_close.append((
                 self.app._closing,
                 self.app.nav._animation_after_id,
-                slider._bubble_after_id,
+                tuple(slider._bubble_after_id for slider in sliders),
                 self.app._action_tooltip,
                 self.app._theme_tooltip,
             ))
@@ -519,7 +589,7 @@ class JitterLayoutTests(unittest.TestCase):
         self.app.close_app()
         self.assertEqual(
             callback_states_at_service_close,
-            [(True, None, None, None, None)],
+            [(True, None, tuple(None for _slider in sliders), None, None)],
         )
         self.assertIsNone(self.app.nav._animation_after_id)
 
@@ -582,13 +652,53 @@ class JitterLayoutTests(unittest.TestCase):
                 button.event_generate("<FocusOut>")
                 self.assertIsNone(getattr(self.app, tooltip_attribute))
 
-    def test_select_page_shows_one_page_without_resetting_values(self):
+    def test_split_console_page_and_theme_changes_preserve_state_and_geometry(self):
         self.app.motion_strength_pps_var.set("123")
-        self.app.select_page(2)
-        self.assertEqual(self.app.nav.selected_index, 2)
-        self.assertEqual(self.app.page_host.grid_slaves(), [self.app.pages[2]])
-        self.app.select_page(1)
-        self.assertEqual(self.app.motion_strength_pps_var.get(), "123")
+        self.app.jitter_rate_hz_var.set("17.5")
+        self.app.trigger_var.set("Mouse4")
+        self.app.modifier_var.set("Right")
+        self.app.preset_var.set("Custom")
+        self.app.deiconify()
+        self.app.update()
+        expected_summary = self.app.motion_summary_var.get()
+        expected_motion_values = {
+            key: variable.get() for key, variable in self.app.motion_vars.items()
+        }
+        expected_control_values = (
+            self.app.trigger_var.get(),
+            self.app.modifier_var.get(),
+            self.app.preset_var.get(),
+            self.app.hotkey_name_var.get(),
+        )
+        expected_geometry = self.app.geometry()
+
+        for index in (2, 1, 0):
+            with self.subTest(index=index):
+                self.app.select_page(index)
+                self.app.toggle_theme()
+                self.app.update_idletasks()
+                self.assertEqual(self.app.nav.selected_index, index)
+                self.assertEqual(
+                    self.app.page_host.grid_slaves(), [self.app.pages[index]]
+                )
+                self.assertEqual(self.app.motion_summary_var.get(), expected_summary)
+                self.assertEqual(
+                    {
+                        key: variable.get()
+                        for key, variable in self.app.motion_vars.items()
+                    },
+                    expected_motion_values,
+                )
+                self.assertEqual(
+                    (
+                        self.app.trigger_var.get(),
+                        self.app.modifier_var.get(),
+                        self.app.preset_var.get(),
+                        self.app.hotkey_name_var.get(),
+                    ),
+                    expected_control_values,
+                )
+                self.assertEqual(self.app.geometry(), expected_geometry)
 
     def test_advanced_uses_approved_two_column_grid(self):
         expected_positions = {

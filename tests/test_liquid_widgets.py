@@ -252,11 +252,23 @@ class LiquidNavigationTests(unittest.TestCase):
     def test_vertical_navigation_stacks_destinations_and_moves_lens_on_y_axis(self):
         nav = self.make_vertical_nav()
         nav.pack()
+        self.root.deiconify()
         self.root.update()
-        first = nav._target_lens_position(0)
-        last = nav._target_lens_position(2)
-        self.assertEqual(first[0], last[0])
-        self.assertLess(first[1], last[1])
+        nav.animation_ms = 10
+        start_x, start_y = nav._pill_x, nav._pill_y
+
+        nav.select(2)
+        self.assertIsNotNone(nav._animation_after_id)
+        self.root.after(50, self.root.quit)
+        self.root.mainloop()
+
+        self.assertIsNone(nav._animation_after_id)
+        self.assertAlmostEqual(nav._pill_x, start_x)
+        self.assertGreater(nav._pill_y, start_y)
+        self.assertEqual(
+            (nav._pill_x, nav._pill_y),
+            nav._target_lens_position(2),
+        )
 
     def test_vertical_pointer_selects_the_destination_hit_on_y_axis(self):
         nav = self.make_vertical_nav()

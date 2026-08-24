@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import logging
 import tkinter as tk
 from tkinter import ttk
@@ -96,6 +97,25 @@ def _motion_summary_text(settings: MotionSettings) -> str:
         f"{settings.jitter_waveform} | "
         f"Smooth {_display_value(settings.smoothness)}%"
     )
+
+
+def _device_summary_text(payload: Any) -> str:
+    fallback = "Makcu device connected"
+    if payload is None:
+        return fallback
+    details: Any = payload
+    text = str(payload).strip()
+    if not text:
+        return fallback
+    if isinstance(payload, str):
+        try:
+            details = ast.literal_eval(text.split(" | ", 1)[0])
+        except (SyntaxError, ValueError):
+            details = None
+    if isinstance(details, Mapping):
+        port = str(details.get("port", "")).strip()
+        return f"Makcu on {port}" if port else fallback
+    return text if len(text) <= 40 else fallback
 
 
 class JitterApp(tk.Tk):
@@ -677,6 +697,9 @@ class JitterApp(tk.Tk):
             device_row,
             textvariable=self.device_status_var,
             style="Liquid.Body.TLabel",
+            anchor="e",
+            justify="right",
+            wraplength=120,
         )
         self.device_label.pack(side="right")
 
@@ -1374,7 +1397,9 @@ class JitterApp(tk.Tk):
             self.device_status_var.set("Connecting to Makcu...")
         elif kind in {"connected", "reconnected"}:
             self._set_connection_state("Connected")
-            self.device_status_var.set(str(event.payload or "Makcu device connected"))
+            if event.payload:
+                logging.info("Makcu connected: %s", event.payload)
+            self.device_status_var.set(_device_summary_text(event.payload))
             self.footer_var.set("Makcu connected")
         elif kind == "disconnected":
             self._set_connection_state("Disconnected")

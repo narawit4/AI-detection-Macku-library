@@ -1,7 +1,7 @@
 # Jitter
 
 Jitter is a small Windows-only Tkinter controller for a Makcu USB device. It
-has a fixed-size English Liquid Control Deck with Control, Motion, and Advanced
+has a fixed-size English Liquid Split Console with Control, Motion, and Advanced
 pages: configure two-dimensional smooth jitter, choose a Trigger and optional
 Modifier, arm or stop movement, run a three-second test, and assign a global
 toggle hotkey.
