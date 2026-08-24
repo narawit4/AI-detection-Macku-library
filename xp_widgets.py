@@ -261,15 +261,16 @@ class LiquidXPNav(tk.Canvas):
             outline=outline,
             tags=tags,
         )
-        self.create_rectangle(
-            left,
-            top + radius,
-            right,
-            bottom - radius,
-            fill=fill,
-            outline=outline,
-            tags=tags,
-        )
+        if bottom - top > radius * 2.0:
+            self.create_rectangle(
+                left,
+                top + radius,
+                right,
+                bottom - radius,
+                fill=fill,
+                outline=outline,
+                tags=tags,
+            )
         self.create_oval(
             left,
             top,

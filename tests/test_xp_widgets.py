@@ -191,6 +191,24 @@ class LiquidXPNavTests(unittest.TestCase):
         self.nav.cancel_animation()
         self.assertIsNone(self.nav._animation_after_id)
 
+    def test_rapid_selection_finishes_at_latest_target(self):
+        self.nav.select(2)
+        self.nav.select(1)
+        self.root.after(self.nav.animation_ms * 3, self.root.quit)
+        self.root.mainloop()
+        self.assertIsNone(self.nav._animation_after_id)
+        self.assertAlmostEqual(
+            self.nav._pill_x,
+            self.nav._target_pill_x(self.nav.selected_index),
+        )
+
+    def test_rounded_shapes_do_not_contain_collapsed_center_rectangles(self):
+        self.nav._redraw()
+        for item_id in self.nav.find_withtag("capsule") + self.nav.find_withtag("pill"):
+            if self.nav.type(item_id) == "rectangle":
+                coordinates = self.nav.coords(item_id)
+                self.assertLess(coordinates[1], coordinates[3])
+
     def test_destroy_cancels_animation(self):
         self.nav.select(2)
         self.nav.destroy()
