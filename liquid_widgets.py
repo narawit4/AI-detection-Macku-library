@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from decimal import Decimal, ROUND_HALF_UP
+from functools import partial
 import math
 import tkinter as tk
 from typing import Callable, Mapping
@@ -106,7 +107,6 @@ class LiquidNavigation(tk.Canvas):
             return
         self.cancel_animation()
         self.selected_index = target
-        target_x: float | None = None
         try:
             self._redraw()
             target_x = self._target_pill_x(target)
@@ -115,15 +115,6 @@ class LiquidNavigation(tk.Canvas):
             else:
                 self._pill_x = target_x
                 self._redraw()
-        except tk.TclError:
-            self._animation_after_id = None
-            try:
-                if target_x is None:
-                    target_x = self._target_pill_x(target)
-                self._pill_x = target_x
-                self._redraw()
-            except tk.TclError:
-                pass
         finally:
             if notify and self.command is not None:
                 self.command(target)
@@ -173,23 +164,55 @@ class LiquidNavigation(tk.Canvas):
             return
         steps = 10
         interval = max(1, int(round(self.animation_ms / steps)))
+        self._schedule_pill_step(start_x, target_x, steps, interval, 1)
 
-        def advance(step: int = 1) -> None:
+    def _schedule_pill_step(
+        self,
+        start_x: float,
+        target_x: float,
+        steps: int,
+        interval: int,
+        step: int,
+    ) -> None:
+        callback = partial(
+            self._advance_pill,
+            start_x,
+            target_x,
+            steps,
+            interval,
+            step,
+        )
+        try:
+            self._animation_after_id = self.after(interval, callback)
+        except tk.TclError:
             self._animation_after_id = None
-            if self._destroyed or not self.winfo_exists():
-                return
-            fraction = min(1.0, step / steps)
-            self._pill_x = start_x + (target_x - start_x) * fraction
+            self._pill_x = target_x
             self._redraw()
-            if step >= steps:
-                self._pill_x = target_x
-                return
-            self._animation_after_id = self.after(
-                interval,
-                lambda: advance(step + 1),
-            )
 
-        self._animation_after_id = self.after(interval, advance)
+    def _advance_pill(
+        self,
+        start_x: float,
+        target_x: float,
+        steps: int,
+        interval: int,
+        step: int,
+    ) -> None:
+        self._animation_after_id = None
+        if self._destroyed or not self.winfo_exists():
+            return
+        fraction = min(1.0, step / steps)
+        self._pill_x = start_x + (target_x - start_x) * fraction
+        self._redraw()
+        if step >= steps:
+            self._pill_x = target_x
+            return
+        self._schedule_pill_step(
+            start_x,
+            target_x,
+            steps,
+            interval,
+            step + 1,
+        )
 
     def _redraw(self) -> None:
         if self._destroyed or not self.winfo_exists():

@@ -280,17 +280,21 @@ class LiquidNavigationTests(unittest.TestCase):
         self.nav.cancel_animation()
         self.assertIsNone(self.nav._animation_after_id)
 
-    def test_scheduler_failure_snaps_to_target_and_still_notifies(self):
+    def test_scheduler_failure_snaps_but_drawing_tcl_error_propagates(self):
         self.nav._redraw()
 
         def failing_after(*_args):
             raise tk.TclError("scheduler unavailable")
 
+        original_after = self.nav.after
         self.nav.after = failing_after
         try:
-            self.nav.select(2)
-        except tk.TclError as exc:
-            self.fail(f"selection leaked animation failure: {exc}")
+            try:
+                self.nav.select(2)
+            except tk.TclError as exc:
+                self.fail(f"selection leaked animation failure: {exc}")
+        finally:
+            self.nav.after = original_after
 
         self.assertEqual(self.nav.selected_index, 2)
         self.assertEqual(self.selected, [2])
@@ -299,6 +303,19 @@ class LiquidNavigationTests(unittest.TestCase):
             self.nav._pill_x,
             self.nav._target_pill_x(2),
         )
+
+        self.nav.selected_index = 0
+
+        def failing_redraw():
+            raise tk.TclError("drawing failed")
+
+        original_redraw = self.nav._redraw
+        self.nav._redraw = failing_redraw
+        try:
+            with self.assertRaisesRegex(tk.TclError, "drawing failed"):
+                self.nav.select(1)
+        finally:
+            self.nav._redraw = original_redraw
 
     def test_unexpected_animation_error_is_not_masked_as_teardown(self):
         self.nav._redraw()
