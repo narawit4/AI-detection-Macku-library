@@ -99,7 +99,7 @@ def _motion_summary_text(settings: MotionSettings) -> str:
 
 
 class JitterApp(tk.Tk):
-    """Fixed-size Liquid Control Deck for Jitter.
+    """Fixed-size Liquid Split Console for Jitter.
 
     The factories make the shell hardware-free in tests and give the runtime
     layer a narrow seam for the real Makcu and global-hotkey services.
@@ -115,7 +115,7 @@ class JitterApp(tk.Tk):
     ) -> None:
         super().__init__()
         self.title("Jitter " + chr(0x2014) + " Makcu Control")
-        self.geometry("780x640")
+        self.geometry("840x620")
         self.resizable(False, False)
         self.protocol("WM_DELETE_WINDOW", self.close_app)
 
@@ -333,35 +333,59 @@ class JitterApp(tk.Tk):
             takefocus=False,
         )
         self.shell.pack(fill="both", expand=True)
-        self.shell.columnconfigure(0, weight=1)
-        self.shell.rowconfigure(2, weight=1)
+        self.shell.columnconfigure(0, weight=0, minsize=176)
+        self.shell.columnconfigure(1, weight=1)
+        self.shell.rowconfigure(0, weight=1)
         self.shell.bind("<Configure>", self._redraw_shell_art, add="+")
 
-        self.identity_frame = ttk.Frame(
-            self.shell, style="Liquid.Surface.TFrame", padding=(14, 8)
+        self.navigation_rail = ttk.Frame(
+            self.shell,
+            width=176,
+            style="Liquid.Surface.TFrame",
+            padding=(12, 14),
         )
-        self.identity_frame.grid(
-            row=0, column=0, sticky="ew", padx=16, pady=(14, 8)
+        self.navigation_rail.grid(
+            row=0, column=0, sticky="ns", padx=(12, 8), pady=12
         )
+        self.navigation_rail.grid_propagate(False)
+
+        self.rail_identity = ttk.Frame(
+            self.navigation_rail, style="Liquid.Surface.TFrame"
+        )
+        self.rail_identity.pack(side="top", fill="x")
+        # Preserve the established identity seam for existing integrations.
+        self.identity_frame = self.rail_identity
         self._build_identity()
 
         self.navigation_frame = ttk.Frame(
-            self.shell, style="Liquid.App.TFrame"
+            self.navigation_rail, style="Liquid.Surface.TFrame"
         )
-        self.navigation_frame.grid(
-            row=1, column=0, sticky="ew", padx=16, pady=(0, 8)
-        )
+        self.navigation_frame.pack(side="top", fill="x", pady=(18, 0))
         self.nav = LiquidNavigation(
             self.navigation_frame,
             labels=("Control", "Motion", "Advanced"),
             command=self.select_page,
             palette=self._navigation_palette(),
+            orientation="vertical",
+            width=152,
+            height=132,
         )
-        self.nav.pack(side="left")
+        self.nav.pack(fill="x")
         self._build_navigation_actions()
 
-        self.page_host = ttk.Frame(self.shell, style="Liquid.App.TFrame")
-        self.page_host.grid(row=2, column=0, sticky="nsew", padx=16)
+        self.console_workspace = ttk.Frame(
+            self.shell, style="Liquid.App.TFrame"
+        )
+        self.console_workspace.grid(
+            row=0, column=1, sticky="nsew", padx=(8, 14), pady=(12, 10)
+        )
+        self.console_workspace.columnconfigure(0, weight=1)
+        self.console_workspace.rowconfigure(0, weight=1)
+
+        self.page_host = ttk.Frame(
+            self.console_workspace, style="Liquid.App.TFrame"
+        )
+        self.page_host.grid(row=0, column=0, sticky="nsew")
         self.page_host.rowconfigure(0, weight=1)
         self.page_host.columnconfigure(0, weight=1)
         self.control_page = ttk.Frame(self.page_host, style="Liquid.App.TFrame")
@@ -380,7 +404,7 @@ class JitterApp(tk.Tk):
         self._build_main_control_card()
         self._build_footer()
         for panel in (
-            self.identity_frame,
+            self.navigation_rail,
             self.page_host,
             self.runtime_frame,
         ):
@@ -391,28 +415,26 @@ class JitterApp(tk.Tk):
         identity_copy = ttk.Frame(
             self.identity_frame, style="Liquid.Surface.TFrame"
         )
-        identity_copy.pack(side="left", fill="x", expand=True)
+        identity_copy.pack(side="top", fill="x")
         ttk.Label(
             identity_copy, text="Jitter", style="Liquid.Title.TLabel"
-        ).pack(side="left")
+        ).pack(anchor="w")
         ttk.Label(
             identity_copy,
-            text="  Smooth Makcu motion control",
+            text="MAKCU MOTION",
             style="Liquid.Subtitle.TLabel",
-        ).pack(side="left", pady=(7, 0))
-        ttk.Label(
-            self.identity_frame,
-            text="MAKCU",
-            style="Liquid.Subtitle.TLabel",
-        ).pack(side="left", padx=(10, 5))
+        ).pack(anchor="w", pady=(1, 0))
+        connection_row = ttk.Frame(
+            self.identity_frame, style="Liquid.Surface.TFrame"
+        )
+        connection_row.pack(side="top", fill="x", pady=(14, 0))
         self.connection_label = ttk.Label(
-            self.identity_frame,
+            connection_row,
             textvariable=self.connection_status_var,
             style="Liquid.StatusDisconnected.TLabel",
         )
-        self.connection_label.pack(side="right")
         self.connection_indicator = tk.Canvas(
-            self.identity_frame,
+            connection_row,
             width=18,
             height=18,
             background=self._palette["surface"],
@@ -420,7 +442,8 @@ class JitterApp(tk.Tk):
             borderwidth=0,
             takefocus=False,
         )
-        self.connection_indicator.pack(side="right", padx=(8, 3), pady=(1, 0))
+        self.connection_indicator.pack(side="left", padx=(0, 5), pady=(1, 0))
+        self.connection_label.pack(side="left")
         self._redraw_connection_indicator()
 
     def toggle_theme(self) -> None:
@@ -589,10 +612,12 @@ class JitterApp(tk.Tk):
 
     def _build_main_control_card(self) -> None:
         self.runtime_frame = ttk.Frame(
-            self.shell, style="Liquid.Surface.TFrame", padding=(10, 8)
+            self.console_workspace,
+            style="Liquid.Surface.TFrame",
+            padding=(10, 8),
         )
         self.runtime_frame.grid(
-            row=3, column=0, sticky="ew", padx=16, pady=(8, 0)
+            row=2, column=0, sticky="ew", pady=(8, 0)
         )
         self.runtime_frame.columnconfigure(0, weight=1, uniform="runtime_actions")
         self.runtime_frame.columnconfigure(1, weight=2)
@@ -670,9 +695,9 @@ class JitterApp(tk.Tk):
 
     def _build_navigation_actions(self) -> None:
         self.navigation_actions = ttk.Frame(
-            self.navigation_frame, style="Liquid.App.TFrame"
+            self.navigation_rail, style="Liquid.Surface.TFrame"
         )
-        self.navigation_actions.pack(side="right")
+        self.navigation_actions.pack(side="bottom", anchor="center")
         self.reconnect_tooltip_text = "Reconnect Makcu"
         self.test_tooltip_text = "Test Run 3s"
         self._action_tooltip: tk.Toplevel | None = None
@@ -906,9 +931,11 @@ class JitterApp(tk.Tk):
         self.motion_curve_combo.pack(side="right", fill="x", expand=True, padx=(8, 0))
 
     def _build_footer(self) -> None:
-        self.footer_frame = ttk.Frame(self.shell, style="Liquid.App.TFrame")
+        self.footer_frame = ttk.Frame(
+            self.console_workspace, style="Liquid.App.TFrame"
+        )
         self.footer_frame.grid(
-            row=4, column=0, sticky="ew", padx=16, pady=(6, 10)
+            row=1, column=0, sticky="ew", pady=(6, 0)
         )
         self.footer_label = ttk.Label(
             self.footer_frame,
@@ -964,31 +991,45 @@ class JitterApp(tk.Tk):
         self.shell.delete("shell-art")
         width = max(self.shell.winfo_width(), self.shell.winfo_reqwidth())
         height = max(self.shell.winfo_height(), self.shell.winfo_reqheight())
+        shell_left = self.shell.winfo_rootx()
+        shell_top = self.shell.winfo_rooty()
+        workspace = getattr(self, "console_workspace", None)
+        workspace_left = 176
+        if workspace is not None:
+            workspace_left = max(
+                0, workspace.winfo_rootx() - shell_left
+            )
         bands = _BACKGROUND_BANDS[self._theme]
         for index, color in enumerate(bands):
             top = round(height * index / len(bands))
             bottom = round(height * (index + 1) / len(bands))
             self.shell.create_rectangle(
-                0,
+                workspace_left,
                 top,
                 width,
                 bottom,
                 fill=color,
                 outline=color,
-                tags=("shell-art", "background-band", f"background-band-{index}"),
+                tags=(
+                    "shell-art",
+                    "background-band",
+                    "workspace-band",
+                    f"background-band-{index}",
+                    f"workspace-band-{index}",
+                ),
             )
 
         p = self._palette
         for name, attribute in (
-            ("identity", "identity_frame"),
+            ("rail", "navigation_rail"),
             ("page", "page_host"),
             ("runtime", "runtime_frame"),
         ):
             panel = getattr(self, attribute, None)
             if panel is None:
                 continue
-            left = panel.winfo_x() - 4
-            top = panel.winfo_y() - 4
+            left = panel.winfo_rootx() - shell_left - 4
+            top = panel.winfo_rooty() - shell_top - 4
             right = left + max(panel.winfo_width(), panel.winfo_reqwidth()) + 8
             bottom = top + max(panel.winfo_height(), panel.winfo_reqheight()) + 8
             if right <= left or bottom <= top:
@@ -1002,6 +1043,14 @@ class JitterApp(tk.Tk):
                 left, bottom, left, bottom - radius,
                 left, top + radius, left, top,
             )
+            panel_tags = (
+                "shell-art",
+                "rounded-surface",
+                "floating-panel",
+                f"floating-panel-{name}",
+            )
+            if name == "rail":
+                panel_tags += ("rail-surface",)
             self.shell.create_polygon(
                 points,
                 smooth=True,
@@ -1009,12 +1058,7 @@ class JitterApp(tk.Tk):
                 fill=p["surface"],
                 outline=p["border"],
                 width=1,
-                tags=(
-                    "shell-art",
-                    "rounded-surface",
-                    "floating-panel",
-                    f"floating-panel-{name}",
-                ),
+                tags=panel_tags,
             )
             self.shell.create_line(
                 left + radius,

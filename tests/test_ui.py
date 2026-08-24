@@ -115,11 +115,10 @@ class JitterLayoutTests(unittest.TestCase):
         except tk.TclError:
             pass
 
-    def test_window_is_fixed_size_liquid_control_deck(self):
+    def test_window_is_fixed_size_liquid_split_console(self):
         self.app.update_idletasks()
-        self.assertEqual(self.app.geometry().split("+")[0], "780x640")
-        self.assertFalse(self.app.resizable()[0])
-        self.assertFalse(self.app.resizable()[1])
+        self.assertEqual(self.app.geometry().split("+")[0], "840x620")
+        self.assertEqual(self.app.resizable(), (False, False))
 
     def test_internal_brand_banner_is_not_rendered(self):
         brand_banners = [
@@ -225,18 +224,44 @@ class JitterLayoutTests(unittest.TestCase):
             current = current.master
         return False
 
-    def test_shell_region_order_is_identity_nav_page_runtime_footer(self):
-        regions = (
-            self.app.identity_frame,
-            self.app.navigation_frame,
+    def test_shell_uses_persistent_rail_and_console_columns(self):
+        self.assertEqual(int(self.app.navigation_rail.grid_info()["column"]), 0)
+        self.assertEqual(int(self.app.console_workspace.grid_info()["column"]), 1)
+        self.assertEqual(int(self.app.navigation_rail.cget("width")), 176)
+        self.assertEqual(self.app.nav.orientation, "vertical")
+
+    def test_rail_owns_identity_connection_navigation_and_mini_actions(self):
+        for widget in (
+            self.app.rail_identity,
+            self.app.connection_indicator,
+            self.app.nav,
+            self.app.navigation_actions,
+        ):
+            with self.subTest(widget=str(widget)):
+                self.assertTrue(
+                    self._is_descendant(widget, self.app.navigation_rail)
+                )
+        for button in (
+            self.app.reconnect_button,
+            self.app.test_button,
+            self.app.theme_button,
+        ):
+            with self.subTest(button=str(button)):
+                self.assertIs(button.master, self.app.navigation_actions)
+
+    def test_workspace_keeps_page_footer_runtime_order(self):
+        widgets = (
             self.app.page_host,
-            self.app.runtime_frame,
             self.app.footer_frame,
+            self.app.runtime_frame,
         )
         self.assertEqual(
-            [int(widget.grid_info()["row"]) for widget in regions],
-            [0, 1, 2, 3, 4],
+            [int(widget.grid_info()["row"]) for widget in widgets],
+            [0, 1, 2],
         )
+        for widget in widgets:
+            with self.subTest(widget=str(widget)):
+                self.assertIs(widget.master, self.app.console_workspace)
 
     def test_shell_canvas_exposes_semantic_liquid_visual_layers(self):
         """Fails if the shell drops its graded and rounded Canvas surfaces."""
@@ -246,11 +271,12 @@ class JitterLayoutTests(unittest.TestCase):
         self.app.update()
 
         for tag in (
-            "background-band",
+            "rail-surface",
+            "workspace-band",
             "rounded-surface",
             "floating-panel",
             "panel-highlight",
-            "floating-panel-identity",
+            "floating-panel-rail",
             "floating-panel-page",
             "floating-panel-runtime",
         ):
@@ -259,13 +285,13 @@ class JitterLayoutTests(unittest.TestCase):
 
         light_bands = tuple(
             shell.itemcget(item, "fill")
-            for item in shell.find_withtag("background-band")
+            for item in shell.find_withtag("workspace-band")
         )
         self.app.toggle_theme()
         self.app.update()
         dark_bands = tuple(
             shell.itemcget(item, "fill")
-            for item in shell.find_withtag("background-band")
+            for item in shell.find_withtag("workspace-band")
         )
         self.assertNotEqual(dark_bands, light_bands)
 
