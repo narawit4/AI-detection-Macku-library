@@ -367,7 +367,10 @@ class LiquidNavigationTests(unittest.TestCase):
         self.nav._on_focus_in()
         focus_items = self.nav.find_withtag("focus-ring")
         self.assertTrue(focus_items)
-        self.assertIn("oval", {self.nav.type(item) for item in focus_items})
+        self.assertEqual({self.nav.type(item) for item in focus_items}, {"polygon"})
+        self.assertTrue(
+            all(self.nav.itemcget(item, "smooth") == "true" for item in focus_items)
+        )
 
     def test_new_selection_replaces_obsolete_animation(self):
         self.nav.select(2)
@@ -453,6 +456,23 @@ class LiquidNavigationTests(unittest.TestCase):
             if self.nav.type(item_id) == "rectangle":
                 coordinates = self.nav.coords(item_id)
                 self.assertLess(coordinates[1], coordinates[3])
+
+    def test_selected_lens_has_one_continuous_outer_outline(self):
+        """Fails if overlapping component outlines leave seams in the capsule."""
+        nav = self.make_vertical_nav()
+        nav.pack()
+        self.root.deiconify()
+        self.root.update()
+
+        outlined = [
+            item_id
+            for item_id in nav.find_withtag("lens")
+            if nav.type(item_id) in {"oval", "rectangle", "polygon"}
+            and nav.itemcget(item_id, "outline")
+        ]
+
+        self.assertEqual(len(outlined), 1)
+        self.assertEqual(nav.type(outlined[0]), "polygon")
 
     def test_destroy_cancels_animation(self):
         self.nav.select(2)

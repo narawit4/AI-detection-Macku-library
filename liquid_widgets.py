@@ -382,41 +382,24 @@ class LiquidNavigation(tk.Canvas):
         tags: str | tuple[str, ...],
     ) -> None:
         radius = max(1.0, min((bottom - top) / 2.0, (right - left) / 2.0))
-        self.create_rectangle(
-            left + radius,
-            top,
-            right - radius,
-            bottom,
+        self.create_polygon(
+            left + radius, top,
+            right - radius, top,
+            right, top,
+            right, top + radius,
+            right, bottom - radius,
+            right, bottom,
+            right - radius, bottom,
+            left + radius, bottom,
+            left, bottom,
+            left, bottom - radius,
+            left, top + radius,
+            left, top,
+            left + radius, top,
             fill=fill,
             outline=outline,
-            tags=tags,
-        )
-        if bottom - top > radius * 2.0:
-            self.create_rectangle(
-                left,
-                top + radius,
-                right,
-                bottom - radius,
-                fill=fill,
-                outline=outline,
-                tags=tags,
-            )
-        self.create_oval(
-            left,
-            top,
-            left + radius * 2.0,
-            bottom,
-            fill=fill,
-            outline=outline,
-            tags=tags,
-        )
-        self.create_oval(
-            right - radius * 2.0,
-            top,
-            right,
-            bottom,
-            fill=fill,
-            outline=outline,
+            smooth=True,
+            splinesteps=24,
             tags=tags,
         )
 
