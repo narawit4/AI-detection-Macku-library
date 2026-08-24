@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import ast
+import io
 import logging
-import tkinter as tk
-from tkinter import ttk
 import math
 import queue
+import re
 import threading
 import time
-from typing import Mapping
-from typing import Any, Callable
+import tkinter as tk
+from tkinter import ttk
+import tokenize
+from typing import Any, Callable, Mapping
 
 from hotkeys import HotkeyWatcher
 from makcu_service import MakcuService, ServiceEvent
@@ -38,6 +40,9 @@ _RUNTIME_STATE_LABELS = {
     "testing": "TESTING",
     "moving": "MOVING",
 }
+_DEVICE_SUMMARY_FALLBACK = "Makcu device connected"
+_DEVICE_SUMMARY_MAX_CHARS = 40
+_DEVICE_PORT_PATTERN = re.compile(r"COM[0-9]{1,5}", re.IGNORECASE)
 
 DARK_PALETTE = {
     "window": "#0D1420", "surface": "#172232", "raised": "#202F43",
@@ -99,23 +104,49 @@ def _motion_summary_text(settings: MotionSettings) -> str:
     )
 
 
+def _first_serialized_diagnostic(text: str) -> Any:
+    """Safely decode the first diagnostic before a top-level pipe."""
+    tokens = []
+    depth = 0
+    try:
+        for token in tokenize.generate_tokens(io.StringIO(text).readline):
+            if token.type == tokenize.OP:
+                if token.string == "|" and depth == 0:
+                    break
+                if token.string in "([{":
+                    depth += 1
+                elif token.string in ")]}" and depth:
+                    depth -= 1
+            if token.type not in {tokenize.ENDMARKER, tokenize.NEWLINE}:
+                tokens.append(token)
+        return ast.literal_eval(tokenize.untokenize(tokens).strip())
+    except (SyntaxError, ValueError, tokenize.TokenError):
+        return None
+
+
 def _device_summary_text(payload: Any) -> str:
-    fallback = "Makcu device connected"
     if payload is None:
-        return fallback
+        return _DEVICE_SUMMARY_FALLBACK
     details: Any = payload
     text = str(payload).strip()
     if not text:
-        return fallback
+        return _DEVICE_SUMMARY_FALLBACK
     if isinstance(payload, str):
-        try:
-            details = ast.literal_eval(text.split(" | ", 1)[0])
-        except (SyntaxError, ValueError):
-            details = None
+        details = _first_serialized_diagnostic(text)
     if isinstance(details, Mapping):
-        port = str(details.get("port", "")).strip()
-        return f"Makcu on {port}" if port else fallback
-    return text if len(text) <= 40 else fallback
+        raw_port = details.get("port")
+        if isinstance(raw_port, str):
+            port = raw_port.strip().upper()
+            if _DEVICE_PORT_PATTERN.fullmatch(port):
+                summary = f"Makcu on {port}"
+                if len(summary) <= _DEVICE_SUMMARY_MAX_CHARS:
+                    return summary
+        return _DEVICE_SUMMARY_FALLBACK
+    if text.startswith(("{", "[", "(")):
+        return _DEVICE_SUMMARY_FALLBACK
+    if len(text) <= _DEVICE_SUMMARY_MAX_CHARS:
+        return text
+    return _DEVICE_SUMMARY_FALLBACK
 
 
 class JitterApp(tk.Tk):

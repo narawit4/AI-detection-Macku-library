@@ -229,6 +229,24 @@ class JitterLayoutTests(unittest.TestCase):
             yield child
             yield from self._descendants(child)
 
+    def _assert_device_summary_contained(self):
+        self.app.deiconify()
+        self.app.update()
+        label_right = (
+            self.app.device_label.winfo_rootx()
+            + self.app.device_label.winfo_width()
+        )
+        card_right = (
+            self.app.control_device_card.winfo_rootx()
+            + self.app.control_device_card.winfo_width()
+        )
+        self.assertLessEqual(len(self.app.device_status_var.get()), 40)
+        self.assertGreater(
+            self.app.control_bindings_card.winfo_width(),
+            self.app.control_device_card.winfo_width(),
+        )
+        self.assertLessEqual(label_right, card_right)
+
     def test_shell_uses_persistent_rail_and_console_columns(self):
         self.assertIs(self.app.navigation_rail.master, self.app.shell)
         self.assertIs(self.app.console_workspace.master, self.app.shell)
@@ -412,22 +430,63 @@ class JitterLayoutTests(unittest.TestCase):
             "(COM3)', 'vid': '0x1a86', 'pid': '0x55d3'}",
         ))
         self.assertEqual(self.app.device_status_var.get(), "Makcu on COM3")
-        self.app.deiconify()
-        self.app.update()
+        self._assert_device_summary_contained()
 
-        label_right = (
-            self.app.device_label.winfo_rootx()
-            + self.app.device_label.winfo_width()
+    def test_split_console_device_summary_parses_pipe_inside_metadata(self):
+        payload = (
+            "{'description': 'USB | Serial', 'port': 'COM6'} | 1.0"
         )
-        card_right = (
-            self.app.control_device_card.winfo_rootx()
-            + self.app.control_device_card.winfo_width()
+        self.app.handle_service_event(ServiceEvent("connected", payload))
+        self.assertEqual(self.app.device_status_var.get(), "Makcu on COM6")
+        self._assert_device_summary_contained()
+
+    def test_split_console_device_summary_normalizes_valid_port(self):
+        payload = "{'port': ' com6 '} | 1.0"
+        self.app.handle_service_event(ServiceEvent("connected", payload))
+        self.assertEqual(self.app.device_status_var.get(), "Makcu on COM6")
+        self._assert_device_summary_contained()
+
+    def test_split_console_device_summary_contains_malformed_metadata(self):
+        payload = "{'port': 'COM7'"
+        self.app.handle_service_event(ServiceEvent("connected", payload))
+        self.assertEqual(
+            self.app.device_status_var.get(), "Makcu device connected"
         )
-        self.assertGreater(
-            self.app.control_bindings_card.winfo_width(),
-            self.app.control_device_card.winfo_width(),
+        self._assert_device_summary_contained()
+
+    def test_split_console_device_summary_contains_very_long_diagnostic(self):
+        payload = "unstructured diagnostic " + "x" * 100
+        self.app.handle_service_event(ServiceEvent("connected", payload))
+        self.assertEqual(
+            self.app.device_status_var.get(), "Makcu device connected"
         )
-        self.assertLessEqual(label_right, card_right)
+        self._assert_device_summary_contained()
+
+    def test_split_console_device_summary_contains_missing_port(self):
+        payload = "{'description': 'USB | Serial'} | 1.0"
+        self.app.handle_service_event(ServiceEvent("connected", payload))
+        self.assertEqual(
+            self.app.device_status_var.get(), "Makcu device connected"
+        )
+        self._assert_device_summary_contained()
+
+    def test_split_console_device_summary_contains_oversized_port(self):
+        payload = "{'port': 'COM" + "9" * 100 + "'} | 1.0"
+        self.app.handle_service_event(ServiceEvent("connected", payload))
+        self.assertEqual(
+            self.app.device_status_var.get(), "Makcu device connected"
+        )
+        self._assert_device_summary_contained()
+
+    def test_split_console_device_summary_logs_complete_diagnostic(self):
+        payload = (
+            "{'description': 'USB | Serial', 'port': 'COM6'} | "
+            "firmware diagnostic 1.0"
+        )
+        with self.assertLogs(level="INFO") as captured:
+            self.app.handle_service_event(ServiceEvent("connected", payload))
+        self.assertEqual(self.app.device_status_var.get(), "Makcu on COM6")
+        self.assertTrue(any(payload in line for line in captured.output))
 
     def test_split_console_motion_uses_exact_three_to_two_columns(self):
         self.assertEqual(int(self.app.motion_hero_card.grid_info()["column"]), 0)
