@@ -365,7 +365,7 @@ class LiquidNavigationTests(unittest.TestCase):
         self.assertEqual(self.nav.cget("background"), "#111827")
         self.assertEqual(self.nav.itemcget("glass", "fill"), "#1B2638")
         self.assertEqual(self.nav.itemcget("lens", "fill"), "#63E6FF")
-        self.assertEqual(self.nav.itemcget("focus-ring", "outline"), "#FFE08A")
+        self.assertEqual(self.nav.itemcget("focus-ring", "fill"), "#FFE08A")
         self.assertEqual(
             canvas_text_font_family(self.nav, "label"),
             "Segoe UI",
@@ -375,9 +375,9 @@ class LiquidNavigationTests(unittest.TestCase):
         self.nav._on_focus_in()
         focus_items = self.nav.find_withtag("focus-ring")
         self.assertTrue(focus_items)
-        self.assertEqual({self.nav.type(item) for item in focus_items}, {"polygon"})
+        self.assertEqual({self.nav.type(item) for item in focus_items}, {"rectangle"})
         self.assertTrue(
-            all(self.nav.itemcget(item, "smooth") == "true" for item in focus_items)
+            all(not self.nav.itemcget(item, "outline") for item in focus_items)
         )
 
     def test_new_selection_replaces_obsolete_animation(self):
@@ -465,22 +465,22 @@ class LiquidNavigationTests(unittest.TestCase):
                 coordinates = self.nav.coords(item_id)
                 self.assertLess(coordinates[1], coordinates[3])
 
-    def test_selected_lens_has_one_continuous_outer_outline(self):
-        """Fails if overlapping component outlines leave seams in the capsule."""
+    def test_selected_lens_is_one_continuous_fill_shape(self):
+        """Fails if the selected capsule is split into overlapping shapes."""
         nav = self.make_vertical_nav()
         nav.pack()
         self.root.deiconify()
         self.root.update()
 
-        outlined = [
+        shapes = [
             item_id
             for item_id in nav.find_withtag("lens")
             if nav.type(item_id) in {"oval", "rectangle", "polygon"}
-            and nav.itemcget(item_id, "outline")
         ]
 
-        self.assertEqual(len(outlined), 1)
-        self.assertEqual(nav.type(outlined[0]), "polygon")
+        self.assertEqual(len(shapes), 1)
+        self.assertEqual(nav.type(shapes[0]), "polygon")
+        self.assertFalse(nav.itemcget(shapes[0], "outline"))
 
     def test_navigation_has_no_large_decorative_arc(self):
         """Fails if a circular glass highlight crosses the navigation menu."""
@@ -499,6 +499,23 @@ class LiquidNavigationTests(unittest.TestCase):
         self.root.update()
 
         self.assertFalse(nav.find_withtag("lens-highlight"))
+
+    def test_navigation_rounded_surfaces_have_no_visible_outer_stroke(self):
+        """Fails if glass or lens retains a circular outline around its fill."""
+        nav = self.make_vertical_nav()
+        nav.pack()
+        self.root.deiconify()
+        self.root.update()
+
+        for tag in ("glass", "lens"):
+            shapes = [
+                item for item in nav.find_withtag(tag)
+                if nav.type(item) == "polygon"
+            ]
+            self.assertTrue(shapes)
+            self.assertTrue(
+                all(not nav.itemcget(item, "outline") for item in shapes)
+            )
 
     def test_destroy_cancels_animation(self):
         self.nav.select(2)

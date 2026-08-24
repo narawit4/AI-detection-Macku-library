@@ -282,7 +282,7 @@ class LiquidNavigation(tk.Canvas):
             glass_right,
             glass_bottom,
             fill=self._palette["surface"],
-            outline=self._palette["border"],
+            outline="",
             tags="glass",
         )
         if not self._pill_initialized:
@@ -310,7 +310,7 @@ class LiquidNavigation(tk.Canvas):
             pill_right,
             pill_bottom,
             fill=self._palette["lens"],
-            outline=self._palette["lens"],
+            outline="",
             tags="lens",
         )
         for index, label in enumerate(self.labels):
@@ -328,13 +328,16 @@ class LiquidNavigation(tk.Canvas):
                 tags=("tab", f"tab-{index}", "label"),
             )
         if self._focused:
-            self._rounded_box(
-                glass_left + 2,
-                glass_top + 2,
-                glass_right - 2,
-                glass_bottom - 2,
-                fill="",
-                outline=self._palette["focus"],
+            left, top, right, bottom = self._item_bounds(self.selected_index)
+            marker_x = left + 7.0
+            marker_y = (top + bottom) / 2.0
+            self.create_rectangle(
+                marker_x - 2.0,
+                marker_y - 2.0,
+                marker_x + 2.0,
+                marker_y + 2.0,
+                fill=self._palette["focus"],
+                outline="",
                 tags="focus-ring",
             )
 
