@@ -192,34 +192,31 @@ class JitterLayoutTests(unittest.TestCase):
             current = current.master
         return False
 
-    def test_command_center_uses_fixed_status_body_footer_runtime_order(self):
+    def test_shell_uses_status_navigation_page_footer_runtime_order(self):
         regions = (
             self.app.status_strip,
-            self.app.command_center,
+            self.app.navigation_frame,
+            self.app.page_host,
             self.app.footer_frame,
             self.app.runtime_frame,
         )
-        self.assertTrue(all(widget.master is self.app.shell for widget in regions))
         self.assertEqual(
             [int(widget.grid_info()["row"]) for widget in regions],
-            [0, 1, 2, 3],
+            [0, 1, 2, 3, 4],
         )
-        self.assertEqual(self.app.shell.grid_rowconfigure(1)["weight"], 1)
 
-    def test_setup_and_tools_stay_in_fixed_left_column(self):
-        fixed_widgets = (
-            self.app.trigger_combo,
-            self.app.modifier_combo,
-            self.app.preset_combo,
-            self.app.hotkey_button,
-            self.app.reconnect_button,
-            self.app.test_button,
-            self.app.advanced_toggle,
+    def test_navigation_owns_three_persistent_pages(self):
+        self.assertEqual(self.app.nav.labels, ("Setup", "Motion", "Advanced"))
+        self.assertEqual(
+            self.app.pages,
+            (self.app.setup_page, self.app.motion_page, self.app.advanced_page),
         )
-        for widget in fixed_widgets:
-            with self.subTest(widget=str(widget)):
-                self.assertTrue(self._is_descendant(widget, self.app.left_column))
-                self.assertFalse(self._is_descendant(widget, self.app.right_content))
+        self.assertTrue(self._is_descendant(self.app.trigger_combo,
+                                            self.app.setup_page))
+        self.assertTrue(self._is_descendant(
+            self.app.motion_strength_pps_entry, self.app.motion_page))
+        self.assertTrue(self._is_descendant(
+            self.app.waveform_combo, self.app.advanced_page))
 
     def test_reconnect_and_test_are_side_by_side_mini_icon_buttons(self):
         self.assertEqual(self.app.reconnect_button.cget("text"), "↻")
@@ -242,19 +239,13 @@ class JitterLayoutTests(unittest.TestCase):
         self.app._hide_action_tooltip()
         self.assertIsNone(self.app._action_tooltip)
 
-    def test_quick_and_advanced_controls_live_in_right_workspace(self):
-        right_widgets = (
-            self.app.motion_strength_pps_entry,
-            self.app.jitter_rate_hz_entry,
-            self.app.motion_angle_deg_entry,
-            self.app.waveform_combo,
-            self.app.motion_curve_combo,
-        )
-        for widget in right_widgets:
-            with self.subTest(widget=str(widget)):
-                self.assertTrue(self._is_descendant(widget, self.app.right_content))
-        self.assertFalse(self._is_descendant(self.app.hotkey_button,
-                                             self.app.advanced_frame))
+    def test_select_page_shows_one_page_without_resetting_values(self):
+        self.app.motion_strength_pps_var.set("123")
+        self.app.select_page(2)
+        self.assertEqual(self.app.nav.selected_index, 2)
+        self.assertEqual(self.app.page_host.grid_slaves(), [self.app.pages[2]])
+        self.app.select_page(1)
+        self.assertEqual(self.app.motion_strength_pps_var.get(), "123")
 
     def test_advanced_uses_approved_two_column_grid(self):
         expected_positions = {
@@ -350,9 +341,9 @@ class JitterLayoutTests(unittest.TestCase):
 
     def test_stop_remains_inside_application_viewport_when_advanced_is_scrolled(self):
         self.app.deiconify()
-        self.app.toggle_advanced()
+        self.app.select_page(2)
         self.app.update()
-        self.app.canvas.yview_moveto(1.0)
+        self.app.advanced_canvas.yview_moveto(1.0)
         self.app.update()
 
         app_left = self.app.winfo_rootx()
@@ -418,64 +409,52 @@ class JitterLayoutTests(unittest.TestCase):
             self.assertIsNot(ancestor, self.app.advanced_frame)
             ancestor = ancestor.master
 
-    def test_advanced_toggle_does_not_change_outer_geometry(self):
+    def test_page_selection_does_not_change_outer_geometry(self):
         self.app.update_idletasks()
         before = self.app.geometry().split("+")[0]
-        self.app.toggle_advanced()
+        self.app.select_page(2)
         self.app.update_idletasks()
         after = self.app.geometry().split("+")[0]
         self.assertEqual(after, before)
 
-    def test_advanced_starts_collapsed_and_expands_below_quick(self):
-        self.assertFalse(self.app._advanced_visible)
-        self.assertFalse(self.app.advanced_state_var.get())
-        self.assertFalse(self.app.advanced_frame.winfo_manager())
-        self.assertEqual(self.app.advanced_toggle.cget("text"),
-                         "Advanced Settings ▼")
-
-        self.app.toggle_advanced()
-        self.app.update_idletasks()
-
-        self.assertTrue(self.app._advanced_visible)
+    def test_advanced_controls_are_mounted_in_the_persistent_page(self):
         self.assertEqual(self.app.advanced_frame.winfo_manager(), "pack")
-        children = self.app.right_content.pack_slaves()
-        self.assertLess(children.index(self.app.quick_frame),
-                        children.index(self.app.advanced_frame))
-        self.assertEqual(self.app.advanced_toggle.cget("text"),
-                         "Advanced Settings ▲")
+        self.assertTrue(self._is_descendant(self.app.advanced_frame,
+                                            self.app.advanced_page))
+        self.assertIs(self.app.advanced_canvas.master, self.app.advanced_host)
 
-    def test_collapsing_advanced_returns_right_workspace_to_top(self):
+    def test_advanced_toggle_selects_the_persistent_advanced_page(self):
         self.app.deiconify()
-        self.app.toggle_advanced()
-        self.app.update()
-        self.app.right_canvas.yview_moveto(1.0)
-        self.app.toggle_advanced()
-        self.app.update()
-        self.assertEqual(self.app.right_canvas.yview()[0], 0.0)
-
-    def test_mousewheel_scrolls_only_over_right_workspace(self):
-        self.app.deiconify()
-        self.app.toggle_advanced()
-        self.app.update()
-        self.app.right_canvas.yview_moveto(0.0)
-
-        right_event = SimpleNamespace(
-            delta=-120,
-            x_root=self.app.right_canvas.winfo_rootx() + 10,
-            y_root=self.app.right_canvas.winfo_rooty() + 10,
-        )
-        self.assertEqual(self.app._on_right_mousewheel(right_event), "break")
+        self.app.advanced_toggle.invoke()
         self.app.update_idletasks()
-        after_right = self.app.right_canvas.yview()[0]
-        self.assertGreater(after_right, 0.0)
+        self.assertEqual(self.app.nav.selected_index, 2)
+        self.assertEqual(self.app.page_host.grid_slaves(), [self.app.advanced_page])
 
-        left_event = SimpleNamespace(
+    def test_mousewheel_scrolls_only_over_advanced_page(self):
+        self.app.deiconify()
+        self.app.select_page(2)
+        self.app.update()
+        self.app.advanced_canvas.yview_moveto(0.0)
+
+        advanced_event = SimpleNamespace(
             delta=-120,
-            x_root=self.app.left_column.winfo_rootx() + 10,
-            y_root=self.app.left_column.winfo_rooty() + 10,
+            x_root=self.app.advanced_canvas.winfo_rootx() + 10,
+            y_root=self.app.advanced_canvas.winfo_rooty() + 10,
         )
-        self.assertIsNone(self.app._on_right_mousewheel(left_event))
-        self.assertEqual(self.app.right_canvas.yview()[0], after_right)
+        self.assertEqual(self.app._on_right_mousewheel(advanced_event), "break")
+        self.app.update_idletasks()
+        after_advanced = self.app.advanced_canvas.yview()[0]
+        self.assertGreater(after_advanced, 0.0)
+
+        self.app.select_page(0)
+        self.app.update_idletasks()
+        setup_event = SimpleNamespace(
+            delta=-120,
+            x_root=self.app.setup_page.winfo_rootx() + 10,
+            y_root=self.app.setup_page.winfo_rooty() + 10,
+        )
+        self.assertIsNone(self.app._on_right_mousewheel(setup_event))
+        self.assertEqual(self.app.advanced_canvas.yview()[0], after_advanced)
 
 
 class JitterRuntimeTests(JitterLayoutTests):

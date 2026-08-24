@@ -23,7 +23,7 @@ from motion import (
     motion_settings_to_mapping,
 )
 from settings import AppConfig, ConfigStore
-from xp_widgets import XPGlossySlider
+from xp_widgets import LiquidXPNav, XPGlossySlider
 
 
 # Shared Windows XP Remastered palette and typography.
@@ -274,27 +274,39 @@ class JitterApp(tk.Tk):
         self.shell = ttk.Frame(self, style="XP.App.TFrame", padding=(8, 8, 8, 8))
         self.shell.pack(fill="both", expand=True)
         self.shell.columnconfigure(0, weight=1)
-        self.shell.rowconfigure(1, weight=1)
+        self.shell.rowconfigure(2, weight=1)
 
         self.status_strip = ttk.Frame(self.shell, style="XP.Status.TFrame",
                                       padding=(7, 5))
         self.status_strip.grid(row=0, column=0, sticky="ew", pady=(0, 7))
         self._build_status_strip()
 
-        self.command_center = ttk.Frame(self.shell, style="XP.App.TFrame")
-        self.command_center.grid(row=1, column=0, sticky="nsew")
-        self.command_center.rowconfigure(0, weight=1)
-        self.command_center.columnconfigure(0, minsize=190)
-        self.command_center.columnconfigure(1, weight=1)
+        self.navigation_frame = ttk.Frame(self.shell, style="XP.App.TFrame")
+        self.navigation_frame.grid(row=1, column=0, sticky="ew", pady=(0, 7))
+        self.nav = LiquidXPNav(
+            self.navigation_frame,
+            labels=("Setup", "Motion", "Advanced"),
+            command=self.select_page,
+        )
+        self.nav.pack(anchor="w")
 
-        self.left_column = ttk.Frame(self.command_center, style="XP.App.TFrame")
-        self.left_column.grid(row=0, column=0, sticky="nsew", padx=(0, 7))
+        self.page_host = ttk.Frame(self.shell, style="XP.App.TFrame")
+        self.page_host.grid(row=2, column=0, sticky="nsew")
+        self.page_host.rowconfigure(0, weight=1)
+        self.page_host.columnconfigure(0, weight=1)
+        self.setup_page = ttk.Frame(self.page_host, style="XP.App.TFrame")
+        self.motion_page = ttk.Frame(self.page_host, style="XP.App.TFrame")
+        self.advanced_page = ttk.Frame(self.page_host, style="XP.App.TFrame")
+        self.pages = (self.setup_page, self.motion_page, self.advanced_page)
+        for page in self.pages:
+            page.grid(row=0, column=0, sticky="nsew")
+
         self._build_trigger_card()
         self._build_action_card()
-
-        self._build_right_workspace()
+        self._build_advanced_workspace()
         self._build_quick_card()
         self._build_advanced_card()
+        self.select_page(0)
         self._build_footer()
         self._build_main_control_card()
 
@@ -319,7 +331,7 @@ class JitterApp(tk.Tk):
         self.theme_var.set(self._theme)
         self._configure_styles()
         self.configure(background=self._palette["window"])
-        self.right_canvas.configure(background=self._palette["window"])
+        self.advanced_canvas.configure(background=self._palette["window"])
         self.theme_button.configure(
             text="☀" if self._theme == "dark" else "☾"
         )
@@ -351,40 +363,47 @@ class JitterApp(tk.Tk):
             "bubble": p["panel"], "text": p["text"], "focus": p["focus"],
         }
 
-    def _build_right_workspace(self) -> None:
-        self.right_host = ttk.Frame(self.command_center, style="XP.App.TFrame")
-        self.right_host.grid(row=0, column=1, sticky="nsew")
-        self.right_host.rowconfigure(0, weight=1)
-        self.right_host.columnconfigure(0, weight=1)
-        self.right_canvas = tk.Canvas(
-            self.right_host,
+    def _build_advanced_workspace(self) -> None:
+        self.advanced_host = ttk.Frame(self.advanced_page, style="XP.App.TFrame")
+        self.advanced_host.pack(fill="both", expand=True)
+        self.advanced_host.rowconfigure(0, weight=1)
+        self.advanced_host.columnconfigure(0, weight=1)
+        self.advanced_canvas = tk.Canvas(
+            self.advanced_host,
             background=self._palette["window"],
             highlightthickness=0,
             borderwidth=0,
         )
-        self.right_scrollbar = ttk.Scrollbar(
-            self.right_host,
+        self.advanced_scrollbar = ttk.Scrollbar(
+            self.advanced_host,
             orient="vertical",
-            command=self.right_canvas.yview,
+            command=self.advanced_canvas.yview,
         )
-        self.right_canvas.configure(yscrollcommand=self.right_scrollbar.set)
-        self.right_canvas.grid(row=0, column=0, sticky="nsew")
-        self.right_scrollbar.grid(row=0, column=1, sticky="ns")
-        self.right_content = ttk.Frame(
-            self.right_canvas,
+        self.advanced_canvas.configure(yscrollcommand=self.advanced_scrollbar.set)
+        self.advanced_canvas.grid(row=0, column=0, sticky="nsew")
+        self.advanced_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.advanced_content = ttk.Frame(
+            self.advanced_canvas,
             style="XP.App.TFrame",
             padding=(0, 0, 4, 8),
         )
-        self.right_content_window = self.right_canvas.create_window(
+        self.advanced_content_window = self.advanced_canvas.create_window(
             (0, 0),
-            window=self.right_content,
+            window=self.advanced_content,
             anchor="nw",
         )
-        self.canvas = self.right_canvas
-        self.content = self.right_content
-        self.content_window = self.right_content_window
-        self.right_content.bind("<Configure>", self._refresh_scrollregion)
-        self.right_canvas.bind("<Configure>", self._resize_content_window)
+        self.canvas = self.advanced_canvas
+        self.content = self.advanced_content
+        self.content_window = self.advanced_content_window
+        # Keep the established widget seams until the scrolling follow-up
+        # renames the remaining right-workspace compatibility aliases.
+        self.right_host = self.advanced_host
+        self.right_canvas = self.advanced_canvas
+        self.right_scrollbar = self.advanced_scrollbar
+        self.right_content = self.advanced_content
+        self.right_content_window = self.advanced_content_window
+        self.advanced_content.bind("<Configure>", self._refresh_scrollregion)
+        self.advanced_canvas.bind("<Configure>", self._resize_content_window)
 
     def _card(self, title: str, parent: tk.Misc) -> ttk.LabelFrame:
         card = ttk.LabelFrame(parent, text=title, style="XP.Group.TLabelframe",
@@ -394,7 +413,7 @@ class JitterApp(tk.Tk):
 
     def _build_main_control_card(self) -> None:
         self.runtime_frame = ttk.Frame(self.shell, style="XP.App.TFrame")
-        self.runtime_frame.grid(row=3, column=0, sticky="ew")
+        self.runtime_frame.grid(row=4, column=0, sticky="ew")
         self.runtime_frame.columnconfigure(0, weight=1, uniform="runtime_actions")
         self.runtime_frame.columnconfigure(1, weight=2)
         self.runtime_frame.columnconfigure(2, weight=1, uniform="runtime_actions")
@@ -412,7 +431,7 @@ class JitterApp(tk.Tk):
         self.stop_button.grid(row=0, column=2, sticky="ew")
 
     def _build_trigger_card(self) -> None:
-        self.setup_frame = self._card("Control Setup", self.left_column)
+        self.setup_frame = self._card("Control Setup", self.setup_page)
         self.setup_frame.columnconfigure(0, weight=1)
 
         def combo_row(row, label, variable, values, width):
@@ -452,7 +471,7 @@ class JitterApp(tk.Tk):
         self.hotkey_button.grid(row=6, column=0, sticky="ew", pady=(2, 0))
 
     def _build_action_card(self) -> None:
-        self.tools_frame = self._card("Tools", self.left_column)
+        self.tools_frame = self._card("Tools", self.setup_page)
         self.tools_icon_row = ttk.Frame(
             self.tools_frame, style="XP.App.TFrame"
         )
@@ -555,7 +574,7 @@ class JitterApp(tk.Tk):
         setattr(self, f"{key}_scale", slider)
 
     def _build_quick_card(self) -> None:
-        self.quick_frame = self._card("Quick Jitter", self.right_content)
+        self.quick_frame = self._card("Quick Jitter", self.motion_page)
         self.quick_grid = ttk.Frame(self.quick_frame, style="XP.App.TFrame")
         self.quick_grid.pack(fill="x")
         self.quick_grid.columnconfigure(0, weight=1, uniform="quick")
@@ -569,8 +588,9 @@ class JitterApp(tk.Tk):
 
     def _build_advanced_card(self) -> None:
         self.advanced_frame = ttk.LabelFrame(
-            self.right_content, text="Advanced Settings", style="XP.Group.TLabelframe",
+            self.advanced_content, text="Advanced Settings", style="XP.Group.TLabelframe",
             padding=(11, 8, 11, 10))
+        self.advanced_frame.pack(fill="x", pady=(0, 9))
         self.advanced_grid = ttk.Frame(self.advanced_frame, style="XP.App.TFrame")
         self.advanced_grid.pack(fill="x")
         self.advanced_grid.columnconfigure(0, weight=1, uniform="advanced")
@@ -613,7 +633,7 @@ class JitterApp(tk.Tk):
 
     def _build_footer(self) -> None:
         self.footer_frame = ttk.Frame(self.shell, style="XP.App.TFrame")
-        self.footer_frame.grid(row=2, column=0, sticky="ew", pady=(6, 3))
+        self.footer_frame.grid(row=3, column=0, sticky="ew", pady=(6, 3))
         self.theme_tooltip_text = (
             "Switch to Light Mode" if self._theme == "dark"
             else "Switch to Dark Mode"
@@ -670,26 +690,29 @@ class JitterApp(tk.Tk):
 
     # ---- shell interactions -------------------------------------------
 
+    def select_page(self, index: int) -> None:
+        selected = min(len(self.pages) - 1, max(0, int(index)))
+        for page in self.pages:
+            page.grid_remove()
+        self.pages[selected].grid()
+        if self.nav.selected_index != selected:
+            self.nav.select(selected, notify=False)
+
     def _refresh_scrollregion(self, _event: tk.Event | None = None) -> None:
-        self.right_canvas.configure(scrollregion=self.right_canvas.bbox("all"))
+        self.advanced_canvas.configure(
+            scrollregion=self.advanced_canvas.bbox("all")
+        )
 
     def _resize_content_window(self, event: tk.Event) -> None:
-        self.right_canvas.itemconfigure(self.right_content_window, width=event.width)
+        self.advanced_canvas.itemconfigure(
+            self.advanced_content_window, width=event.width
+        )
 
     def toggle_advanced(self) -> None:
-        if self._advanced_visible:
-            self.advanced_frame.pack_forget()
-            self._advanced_visible = False
-            self.advanced_state_var.set(False)
-            self.advanced_toggle.configure(text="Advanced Settings ▼")
-            self.right_canvas.yview_moveto(0.0)
-        else:
-            self.advanced_frame.pack(fill="x", pady=(0, 9))
-            self._advanced_visible = True
-            self.advanced_state_var.set(True)
-            self.advanced_toggle.configure(text="Advanced Settings ▲")
-        self.update_idletasks()
-        self._refresh_scrollregion()
+        self._advanced_visible = True
+        self.advanced_state_var.set(True)
+        self.advanced_toggle.configure(text="Advanced Settings ▲")
+        self.select_page(2)
 
     @staticmethod
     def _is_descendant_of(widget: tk.Misc | None, ancestor: tk.Misc) -> bool:
@@ -702,7 +725,7 @@ class JitterApp(tk.Tk):
 
     def _on_right_mousewheel(self, event) -> str | None:
         target = self.winfo_containing(event.x_root, event.y_root)
-        if target is None:
+        if target is None and self.advanced_host.winfo_ismapped():
             host_left = self.right_host.winfo_rootx()
             host_top = self.right_host.winfo_rooty()
             host_right = host_left + self.right_host.winfo_width()
