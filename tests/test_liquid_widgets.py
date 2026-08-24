@@ -239,6 +239,23 @@ class LiquidNavigationTests(unittest.TestCase):
         self.root.update()
         self.assertEqual(self.nav.selected_index, 0)
 
+    def test_enter_and_space_activate_selected_tab_once_per_key(self):
+        """Fails if keyboard activation is missing or double-notifies."""
+        self.root.deiconify()
+        self.root.update()
+        self.nav.select(1, animate=False)
+        self.selected.clear()
+        self.nav.focus_force()
+        self.root.update()
+
+        self.nav.event_generate("<Return>")
+        self.root.update()
+        self.nav.event_generate("<space>")
+        self.root.update()
+
+        self.assertEqual(self.nav.selected_index, 1)
+        self.assertEqual(self.selected, [1, 1])
+
     def test_pointer_selects_the_hit_tab(self):
         left, right = self.nav._tab_bounds(1)
         self.nav._on_click(SimpleNamespace(x=(left + right) / 2))

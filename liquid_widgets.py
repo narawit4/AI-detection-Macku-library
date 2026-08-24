@@ -83,6 +83,8 @@ class LiquidNavigation(tk.Canvas):
         self.bind("<Right>", lambda _event: self._on_key(1))
         self.bind("<Home>", lambda _event: self._on_boundary(0))
         self.bind("<End>", lambda _event: self._on_boundary(len(self.labels) - 1))
+        self.bind("<Return>", self._on_activate)
+        self.bind("<space>", self._on_activate)
         self.bind("<Destroy>", self._on_destroy, add="+")
 
     def _clamp_index(self, index: int) -> int:
@@ -139,6 +141,11 @@ class LiquidNavigation(tk.Canvas):
 
     def _on_boundary(self, index: int) -> str:
         self.select(index)
+        return "break"
+
+    def _on_activate(self, _event=None) -> str:
+        if self.command is not None:
+            self.command(self.selected_index)
         return "break"
 
     def _on_click(self, event) -> str:

@@ -31,6 +31,12 @@ from liquid_widgets import LiquidIconButton, LiquidNavigation, LiquidSlider
 _UI_QUEUE_MAX_BATCH = 50
 _UI_QUEUE_TIME_SLICE_S = 0.005
 _UI_QUEUE_IDLE_DELAY_MS = 15
+_RUNTIME_STATE_LABELS = {
+    "disabled": "DISABLED",
+    "armed": "ARMED",
+    "testing": "TESTING",
+    "moving": "MOVING",
+}
 
 DARK_PALETTE = {
     "window": "#0D1420", "surface": "#172232", "raised": "#202F43",
@@ -69,6 +75,18 @@ def _display_value(value: Any) -> str:
     except (TypeError, ValueError):
         return str(value)
     return str(int(number)) if number.is_integer() else str(number)
+
+
+def _motion_summary_text(settings: MotionSettings) -> str:
+    return (
+        f"Strength {_display_value(settings.strength_pps)} px/s | "
+        f"Angle {_display_value(settings.angle_deg)} deg | "
+        f"Jitter {_display_value(settings.horizontal_jitter_pps)} x "
+        f"{_display_value(settings.vertical_jitter_pps)} px/s at "
+        f"{_display_value(settings.jitter_rate_hz)} Hz | "
+        f"{settings.jitter_waveform} | "
+        f"Smooth {_display_value(settings.smoothness)}%"
+    )
 
 
 class JitterApp(tk.Tk):
@@ -259,7 +277,9 @@ class JitterApp(tk.Tk):
 
     def _create_variables(self) -> None:
         self.connection_status_var = tk.StringVar(self, "Disconnected")
-        self.runtime_status_var = tk.StringVar(self, "Disabled")
+        self.runtime_status_var = tk.StringVar(
+            self, _RUNTIME_STATE_LABELS["disabled"]
+        )
         self.connection_state_var = self.connection_status_var
         self.runtime_state_var = self.runtime_status_var
         self.device_status_var = tk.StringVar(self, "Makcu device not connected")
@@ -270,6 +290,9 @@ class JitterApp(tk.Tk):
         self.footer_var = tk.StringVar(self, "Ready")
         self.advanced_state_var = tk.BooleanVar(self, False)
         self.theme_var = tk.StringVar(self, self._theme)
+        self.motion_summary_var = tk.StringVar(
+            self, _motion_summary_text(self._motion_snapshot)
+        )
 
         mapping = motion_settings_to_mapping(self.config.motion)
         self.motion_vars: dict[str, tk.Variable] = {}
@@ -767,11 +790,25 @@ class JitterApp(tk.Tk):
         )
         for index, control in enumerate(controls):
             self._numeric_control(self.quick_grid, index // 2, index % 2, *control)
-        ttk.Label(
+        self.motion_summary_frame = ttk.Frame(
             self.quick_frame,
-            text="Live values update the active motion snapshot immediately.",
-            style="Liquid.Muted.TLabel",
-        ).pack(anchor="w", pady=(8, 0))
+            style="Liquid.Surface.TFrame",
+            padding=(10, 6),
+        )
+        self.motion_summary_frame.pack(fill="x", pady=(8, 0))
+        ttk.Label(
+            self.motion_summary_frame,
+            text="LIVE SNAPSHOT",
+            style="Liquid.Subtitle.TLabel",
+            font=SECTION_FONT,
+        ).pack(anchor="w")
+        self.motion_summary_label = ttk.Label(
+            self.motion_summary_frame,
+            textvariable=self.motion_summary_var,
+            style="Liquid.Subtitle.TLabel",
+            wraplength=680,
+        )
+        self.motion_summary_label.pack(anchor="w", fill="x", pady=(2, 0))
 
     def _build_advanced_card(self) -> None:
         self.advanced_frame = ttk.LabelFrame(
@@ -954,6 +991,9 @@ class JitterApp(tk.Tk):
     def _bindings_event(self, _event: tk.Event | None = None) -> None:
         self.on_bindings_changed()
 
+    def _set_runtime_state(self, state: str) -> None:
+        self.runtime_status_var.set(_RUNTIME_STATE_LABELS[state])
+
     def start_runtime(self) -> None:
         if self._runtime_started or self._closing:
             return
@@ -993,7 +1033,7 @@ class JitterApp(tk.Tk):
             return
         if not self.service.connected:
             self.enabled = False
-            self.runtime_status_var.set("Disabled")
+            self._set_runtime_state("disabled")
             self.enable_button.configure(text="Enable Jitter")
             self.footer_var.set("Makcu device is not connected")
             return
@@ -1001,7 +1041,7 @@ class JitterApp(tk.Tk):
         self._motion_mode = None
         self._normal_motion_started = False
         self.trigger_gate.clear()
-        self.runtime_status_var.set("Armed")
+        self._set_runtime_state("armed")
         self.enable_button.configure(text="Disable Jitter")
         self.footer_var.set("Jitter armed")
 
@@ -1022,7 +1062,7 @@ class JitterApp(tk.Tk):
         if normal_motion_active:
             self.service.stop_motion("test_run")
             self._normal_motion_started = False
-        self.runtime_status_var.set("Testing")
+        self._set_runtime_state("testing")
         self.test_button.set_enabled(False)
         if normal_motion_active:
             # The normal worker emits a queued stop event after stop_motion().
@@ -1053,12 +1093,12 @@ class JitterApp(tk.Tk):
         self.test_button.set_enabled(True)
         if restore:
             self.enabled = True
-            self.runtime_status_var.set("Armed")
+            self._set_runtime_state("armed")
             self.enable_button.configure(text="Disable Jitter")
         else:
             self.enabled = False
             self.trigger_gate.clear()
-            self.runtime_status_var.set("Disabled")
+            self._set_runtime_state("disabled")
             self.enable_button.configure(text="Enable Jitter")
 
     def emergency_stop(self, reason: str = "Stopped") -> None:
@@ -1071,7 +1111,7 @@ class JitterApp(tk.Tk):
             self.service.stop_motion(str(reason or "Stopped"))
         except Exception:
             pass
-        self.runtime_status_var.set("Disabled")
+        self._set_runtime_state("disabled")
         self.enable_button.configure(text="Enable Jitter")
         self.test_button.set_enabled(True)
         self.footer_var.set(str(reason or "Stopped"))
@@ -1112,11 +1152,11 @@ class JitterApp(tk.Tk):
                         self.service.start_motion(self.get_motion_settings)
                     )
                     if self._normal_motion_started:
-                        self.runtime_status_var.set("Triggered")
+                        self._set_runtime_state("moving")
                 elif not self.trigger_gate.active and self._normal_motion_started:
                     self.service.stop_motion("trigger_released")
                     self._normal_motion_started = False
-                    self.runtime_status_var.set("Armed")
+                    self._set_runtime_state("armed")
         elif kind == "motion_error":
             self.emergency_stop(f"Motion error: {event.payload}")
         elif kind == "motion_stopped":
@@ -1128,7 +1168,7 @@ class JitterApp(tk.Tk):
                 self.footer_var.set("Test Run complete")
             elif self.enabled:
                 self._normal_motion_started = False
-                self.runtime_status_var.set("Armed")
+                self._set_runtime_state("armed")
 
     def queue_service_event(self, event: ServiceEvent) -> None:
         # This method is intentionally the only service-to-Tk handoff.
@@ -1268,6 +1308,7 @@ class JitterApp(tk.Tk):
     def _replace_motion_snapshot(self, settings: MotionSettings) -> None:
         with self._motion_lock:
             self._motion_snapshot = settings
+        self.motion_summary_var.set(_motion_summary_text(settings))
 
     def _motion_changed(self, key: str) -> None:
         if self._updating_motion_controls or self._closing:

@@ -280,6 +280,46 @@ class JitterLayoutTests(unittest.TestCase):
             with self.subTest(widget=str(widget)):
                 self.assertTrue(self._is_descendant(widget, self.app.advanced_page))
 
+    def test_motion_page_has_snapshot_backed_live_summary(self):
+        """Fails if Motion lacks a visible summary of the active snapshot."""
+        summary_var = getattr(self.app, "motion_summary_var", None)
+        self.assertIsInstance(summary_var, tk.StringVar)
+        self.assertTrue(
+            self._is_descendant(self.app.motion_summary_label, self.app.motion_page)
+        )
+        self.assertEqual(
+            self.app.motion_summary_label.cget("textvariable"),
+            str(summary_var),
+        )
+        self.assertEqual(
+            summary_var.get(),
+            "Strength 80 px/s | Angle 90 deg | Jitter 55 x 40 px/s "
+            "at 14 Hz | Random blend | Smooth 25%",
+        )
+
+    def test_motion_summary_refreshes_after_edit_and_preset(self):
+        """Fails if the summary drifts from the immutable motion snapshot."""
+        summary_var = getattr(self.app, "motion_summary_var", None)
+        self.assertIsInstance(summary_var, tk.StringVar)
+        self.app.motion_strength_pps_var.set("123")
+        self.app.update()
+        self.assertEqual(self.app.get_motion_settings().strength_pps, 123.0)
+        self.assertEqual(
+            summary_var.get(),
+            "Strength 123 px/s | Angle 90 deg | Jitter 55 x 40 px/s "
+            "at 14 Hz | Random blend | Smooth 25%",
+        )
+
+        self.app.preset_var.set("Balanced")
+        self.app.apply_preset()
+        self.app.update()
+        self.assertEqual(self.app.get_motion_settings().strength_pps, 40.0)
+        self.assertEqual(
+            summary_var.get(),
+            "Strength 40 px/s | Angle 90 deg | Jitter 2 x 0 px/s "
+            "at 14 Hz | Random blend | Smooth 80%",
+        )
+
     def test_mini_actions_are_liquid_icon_buttons(self):
         for button in (self.app.reconnect_button, self.app.test_button,
                        self.app.theme_button):
@@ -789,6 +829,24 @@ class JitterLayoutTests(unittest.TestCase):
 
 
 class JitterRuntimeTests(JitterLayoutTests):
+    def test_runtime_state_uses_exact_uppercase_vocabulary(self):
+        """Fails if a runtime transition emits stale or mixed-case wording."""
+        observed = [self.app.runtime_state_var.get()]
+        self.service.connected = True
+        self.app.set_enabled(True)
+        observed.append(self.app.runtime_state_var.get())
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        observed.append(self.app.runtime_state_var.get())
+        self.app.emergency_stop("Stopped by user")
+        observed.append(self.app.runtime_state_var.get())
+        self.app.start_test_run()
+        observed.append(self.app.runtime_state_var.get())
+
+        self.assertEqual(
+            observed,
+            ["DISABLED", "ARMED", "MOVING", "DISABLED", "TESTING"],
+        )
+
     def test_start_runtime_starts_hotkey_and_connection_once(self):
         self.app.start_runtime()
         self.app.start_runtime()
@@ -821,7 +879,7 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.app.emergency_stop("Stopped by user")
         self.assertFalse(self.app.enabled)
         self.assertFalse(self.app.trigger_gate.active)
-        self.assertEqual(self.app.runtime_state_var.get(), "Disabled")
+        self.assertEqual(self.app.runtime_state_var.get(), "DISABLED")
 
     def test_disconnect_performs_emergency_stop(self):
         self.service.connected = True
@@ -836,7 +894,7 @@ class JitterRuntimeTests(JitterLayoutTests):
         stopped_count = self.service.stopped
         self.service.connected = True
         self.app.start_test_run()
-        self.assertEqual(self.app.runtime_state_var.get(), "Testing")
+        self.assertEqual(self.app.runtime_state_var.get(), "TESTING")
         self.assertGreaterEqual(self.service.started, 1)
         self.assertEqual(self.service.stopped, stopped_count)
 
@@ -846,11 +904,11 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
         self.assertTrue(self.app._normal_motion_started)
         self.app.start_test_run()
-        self.assertEqual(self.app.runtime_state_var.get(), "Testing")
+        self.assertEqual(self.app.runtime_state_var.get(), "TESTING")
         self.app.handle_service_event(ServiceEvent("motion_stopped", "test_run"))
-        self.assertEqual(self.app.runtime_state_var.get(), "Testing")
+        self.assertEqual(self.app.runtime_state_var.get(), "TESTING")
         self.app.handle_service_event(ServiceEvent("motion_stopped", "duration_complete"))
-        self.assertEqual(self.app.runtime_state_var.get(), "Armed")
+        self.assertEqual(self.app.runtime_state_var.get(), "ARMED")
 
     def test_toggle_is_blocked_while_test_run_is_active(self):
         self.service.connected = True
@@ -858,7 +916,7 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.assertFalse(self.app.enabled)
         self.app.toggle_enabled()
         self.assertFalse(self.app.enabled)
-        self.assertEqual(self.app.runtime_state_var.get(), "Testing")
+        self.assertEqual(self.app.runtime_state_var.get(), "TESTING")
 
     def test_captured_hotkey_updates_watcher_and_persisted_name(self):
         self.app.apply_captured_hotkey(0x77, "F8")
@@ -966,9 +1024,9 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.service.connected = True
         self.app.set_enabled(True)
         self.app.start_test_run()
-        self.assertEqual(self.app.runtime_state_var.get(), "Testing")
+        self.assertEqual(self.app.runtime_state_var.get(), "TESTING")
         self.app.handle_service_event(ServiceEvent("motion_stopped", "duration_complete"))
-        self.assertEqual(self.app.runtime_state_var.get(), "Armed")
+        self.assertEqual(self.app.runtime_state_var.get(), "ARMED")
         self.assertTrue(self.app.enabled)
 
     def test_test_run_button_is_disabled_only_while_test_is_active(self):
