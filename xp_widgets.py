@@ -67,6 +67,8 @@ class LiquidXPNav(tk.Canvas):
         self._destroyed = False
         self._focused = False
         self._animation_after_id: str | None = None
+        self._pill_x = 0.0
+        self._pill_initialized = False
 
         self.bind("<Configure>", self._on_configure)
         self.bind("<Button-1>", self._on_click)
@@ -93,12 +95,18 @@ class LiquidXPNav(tk.Canvas):
         animate: bool = True,
         notify: bool = True,
     ) -> None:
-        del animate  # Animation is added by the rendering component.
         target = self._clamp_index(index)
         if target == self.selected_index:
             return
+        self.cancel_animation()
         self.selected_index = target
         self._redraw()
+        target_x = self._target_pill_x(target)
+        if animate and self.animation_ms > 0 and self._pill_initialized:
+            self._animate_pill_to(target_x)
+        else:
+            self._pill_x = target_x
+            self._redraw()
         if notify and self.command is not None:
             self.command(target)
 
@@ -131,35 +139,84 @@ class LiquidXPNav(tk.Canvas):
                 break
         return "break"
 
+    def _target_pill_x(self, index: int) -> float:
+        left, right = self._tab_bounds(self._clamp_index(index))
+        return (left + right) / 2.0
+
+    def _animate_pill_to(self, target_x: float) -> None:
+        start_x = self._pill_x
+        if abs(target_x - start_x) < 0.01:
+            self._pill_x = target_x
+            self._redraw()
+            return
+        steps = 10
+        interval = max(1, int(round(self.animation_ms / steps)))
+
+        def advance(step: int = 1) -> None:
+            self._animation_after_id = None
+            if self._destroyed or not self.winfo_exists():
+                return
+            fraction = min(1.0, step / steps)
+            self._pill_x = start_x + (target_x - start_x) * fraction
+            self._redraw()
+            if step >= steps:
+                self._pill_x = target_x
+                return
+            self._animation_after_id = self.after(
+                interval,
+                lambda: advance(step + 1),
+            )
+
+        self._animation_after_id = self.after(interval, advance)
+
     def _redraw(self) -> None:
         if self._destroyed or not self.winfo_exists():
             return
         self.delete("all")
         width = max(self.winfo_width(), self.winfo_reqwidth())
         height = max(self.winfo_height(), self.winfo_reqheight())
-        inset = 1
-        self.create_rectangle(
-            inset,
-            inset,
-            width - inset,
-            height - inset,
+        inset = 1.0
+        capsule_left, capsule_top = inset, inset
+        capsule_right, capsule_bottom = width - inset, height - inset
+        self._rounded_box(
+            capsule_left,
+            capsule_top,
+            capsule_right,
+            capsule_bottom,
             fill=self._palette["capsule"],
             outline=self._palette["capsule_outline"],
             tags="capsule",
         )
+        if not self._pill_initialized:
+            self._pill_x = self._target_pill_x(self.selected_index)
+            self._pill_initialized = True
+        tab_width = float(width) / len(self.labels)
+        pill_half_width = max(4.0, tab_width / 2.0 - 3.0)
+        pill_left = max(capsule_left + 2.0, self._pill_x - pill_half_width)
+        pill_right = min(capsule_right - 2.0, self._pill_x + pill_half_width)
+        pill_top = capsule_top + 3.0
+        pill_bottom = capsule_bottom - 3.0
+        self._rounded_box(
+            pill_left,
+            pill_top,
+            pill_right,
+            pill_bottom,
+            fill=self._palette["pill"],
+            outline=self._palette["pill"],
+            tags="pill",
+        )
+        highlight_y = pill_top + 2.0
+        self.create_line(
+            pill_left + min(8.0, pill_half_width),
+            highlight_y,
+            pill_right - min(8.0, pill_half_width),
+            highlight_y,
+            fill=self._palette["pill_highlight"],
+            width=1,
+            tags=("pill", "pill-highlight"),
+        )
         for index, label in enumerate(self.labels):
             left, right = self._tab_bounds(index)
-            tag = f"tab-{index}"
-            if index == self.selected_index:
-                self.create_rectangle(
-                    left + 2,
-                    inset + 2,
-                    right - 2,
-                    height - inset - 2,
-                    fill=self._palette["pill"],
-                    outline=self._palette["pill"],
-                    tags=(tag, "pill"),
-                )
             self.create_text(
                 (left + right) / 2,
                 height / 2,
@@ -170,7 +227,7 @@ class LiquidXPNav(tk.Canvas):
                     else self._palette["text"]
                 ),
                 font=("Tahoma", 9, "bold" if index == self.selected_index else "normal"),
-                tags=(tag, "label"),
+                tags=("tab", f"tab-{index}", "label"),
             )
         if self._focused:
             self.create_rectangle(
@@ -182,6 +239,55 @@ class LiquidXPNav(tk.Canvas):
                 width=2,
                 tags="focus",
             )
+
+    def _rounded_box(
+        self,
+        left: float,
+        top: float,
+        right: float,
+        bottom: float,
+        *,
+        fill: str,
+        outline: str,
+        tags: str | tuple[str, ...],
+    ) -> None:
+        radius = max(1.0, min((bottom - top) / 2.0, (right - left) / 2.0))
+        self.create_rectangle(
+            left + radius,
+            top,
+            right - radius,
+            bottom,
+            fill=fill,
+            outline=outline,
+            tags=tags,
+        )
+        self.create_rectangle(
+            left,
+            top + radius,
+            right,
+            bottom - radius,
+            fill=fill,
+            outline=outline,
+            tags=tags,
+        )
+        self.create_oval(
+            left,
+            top,
+            left + radius * 2.0,
+            bottom,
+            fill=fill,
+            outline=outline,
+            tags=tags,
+        )
+        self.create_oval(
+            right - radius * 2.0,
+            top,
+            right,
+            bottom,
+            fill=fill,
+            outline=outline,
+            tags=tags,
+        )
 
     def _on_configure(self, _event=None) -> None:
         self._redraw()

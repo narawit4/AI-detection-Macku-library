@@ -168,3 +168,31 @@ class LiquidXPNavTests(unittest.TestCase):
         left, right = self.nav._tab_bounds(1)
         self.nav._on_click(SimpleNamespace(x=(left + right) / 2))
         self.assertEqual(self.nav.selected_index, 1)
+
+    def test_palette_redraws_capsule_and_active_pill(self):
+        palette = {
+            "background": "#171B22", "capsule": "#285A91",
+            "capsule_outline": "#8CBCEB", "pill": "#4C8CCC",
+            "pill_highlight": "#FFFFFF", "text": "#E7ECF3",
+            "active_text": "#FFFFFF", "focus": "#F2B84B",
+        }
+        self.nav.set_palette(palette)
+        self.root.update_idletasks()
+        self.assertEqual(self.nav.cget("background"), "#171B22")
+        self.assertEqual(self.nav.itemcget("capsule", "fill"), "#285A91")
+        self.assertEqual(self.nav.itemcget("pill", "fill"), "#4C8CCC")
+
+    def test_new_selection_replaces_obsolete_animation(self):
+        self.nav.select(2)
+        first = self.nav._animation_after_id
+        self.nav.select(1)
+        self.assertIsNotNone(self.nav._animation_after_id)
+        self.assertNotEqual(self.nav._animation_after_id, first)
+        self.nav.cancel_animation()
+        self.assertIsNone(self.nav._animation_after_id)
+
+    def test_destroy_cancels_animation(self):
+        self.nav.select(2)
+        self.nav.destroy()
+        self.root.update()
+        self.assertIsNone(self.nav._animation_after_id)
