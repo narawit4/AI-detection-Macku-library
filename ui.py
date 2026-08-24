@@ -287,8 +287,10 @@ class JitterApp(tk.Tk):
             self.navigation_frame,
             labels=("Setup", "Motion", "Advanced"),
             command=self.select_page,
+            palette=self._nav_palette(),
         )
-        self.nav.pack(anchor="w")
+        self.nav.pack(side="left")
+        self._build_navigation_actions()
 
         self.page_host = ttk.Frame(self.shell, style="XP.App.TFrame")
         self.page_host.grid(row=2, column=0, sticky="nsew")
@@ -302,7 +304,6 @@ class JitterApp(tk.Tk):
             page.grid(row=0, column=0, sticky="nsew")
 
         self._build_trigger_card()
-        self._build_action_card()
         self._build_advanced_workspace()
         self._build_quick_card()
         self._build_advanced_card()
@@ -332,6 +333,7 @@ class JitterApp(tk.Tk):
         self._configure_styles()
         self.configure(background=self._palette["window"])
         self.advanced_canvas.configure(background=self._palette["window"])
+        self.nav.set_palette(self._nav_palette())
         self.theme_button.configure(
             text="☀" if self._theme == "dark" else "☾"
         )
@@ -361,6 +363,15 @@ class JitterApp(tk.Tk):
             "thumb": p["secondary"], "thumb_pressed": p["primary"],
             "thumb_outline": p["blue_dark"], "highlight": p["text"],
             "bubble": p["panel"], "text": p["text"], "focus": p["focus"],
+        }
+
+    def _nav_palette(self) -> dict[str, str]:
+        p = self._palette
+        return {
+            "background": p["window"], "capsule": p["secondary"],
+            "capsule_outline": p["border"], "pill": p["primary"],
+            "pill_highlight": "#FFFFFF", "text": p["text"],
+            "active_text": "#FFFFFF", "focus": p["focus"],
         }
 
     def _build_advanced_workspace(self) -> None:
@@ -470,31 +481,43 @@ class JitterApp(tk.Tk):
         )
         self.hotkey_button.grid(row=6, column=0, sticky="ew", pady=(2, 0))
 
-    def _build_action_card(self) -> None:
-        self.tools_frame = self._card("Tools", self.setup_page)
-        self.tools_icon_row = ttk.Frame(
-            self.tools_frame, style="XP.App.TFrame"
+    def _build_navigation_actions(self) -> None:
+        self.navigation_actions = ttk.Frame(
+            self.navigation_frame, style="XP.App.TFrame"
         )
-        self.tools_icon_row.pack(fill="x", pady=(0, 5))
+        self.navigation_actions.pack(side="right")
         self.reconnect_tooltip_text = "Reconnect Makcu"
         self.test_tooltip_text = "Test Run 3s"
         self._action_tooltip: tk.Toplevel | None = None
         self.reconnect_button = ttk.Button(
-            self.tools_icon_row,
+            self.navigation_actions,
             text="↻",
             style="XP.Secondary.TButton",
             command=self.reconnect,
             width=3,
         )
         self.test_button = ttk.Button(
-            self.tools_icon_row,
+            self.navigation_actions,
             text="▶",
             style="XP.Secondary.TButton",
             command=self.test_run,
             width=3,
         )
+        self.theme_tooltip_text = (
+            "Switch to Light Mode" if self._theme == "dark"
+            else "Switch to Dark Mode"
+        )
+        self._theme_tooltip: tk.Toplevel | None = None
+        self.theme_button = ttk.Button(
+            self.navigation_actions,
+            text="☀" if self._theme == "dark" else "☾",
+            style="XP.Secondary.TButton",
+            command=self.toggle_theme,
+            width=3,
+        )
         self.reconnect_button.pack(side="left", padx=(0, 5))
-        self.test_button.pack(side="left")
+        self.test_button.pack(side="left", padx=(0, 5))
+        self.theme_button.pack(side="left")
         self.reconnect_button.bind(
             "<Enter>",
             lambda event: self._show_action_tooltip(
@@ -509,13 +532,8 @@ class JitterApp(tk.Tk):
         )
         self.reconnect_button.bind("<Leave>", self._hide_action_tooltip)
         self.test_button.bind("<Leave>", self._hide_action_tooltip)
-        self.advanced_toggle = ttk.Button(
-            self.tools_frame,
-            text="Advanced Settings ▼",
-            style="XP.Secondary.TButton",
-            command=self.toggle_advanced,
-        )
-        self.advanced_toggle.pack(fill="x", pady=(0, 5))
+        self.theme_button.bind("<Enter>", self._show_theme_tooltip)
+        self.theme_button.bind("<Leave>", self._hide_theme_tooltip)
 
     def _show_action_tooltip(self, event: tk.Event, text: str) -> None:
         self._hide_action_tooltip()
@@ -634,21 +652,6 @@ class JitterApp(tk.Tk):
     def _build_footer(self) -> None:
         self.footer_frame = ttk.Frame(self.shell, style="XP.App.TFrame")
         self.footer_frame.grid(row=3, column=0, sticky="ew", pady=(6, 3))
-        self.theme_tooltip_text = (
-            "Switch to Light Mode" if self._theme == "dark"
-            else "Switch to Dark Mode"
-        )
-        self._theme_tooltip: tk.Toplevel | None = None
-        self.theme_button = ttk.Button(
-            self.footer_frame,
-            text="☀" if self._theme == "dark" else "☾",
-            style="XP.Secondary.TButton",
-            command=self.toggle_theme,
-            width=3,
-        )
-        self.theme_button.pack(side="right", padx=(8, 0))
-        self.theme_button.bind("<Enter>", self._show_theme_tooltip)
-        self.theme_button.bind("<Leave>", self._hide_theme_tooltip)
         self.footer_label = ttk.Label(
             self.footer_frame,
             textvariable=self.footer_var,
@@ -711,7 +714,6 @@ class JitterApp(tk.Tk):
     def toggle_advanced(self) -> None:
         self._advanced_visible = True
         self.advanced_state_var.set(True)
-        self.advanced_toggle.configure(text="Advanced Settings ▲")
         self.select_page(2)
 
     @staticmethod

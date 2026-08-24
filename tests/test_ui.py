@@ -218,13 +218,37 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertTrue(self._is_descendant(
             self.app.waveform_combo, self.app.advanced_page))
 
-    def test_reconnect_and_test_are_side_by_side_mini_icon_buttons(self):
-        self.assertEqual(self.app.reconnect_button.cget("text"), "↻")
-        self.assertEqual(self.app.test_button.cget("text"), "▶")
-        for button in (self.app.reconnect_button, self.app.test_button):
+    def test_navigation_keeps_three_mini_actions_visible(self):
+        for button in (self.app.reconnect_button, self.app.test_button,
+                       self.app.theme_button):
+            self.assertIs(button.master, self.app.navigation_actions)
+        self.assertEqual(
+            [button.cget("text") for button in (
+                self.app.reconnect_button,
+                self.app.test_button,
+                self.app.theme_button,
+            )],
+            ["↻", "▶", "☾"],
+        )
+
+    def test_mini_actions_remain_visible_on_every_page(self):
+        self.app.deiconify()
+        self.app.update()
+        for index in range(3):
+            with self.subTest(index=index):
+                self.app.select_page(index)
+                self.app.update_idletasks()
+                self.assertTrue(all(button.winfo_ismapped() for button in (
+                    self.app.reconnect_button,
+                    self.app.test_button,
+                    self.app.theme_button,
+                )))
+
+    def test_mini_actions_keep_icon_button_size_and_tooltips(self):
+        for button in (self.app.reconnect_button, self.app.test_button,
+                       self.app.theme_button):
             with self.subTest(button=str(button)):
                 self.assertEqual(int(button.cget("width")), 3)
-                self.assertIs(button.master, self.app.tools_icon_row)
                 self.assertEqual(button.pack_info()["side"], "left")
         self.assertEqual(self.app.reconnect_tooltip_text, "Reconnect Makcu")
         self.assertEqual(self.app.test_tooltip_text, "Test Run 3s")
@@ -314,13 +338,13 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertFalse(self._is_descendant(self.app.reconnect_button,
                                              self.app.status_strip))
 
-    def test_theme_toggle_lives_in_fixed_footer_not_status_strip(self):
-        self.assertIs(self.app.theme_button.master, self.app.footer_frame)
+    def test_theme_toggle_lives_in_navigation_not_status_strip(self):
+        self.assertIs(self.app.theme_button.master, self.app.navigation_actions)
         self.assertFalse(self._is_descendant(self.app.theme_button,
                                              self.app.status_strip))
         self.assertFalse(self._is_descendant(self.app.theme_button,
                                              self.app.right_host))
-        self.assertEqual(self.app.theme_button.pack_info()["side"], "right")
+        self.assertEqual(self.app.theme_button.pack_info()["side"], "left")
 
     def test_theme_icon_tooltip_appears_on_hover_and_is_removed(self):
         self.app._show_theme_tooltip()
@@ -422,13 +446,6 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertTrue(self._is_descendant(self.app.advanced_frame,
                                             self.app.advanced_page))
         self.assertIs(self.app.advanced_canvas.master, self.app.advanced_host)
-
-    def test_advanced_toggle_selects_the_persistent_advanced_page(self):
-        self.app.deiconify()
-        self.app.advanced_toggle.invoke()
-        self.app.update_idletasks()
-        self.assertEqual(self.app.nav.selected_index, 2)
-        self.assertEqual(self.app.page_host.grid_slaves(), [self.app.advanced_page])
 
     def test_mousewheel_scrolls_only_over_advanced_page(self):
         self.app.deiconify()
