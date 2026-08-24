@@ -1,7 +1,8 @@
 import tkinter as tk
 import unittest
+from types import SimpleNamespace
 
-from xp_widgets import XPGlossySlider
+from xp_widgets import LiquidXPNav, XPGlossySlider
 
 
 class _SliderTestCase(unittest.TestCase):
@@ -128,3 +129,42 @@ class XPGlossySliderInteractionTests(_SliderTestCase):
         self.root.update()
         self.assertTrue(slider._destroyed)
         self.assertIsNone(slider._bubble_after_id)
+
+
+class LiquidXPNavTests(unittest.TestCase):
+    def setUp(self):
+        self.root = tk.Tk()
+        self.root.withdraw()
+        self.selected = []
+        self.nav = LiquidXPNav(
+            self.root,
+            labels=("Setup", "Motion", "Advanced"),
+            command=self.selected.append,
+            width=330,
+        )
+        self.nav.pack()
+        self.root.update_idletasks()
+
+    def tearDown(self):
+        self.root.destroy()
+
+    def test_select_clamps_index_and_notifies_once(self):
+        self.nav.select(2, animate=False)
+        self.assertEqual(self.nav.selected_index, 2)
+        self.assertEqual(self.selected, [2])
+        self.nav.select(99, animate=False)
+        self.assertEqual(self.nav.selected_index, 2)
+        self.assertEqual(self.selected, [2])
+
+    def test_arrow_keys_select_adjacent_tabs(self):
+        self.nav._on_key(1)
+        self.nav._on_key(1)
+        self.nav._on_key(1)
+        self.assertEqual(self.nav.selected_index, 2)
+        self.nav._on_key(-1)
+        self.assertEqual(self.nav.selected_index, 1)
+
+    def test_pointer_selects_the_hit_tab(self):
+        left, right = self.nav._tab_bounds(1)
+        self.nav._on_click(SimpleNamespace(x=(left + right) / 2))
+        self.assertEqual(self.nav.selected_index, 1)

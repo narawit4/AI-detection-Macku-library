@@ -15,6 +15,190 @@ LIGHT_SLIDER_PALETTE = {
 }
 
 
+LIGHT_NAV_PALETTE = {
+    "background": "#F4F1E6",
+    "capsule": "#D9EAFB",
+    "capsule_outline": "#8E9AA6",
+    "pill": "#356FAF",
+    "pill_highlight": "#FFFFFF",
+    "text": "#20252A",
+    "active_text": "#FFFFFF",
+    "focus": "#E4A43A",
+}
+
+
+class LiquidXPNav(tk.Canvas):
+    """A small, keyboard-accessible tab strip for the Liquid XP layout."""
+
+    def __init__(
+        self,
+        parent,
+        *,
+        labels: tuple[str, ...],
+        command: Callable[[int], None] | None = None,
+        selected: int = 0,
+        palette: Mapping[str, str] | None = None,
+        animation_ms: int = 160,
+        width: int = 330,
+        height: int = 38,
+    ) -> None:
+        self.labels = tuple(labels)
+        if not self.labels or any(
+            not isinstance(label, str) or not label.strip()
+            for label in self.labels
+        ):
+            raise ValueError("navigation labels must be non-empty")
+
+        self._palette = dict(LIGHT_NAV_PALETTE)
+        if palette:
+            self._palette.update(palette)
+        super().__init__(
+            parent,
+            width=width,
+            height=height,
+            highlightthickness=0,
+            borderwidth=0,
+            takefocus=True,
+            background=self._palette["background"],
+        )
+        self.command = command
+        self.animation_ms = int(animation_ms)
+        self.selected_index = self._clamp_index(selected)
+        self._destroyed = False
+        self._focused = False
+        self._animation_after_id: str | None = None
+
+        self.bind("<Configure>", self._on_configure)
+        self.bind("<Button-1>", self._on_click)
+        self.bind("<FocusIn>", self._on_focus_in)
+        self.bind("<FocusOut>", self._on_focus_out)
+        self.bind("<Left>", lambda _event: self._on_key(-1))
+        self.bind("<Right>", lambda _event: self._on_key(1))
+        self.bind("<Destroy>", self._on_destroy, add="+")
+
+    def _clamp_index(self, index: int) -> int:
+        return min(len(self.labels) - 1, max(0, int(index)))
+
+    def _tab_bounds(self, index: int) -> tuple[float, float]:
+        if not 0 <= index < len(self.labels):
+            raise IndexError(index)
+        width = max(self.winfo_width(), self.winfo_reqwidth())
+        tab_width = float(width) / len(self.labels)
+        return index * tab_width, (index + 1) * tab_width
+
+    def select(
+        self,
+        index: int,
+        *,
+        animate: bool = True,
+        notify: bool = True,
+    ) -> None:
+        del animate  # Animation is added by the rendering component.
+        target = self._clamp_index(index)
+        if target == self.selected_index:
+            return
+        self.selected_index = target
+        self._redraw()
+        if notify and self.command is not None:
+            self.command(target)
+
+    def set_palette(self, palette: Mapping[str, str]) -> None:
+        self._palette = {**LIGHT_NAV_PALETTE, **palette}
+        self.configure(background=self._palette["background"])
+        self._redraw()
+
+    def cancel_animation(self) -> None:
+        callback_id = self._animation_after_id
+        self._animation_after_id = None
+        if callback_id is not None:
+            try:
+                self.after_cancel(callback_id)
+            except tk.TclError:
+                pass
+
+    def _on_key(self, delta: int) -> str:
+        self.select(self.selected_index + delta)
+        return "break"
+
+    def _on_click(self, event) -> str:
+        self.focus_set()
+        for index in range(len(self.labels)):
+            left, right = self._tab_bounds(index)
+            if left <= float(event.x) < right or (
+                index == len(self.labels) - 1 and float(event.x) == right
+            ):
+                self.select(index)
+                break
+        return "break"
+
+    def _redraw(self) -> None:
+        if self._destroyed or not self.winfo_exists():
+            return
+        self.delete("all")
+        width = max(self.winfo_width(), self.winfo_reqwidth())
+        height = max(self.winfo_height(), self.winfo_reqheight())
+        inset = 1
+        self.create_rectangle(
+            inset,
+            inset,
+            width - inset,
+            height - inset,
+            fill=self._palette["capsule"],
+            outline=self._palette["capsule_outline"],
+            tags="capsule",
+        )
+        for index, label in enumerate(self.labels):
+            left, right = self._tab_bounds(index)
+            tag = f"tab-{index}"
+            if index == self.selected_index:
+                self.create_rectangle(
+                    left + 2,
+                    inset + 2,
+                    right - 2,
+                    height - inset - 2,
+                    fill=self._palette["pill"],
+                    outline=self._palette["pill"],
+                    tags=(tag, "pill"),
+                )
+            self.create_text(
+                (left + right) / 2,
+                height / 2,
+                text=label,
+                fill=(
+                    self._palette["active_text"]
+                    if index == self.selected_index
+                    else self._palette["text"]
+                ),
+                font=("Tahoma", 9, "bold" if index == self.selected_index else "normal"),
+                tags=(tag, "label"),
+            )
+        if self._focused:
+            self.create_rectangle(
+                inset + 2,
+                inset + 2,
+                width - inset - 2,
+                height - inset - 2,
+                outline=self._palette["focus"],
+                width=2,
+                tags="focus",
+            )
+
+    def _on_configure(self, _event=None) -> None:
+        self._redraw()
+
+    def _on_focus_in(self, _event=None) -> None:
+        self._focused = True
+        self._redraw()
+
+    def _on_focus_out(self, _event=None) -> None:
+        self._focused = False
+        self._redraw()
+
+    def _on_destroy(self, _event=None) -> None:
+        self.cancel_animation()
+        self._destroyed = True
+
+
 class XPGlossySlider(tk.Canvas):
     THUMB_RADIUS = 8
     RAIL_INSET = 14
