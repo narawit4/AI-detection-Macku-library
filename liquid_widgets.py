@@ -313,26 +313,6 @@ class LiquidNavigation(tk.Canvas):
             outline=self._palette["lens"],
             tags="lens",
         )
-        if self.orientation == "horizontal":
-            self.create_line(
-                pill_left + min(8.0, lens_half_width),
-                pill_top + 2.0,
-                pill_right - min(8.0, lens_half_width),
-                pill_top + 2.0,
-                fill=self._palette["lens_highlight"],
-                width=1,
-                tags=("lens", "lens-highlight"),
-            )
-        else:
-            self.create_line(
-                pill_left + 2.0,
-                pill_top + min(8.0, lens_half_height),
-                pill_left + 2.0,
-                pill_bottom - min(8.0, lens_half_height),
-                fill=self._palette["lens_highlight"],
-                width=1,
-                tags=("lens", "lens-highlight"),
-            )
         for index, label in enumerate(self.labels):
             left, top, right, bottom = self._item_bounds(index)
             self.create_text(

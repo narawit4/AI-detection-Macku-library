@@ -491,6 +491,15 @@ class LiquidNavigationTests(unittest.TestCase):
 
         self.assertNotIn("arc", {nav.type(item) for item in nav.find_all()})
 
+    def test_selected_lens_has_no_decorative_inner_line(self):
+        """Fails if an extra highlight line remains inside the selected capsule."""
+        nav = self.make_vertical_nav()
+        nav.pack()
+        self.root.deiconify()
+        self.root.update()
+
+        self.assertFalse(nav.find_withtag("lens-highlight"))
+
     def test_destroy_cancels_animation(self):
         self.nav.select(2)
         self.nav.destroy()
