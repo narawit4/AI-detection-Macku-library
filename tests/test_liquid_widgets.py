@@ -168,6 +168,32 @@ class LiquidSliderInteractionTests(_SliderTestCase):
         self.assertTrue(slider._destroyed)
         self.assertIsNone(slider._bubble_after_id)
 
+    def test_scheduler_teardown_does_not_leak_from_bubble_hide(self):
+        slider = self.make_slider()
+
+        def failing_after(*_args):
+            raise tk.TclError("scheduler unavailable")
+
+        slider.after = failing_after
+        try:
+            slider._schedule_hide_bubble()
+        except tk.TclError as exc:
+            self.fail(f"bubble scheduling leaked teardown failure: {exc}")
+        self.assertIsNone(slider._bubble_after_id)
+
+    def test_grab_failure_does_not_leave_slider_pressed(self):
+        slider = self.make_slider()
+
+        def failing_grab():
+            raise tk.TclError("grab unavailable")
+
+        slider.grab_set = failing_grab
+        try:
+            slider._on_press(SimpleNamespace(x=17, y=17))
+        except tk.TclError as exc:
+            self.fail(f"slider leaked grab failure: {exc}")
+        self.assertFalse(slider._pressed)
+
 
 class LiquidNavigationTests(unittest.TestCase):
     def setUp(self):
@@ -202,6 +228,17 @@ class LiquidNavigationTests(unittest.TestCase):
         self.nav._on_key(-1)
         self.assertEqual(self.nav.selected_index, 1)
 
+    def test_home_and_end_keys_select_boundary_tabs(self):
+        self.root.deiconify()
+        self.root.update()
+        self.nav.focus_force()
+        self.nav.event_generate("<End>")
+        self.root.update()
+        self.assertEqual(self.nav.selected_index, 2)
+        self.nav.event_generate("<Home>")
+        self.root.update()
+        self.assertEqual(self.nav.selected_index, 0)
+
     def test_pointer_selects_the_hit_tab(self):
         left, right = self.nav._tab_bounds(1)
         self.nav._on_click(SimpleNamespace(x=(left + right) / 2))
@@ -227,6 +264,12 @@ class LiquidNavigationTests(unittest.TestCase):
             canvas_text_font_family(self.nav, "label"),
             "Segoe UI",
         )
+
+    def test_navigation_focus_ring_follows_rounded_control_shape(self):
+        self.nav._on_focus_in()
+        focus_items = self.nav.find_withtag("focus-ring")
+        self.assertTrue(focus_items)
+        self.assertIn("oval", {self.nav.type(item) for item in focus_items})
 
     def test_new_selection_replaces_obsolete_animation(self):
         self.nav.select(2)
@@ -256,6 +299,16 @@ class LiquidNavigationTests(unittest.TestCase):
             self.nav._pill_x,
             self.nav._target_pill_x(2),
         )
+
+    def test_unexpected_animation_error_is_not_masked_as_teardown(self):
+        self.nav._redraw()
+
+        def failing_after(*_args):
+            raise RuntimeError("unexpected scheduler contract violation")
+
+        self.nav.after = failing_after
+        with self.assertRaisesRegex(RuntimeError, "contract violation"):
+            self.nav.select(2)
 
     def test_rapid_selection_finishes_at_latest_target(self):
         self.nav._redraw()
@@ -332,6 +385,14 @@ class LiquidIconButtonTests(unittest.TestCase):
         self.button.set_enabled(False)
         self.button._activate()
         self.assertEqual(self.calls, [])
+
+    def test_grab_failure_does_not_leave_button_pressed(self):
+        def failing_grab():
+            raise tk.TclError("grab unavailable")
+
+        self.button.grab_set = failing_grab
+        self.button._on_press(SimpleNamespace(x=17, y=17))
+        self.assertFalse(self.button._pressed)
 
     def test_palette_redraws_surface_icon_and_focus(self):
         """Fails if a palette update does not redraw visible icon controls."""

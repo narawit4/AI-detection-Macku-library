@@ -310,7 +310,7 @@ class JitterApp(tk.Tk):
             self.navigation_frame,
             labels=("Control", "Motion", "Advanced"),
             command=self.select_page,
-            palette=self._nav_palette(),
+            palette=self._navigation_palette(),
         )
         self.nav.pack(side="left")
         self._build_navigation_actions()
@@ -366,7 +366,7 @@ class JitterApp(tk.Tk):
         self._configure_styles()
         self.configure(background=self._palette["window"])
         self.advanced_canvas.configure(background=self._palette["window"])
-        self.nav.set_palette(self._nav_palette())
+        self.nav.set_palette(self._navigation_palette())
         self.theme_button.icon = "☀" if self._theme == "dark" else "☾"
         self.theme_tooltip_text = (
             "Switch to Light Mode" if self._theme == "dark"
@@ -394,6 +394,12 @@ class JitterApp(tk.Tk):
         for child in widget.winfo_children():
             self._apply_slider_palette(child, palette)
 
+    def _cancel_slider_callbacks(self, widget: tk.Misc) -> None:
+        if isinstance(widget, LiquidSlider):
+            widget.cancel_pending_callbacks()
+        for child in widget.winfo_children():
+            self._cancel_slider_callbacks(child)
+
     def _slider_palette(self) -> dict[str, str]:
         p = self._palette
         return {
@@ -406,7 +412,7 @@ class JitterApp(tk.Tk):
             "disabled_text": p["muted"],
         }
 
-    def _nav_palette(self) -> dict[str, str]:
+    def _navigation_palette(self) -> dict[str, str]:
         p = self._palette
         return {
             "background": p["window"], "surface": p["surface"],
@@ -1380,6 +1386,10 @@ class JitterApp(tk.Tk):
             return
         self._closing = True
         self.nav.cancel_animation()
+        for widget in self.winfo_children():
+            self._cancel_slider_callbacks(widget)
+        self._hide_action_tooltip()
+        self._hide_theme_tooltip()
         self._cancel_after("_save_after_id")
         self._cancel_after("_capture_after_id")
         self._cancel_after("_ui_pump_after_id")

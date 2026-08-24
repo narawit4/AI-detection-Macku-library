@@ -80,6 +80,8 @@ class LiquidNavigation(tk.Canvas):
         self.bind("<FocusOut>", self._on_focus_out)
         self.bind("<Left>", lambda _event: self._on_key(-1))
         self.bind("<Right>", lambda _event: self._on_key(1))
+        self.bind("<Home>", lambda _event: self._on_boundary(0))
+        self.bind("<End>", lambda _event: self._on_boundary(len(self.labels) - 1))
         self.bind("<Destroy>", self._on_destroy, add="+")
 
     def _clamp_index(self, index: int) -> int:
@@ -113,14 +115,14 @@ class LiquidNavigation(tk.Canvas):
             else:
                 self._pill_x = target_x
                 self._redraw()
-        except (tk.TclError, RuntimeError):
+        except tk.TclError:
             self._animation_after_id = None
             try:
                 if target_x is None:
                     target_x = self._target_pill_x(target)
                 self._pill_x = target_x
                 self._redraw()
-            except (tk.TclError, RuntimeError):
+            except tk.TclError:
                 pass
         finally:
             if notify and self.command is not None:
@@ -142,6 +144,10 @@ class LiquidNavigation(tk.Canvas):
 
     def _on_key(self, delta: int) -> str:
         self.select(self.selected_index + delta)
+        return "break"
+
+    def _on_boundary(self, index: int) -> str:
+        self.select(index)
         return "break"
 
     def _on_click(self, event) -> str:
@@ -258,13 +264,13 @@ class LiquidNavigation(tk.Canvas):
                 tags=("tab", f"tab-{index}", "label"),
             )
         if self._focused:
-            self.create_rectangle(
+            self._rounded_box(
                 glass_left + 2,
                 glass_top + 2,
                 glass_right - 2,
                 glass_bottom - 2,
+                fill="",
                 outline=self._palette["focus"],
-                width=2,
                 tags="focus-ring",
             )
 
@@ -636,7 +642,12 @@ class LiquidSlider(tk.Canvas):
     def _on_press(self, event) -> str:
         self.focus_set()
         self._pressed = True
-        self.grab_set()
+        try:
+            self.grab_set()
+        except tk.TclError:
+            self._pressed = False
+            self._redraw()
+            return "break"
         return self._set_from_user(self._x_to_value(event.x))
 
     def _on_drag(self, event) -> str:
@@ -677,9 +688,15 @@ class LiquidSlider(tk.Canvas):
             pass
         self._bubble_after_id = None
 
+    def cancel_pending_callbacks(self) -> None:
+        self._cancel_bubble_hide()
+
     def _schedule_hide_bubble(self) -> None:
         self._cancel_bubble_hide()
-        self._bubble_after_id = self.after(450, self._hide_bubble)
+        try:
+            self._bubble_after_id = self.after(450, self._hide_bubble)
+        except tk.TclError:
+            self._bubble_after_id = None
 
     def _hide_bubble(self) -> None:
         self._bubble_after_id = None
@@ -692,7 +709,7 @@ class LiquidSlider(tk.Canvas):
         self._redraw()
 
     def _on_destroy(self, _event=None) -> None:
-        self._cancel_bubble_hide()
+        self.cancel_pending_callbacks()
         self._destroyed = True
 
 
@@ -886,6 +903,7 @@ class LiquidIconButton(tk.Canvas):
                 self._has_pointer_grab = True
             except (RuntimeError, tk.TclError):
                 self._has_pointer_grab = False
+                self._pressed = False
             self._redraw()
         return "break"
 

@@ -161,6 +161,19 @@ class JitterLayoutTests(unittest.TestCase):
         self.app.save_config()
         self.assertEqual(self.store.saved[-1].theme, "dark")
 
+    def test_navigation_palette_api_tracks_the_active_theme(self):
+        palette_builder = getattr(self.app, "_navigation_palette", None)
+        self.assertIsNotNone(palette_builder)
+        self.assertEqual(
+            palette_builder()["background"],
+            "#F2F7FA",
+        )
+        self.app.toggle_theme()
+        self.assertEqual(
+            palette_builder()["background"],
+            "#0D1420",
+        )
+
     def test_every_numeric_control_uses_liquid_slider(self):
         numeric_keys = (
             "motion_angle_deg",
@@ -302,23 +315,38 @@ class JitterLayoutTests(unittest.TestCase):
                 self.app.update()
                 self.assertEqual(self.app.stop_button.winfo_ismapped(), 1)
 
-    def test_close_cancels_navigation_animation(self):
+    def test_close_cancels_custom_widget_callbacks_before_service_close(self):
         self.app.deiconify()
         self.app.update()
         self.app.nav.select(2)
         self.assertIsNotNone(self.app.nav._animation_after_id)
-        animation_states_at_service_close = []
+        slider = self.app.motion_strength_pps_scale
+        slider._schedule_hide_bubble()
+        self.assertIsNotNone(slider._bubble_after_id)
+        self.app._show_action_tooltip(
+            SimpleNamespace(widget=self.app.reconnect_button),
+            self.app.reconnect_tooltip_text,
+        )
+        self.app._show_theme_tooltip()
+        callback_states_at_service_close = []
         original_close = self.service.close
 
         def observe_service_close():
-            animation_states_at_service_close.append(
-                self.app.nav._animation_after_id
-            )
+            callback_states_at_service_close.append((
+                self.app._closing,
+                self.app.nav._animation_after_id,
+                slider._bubble_after_id,
+                self.app._action_tooltip,
+                self.app._theme_tooltip,
+            ))
             original_close()
 
         self.service.close = observe_service_close
         self.app.close_app()
-        self.assertEqual(animation_states_at_service_close, [None])
+        self.assertEqual(
+            callback_states_at_service_close,
+            [(True, None, None, None, None)],
+        )
         self.assertIsNone(self.app.nav._animation_after_id)
 
     def test_advanced_canvas_belongs_only_to_advanced_page(self):
