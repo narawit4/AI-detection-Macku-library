@@ -364,6 +364,56 @@ class JitterLayoutTests(unittest.TestCase):
             with self.subTest(widget=str(widget)):
                 self.assertTrue(self._is_descendant(widget, self.app.advanced_page))
 
+    def test_control_uses_asymmetric_bindings_and_device_columns(self):
+        self.assertEqual(
+            int(self.app.control_bindings_card.grid_info()["column"]), 0
+        )
+        self.assertEqual(
+            int(self.app.control_device_card.grid_info()["column"]), 1
+        )
+        self.assertGreater(
+            int(self.app.control_page.grid_columnconfigure(0)["weight"]),
+            int(self.app.control_page.grid_columnconfigure(1)["weight"]),
+        )
+        for widget in (
+            self.app.trigger_combo,
+            self.app.modifier_combo,
+            self.app.hotkey_button,
+        ):
+            self.assertTrue(
+                self._is_descendant(widget, self.app.control_bindings_card)
+            )
+        self.assertTrue(
+            self._is_descendant(self.app.preset_combo,
+                                self.app.control_device_card)
+        )
+
+    def test_motion_uses_hero_controls_and_snapshot_side_card(self):
+        self.assertEqual(int(self.app.motion_hero_card.grid_info()["column"]), 0)
+        self.assertEqual(
+            int(self.app.motion_summary_card.grid_info()["column"]), 1
+        )
+        for key in ("motion_strength_pps", "jitter_rate_hz"):
+            self.assertTrue(
+                self._is_descendant(
+                    getattr(self.app, f"{key}_scale"),
+                    self.app.motion_hero_card,
+                )
+            )
+        self.assertTrue(
+            self._is_descendant(
+                self.app.motion_summary_label, self.app.motion_summary_card
+            )
+        )
+
+    def test_advanced_remains_the_only_scrollable_page(self):
+        self.assertTrue(
+            self._is_descendant(self.app.advanced_canvas, self.app.advanced_page)
+        )
+        self.assertFalse(
+            self._is_descendant(self.app.footer_frame, self.app.advanced_canvas)
+        )
+
     def test_motion_page_has_snapshot_backed_live_summary(self):
         """Fails if Motion lacks a visible summary of the active snapshot."""
         summary_var = getattr(self.app, "motion_summary_var", None)

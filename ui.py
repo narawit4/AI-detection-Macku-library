@@ -640,15 +640,38 @@ class JitterApp(tk.Tk):
         self.stop_button.grid(row=0, column=2, sticky="ew")
 
     def _build_trigger_card(self) -> None:
-        self.control_frame = self._card("Control", self.control_page)
-        self.control_frame.columnconfigure(0, weight=1)
+        self.control_page.columnconfigure(0, weight=3)
+        self.control_page.columnconfigure(1, weight=2)
+        self.control_page.rowconfigure(0, weight=1)
+        self.control_bindings_card = ttk.LabelFrame(
+            self.control_page,
+            text="Bindings",
+            style="Liquid.Card.TLabelframe",
+            padding=(12, 8, 12, 10),
+        )
+        self.control_bindings_card.grid(
+            row=0, column=0, sticky="nsew", padx=(0, 5), pady=(0, 9)
+        )
+        self.control_bindings_card.columnconfigure(0, weight=1)
+        self.control_device_card = ttk.LabelFrame(
+            self.control_page,
+            text="Device",
+            style="Liquid.Card.TLabelframe",
+            padding=(12, 8, 12, 10),
+        )
+        self.control_device_card.grid(
+            row=0, column=1, sticky="nsew", padx=(5, 0), pady=(0, 9)
+        )
+        self.control_device_card.columnconfigure(0, weight=1)
+        # Preserve the established public seam for integrations.
+        self.control_frame = self.control_bindings_card
 
         device_row = ttk.Frame(
-            self.control_frame, style="Liquid.App.TFrame"
+            self.control_device_card, style="Liquid.App.TFrame"
         )
         device_row.grid(row=0, column=0, sticky="ew", pady=(0, 9))
         ttk.Label(
-            device_row, text="Device", style="Liquid.Muted.TLabel"
+            device_row, text="Status", style="Liquid.Muted.TLabel"
         ).pack(side="left")
         self.device_label = ttk.Label(
             device_row,
@@ -657,11 +680,11 @@ class JitterApp(tk.Tk):
         )
         self.device_label.pack(side="right")
 
-        def combo_row(row, label, variable, values, width):
-            ttk.Label(self.control_frame, text=label,
+        def combo_row(parent, row, label, variable, values, width):
+            ttk.Label(parent, text=label,
                       style="Liquid.Body.TLabel").grid(row=row, column=0, sticky="w")
             combo = ttk.Combobox(
-                self.control_frame,
+                parent,
                 textvariable=variable,
                 values=values,
                 state="readonly",
@@ -672,26 +695,27 @@ class JitterApp(tk.Tk):
             return combo
 
         self.trigger_combo = combo_row(
-            1, "Trigger", self.trigger_var,
+            self.control_bindings_card, 0, "Trigger", self.trigger_var,
             ("Left", "Right", "Middle", "Mouse4", "Mouse5"), 14,
         )
         self.trigger_combo.bind("<<ComboboxSelected>>", self._bindings_event)
         self.modifier_combo = combo_row(
-            3, "Modifier", self.modifier_var,
+            self.control_bindings_card, 2, "Modifier", self.modifier_var,
             ("None", "Left", "Right", "Middle", "Mouse4", "Mouse5"), 14,
         )
         self.modifier_combo.bind("<<ComboboxSelected>>", self._bindings_event)
         self.preset_combo = combo_row(
-            5, "Preset", self.preset_var, self.preset_values, 14,
+            self.control_device_card, 1, "Preset", self.preset_var,
+            self.preset_values, 14,
         )
         self.preset_combo.bind("<<ComboboxSelected>>", self.apply_preset)
         self.hotkey_button = ttk.Button(
-            self.control_frame,
+            self.control_bindings_card,
             text=f"Hotkey: {self.hotkey_name_var.get()}",
             style="Liquid.Secondary.TButton",
             command=self.capture_hotkey,
         )
-        self.hotkey_button.grid(row=7, column=0, sticky="ew", pady=(3, 0))
+        self.hotkey_button.grid(row=4, column=0, sticky="ew", pady=(3, 0))
 
     def _build_navigation_actions(self) -> None:
         self.navigation_actions = ttk.Frame(
@@ -843,9 +867,31 @@ class JitterApp(tk.Tk):
         setattr(self, f"{key}_scale", slider)
 
     def _build_quick_card(self) -> None:
-        self.quick_frame = self._card("Motion", self.motion_page)
+        self.motion_page.columnconfigure(0, weight=3)
+        self.motion_page.columnconfigure(1, weight=2)
+        self.motion_page.rowconfigure(0, weight=1)
+        self.motion_hero_card = ttk.LabelFrame(
+            self.motion_page,
+            text="Motion",
+            style="Liquid.Card.TLabelframe",
+            padding=(12, 8, 12, 10),
+        )
+        self.motion_hero_card.grid(
+            row=0, column=0, sticky="nsew", padx=(0, 5), pady=(0, 9)
+        )
+        self.motion_summary_card = ttk.LabelFrame(
+            self.motion_page,
+            text="Live Snapshot",
+            style="Liquid.Card.TLabelframe",
+            padding=(12, 8, 12, 10),
+        )
+        self.motion_summary_card.grid(
+            row=0, column=1, sticky="nsew", padx=(5, 0), pady=(0, 9)
+        )
+        # Preserve the established public seams for integrations.
+        self.quick_frame = self.motion_hero_card
         self.quick_grid = ttk.Frame(
-            self.quick_frame, style="Liquid.App.TFrame"
+            self.motion_hero_card, style="Liquid.App.TFrame"
         )
         self.quick_grid.pack(fill="x")
         self.quick_grid.columnconfigure(0, weight=1, uniform="quick")
@@ -857,11 +903,11 @@ class JitterApp(tk.Tk):
         for index, control in enumerate(controls):
             self._numeric_control(self.quick_grid, index // 2, index % 2, *control)
         self.motion_summary_frame = ttk.Frame(
-            self.quick_frame,
+            self.motion_summary_card,
             style="Liquid.Surface.TFrame",
             padding=(10, 6),
         )
-        self.motion_summary_frame.pack(fill="x", pady=(8, 0))
+        self.motion_summary_frame.pack(fill="both", expand=True)
         ttk.Label(
             self.motion_summary_frame,
             text="LIVE SNAPSHOT",
@@ -872,7 +918,7 @@ class JitterApp(tk.Tk):
             self.motion_summary_frame,
             textvariable=self.motion_summary_var,
             style="Liquid.Subtitle.TLabel",
-            wraplength=680,
+            wraplength=190,
         )
         self.motion_summary_label.pack(anchor="w", fill="x", pady=(2, 0))
 
