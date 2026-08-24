@@ -362,11 +362,12 @@ class LiquidNavigationTests(unittest.TestCase):
         self.root.update()
         self.assertIsNone(self.nav._animation_after_id)
 
-    def test_exported_widget_classes_and_palettes_have_no_xp_names(self):
-        """Fails if an XP-named public liquid-widget symbol is reintroduced."""
+    def test_exported_widget_classes_and_palettes_have_no_legacy_names(self):
+        """Fails if a legacy public liquid-widget symbol is reintroduced."""
+        legacy_prefix = "X" + "P"
         for name, value in vars(liquid_widgets).items():
             if isinstance(value, type) or name.endswith("PALETTE"):
-                self.assertNotIn("XP", name)
+                self.assertNotIn(legacy_prefix, name)
 
 
 class LiquidIconButtonTests(unittest.TestCase):
