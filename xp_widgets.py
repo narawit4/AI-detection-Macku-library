@@ -100,15 +100,27 @@ class LiquidXPNav(tk.Canvas):
             return
         self.cancel_animation()
         self.selected_index = target
-        self._redraw()
-        target_x = self._target_pill_x(target)
-        if animate and self.animation_ms > 0 and self._pill_initialized:
-            self._animate_pill_to(target_x)
-        else:
-            self._pill_x = target_x
+        target_x: float | None = None
+        try:
             self._redraw()
-        if notify and self.command is not None:
-            self.command(target)
+            target_x = self._target_pill_x(target)
+            if animate and self.animation_ms > 0 and self._pill_initialized:
+                self._animate_pill_to(target_x)
+            else:
+                self._pill_x = target_x
+                self._redraw()
+        except (tk.TclError, RuntimeError):
+            self._animation_after_id = None
+            try:
+                if target_x is None:
+                    target_x = self._target_pill_x(target)
+                self._pill_x = target_x
+                self._redraw()
+            except (tk.TclError, RuntimeError):
+                pass
+        finally:
+            if notify and self.command is not None:
+                self.command(target)
 
     def set_palette(self, palette: Mapping[str, str]) -> None:
         self._palette = {**LIGHT_NAV_PALETTE, **palette}

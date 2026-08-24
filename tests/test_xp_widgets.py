@@ -191,9 +191,40 @@ class LiquidXPNavTests(unittest.TestCase):
         self.nav.cancel_animation()
         self.assertIsNone(self.nav._animation_after_id)
 
+    def test_scheduler_failure_snaps_to_target_and_still_notifies(self):
+        self.nav._redraw()
+
+        def failing_after(*_args):
+            raise tk.TclError("scheduler unavailable")
+
+        self.nav.after = failing_after
+        try:
+            self.nav.select(2)
+        except tk.TclError as exc:
+            self.fail(f"selection leaked animation failure: {exc}")
+
+        self.assertEqual(self.nav.selected_index, 2)
+        self.assertEqual(self.selected, [2])
+        self.assertIsNone(self.nav._animation_after_id)
+        self.assertAlmostEqual(
+            self.nav._pill_x,
+            self.nav._target_pill_x(2),
+        )
+
     def test_rapid_selection_finishes_at_latest_target(self):
+        self.nav._redraw()
+        cancelled = []
+        original_after_cancel = self.nav.after_cancel
+
+        def recording_after_cancel(callback_id):
+            cancelled.append(callback_id)
+            return original_after_cancel(callback_id)
+
+        self.nav.after_cancel = recording_after_cancel
         self.nav.select(2)
+        obsolete_callback_id = self.nav._animation_after_id
         self.nav.select(1)
+        self.assertIn(obsolete_callback_id, cancelled)
         self.root.after(self.nav.animation_ms * 3, self.root.quit)
         self.root.mainloop()
         self.assertIsNone(self.nav._animation_after_id)

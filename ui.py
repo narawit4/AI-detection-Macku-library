@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import tkinter as tk
 from tkinter import ttk
 import math
 import queue
 import threading
+import time
 from typing import Mapping
 from typing import Any, Callable
 
@@ -49,11 +51,16 @@ XP_DANGER_HOVER = "#DF6670"
 XP_DANGER_PRESSED = "#942F38"
 XP_FOCUS = "#E4A43A"
 
+_UI_QUEUE_MAX_BATCH = 50
+_UI_QUEUE_TIME_SLICE_S = 0.005
+_UI_QUEUE_IDLE_DELAY_MS = 15
+
 DARK_PALETTE = {
     "window": "#171B22", "panel": "#222833", "blue": "#285A91",
     "blue_dark": "#8CBCEB", "primary": "#4C8CCC", "primary_hover": "#67A5DF",
     "primary_pressed": "#326A9E", "secondary": "#303846",
     "secondary_hover": "#3D4858", "secondary_pressed": "#252C36",
+    "secondary_disabled": "#252C36", "secondary_disabled_text": "#AAB4C2",
     "border": "#566273", "text": "#E7ECF3", "muted": "#AAB4C2",
     "green": "#63C985", "amber": "#F1B84B", "red": "#FF7380",
     "danger": "#B83E4A", "danger_hover": "#D25763", "danger_pressed": "#8F3039",
@@ -65,7 +72,9 @@ LIGHT_PALETTE = {
     "blue_dark": XP_BLUE_DARK, "primary": XP_PRIMARY,
     "primary_hover": XP_PRIMARY_HOVER, "primary_pressed": XP_PRIMARY_PRESSED,
     "secondary": XP_SECONDARY, "secondary_hover": XP_SECONDARY_HOVER,
-    "secondary_pressed": XP_SECONDARY_PRESSED, "border": XP_BORDER,
+    "secondary_pressed": XP_SECONDARY_PRESSED,
+    "secondary_disabled": "#D4D4CF", "secondary_disabled_text": XP_MUTED,
+    "border": XP_BORDER,
     "text": XP_TEXT, "muted": XP_MUTED, "green": XP_GREEN,
     "amber": XP_AMBER, "red": XP_RED, "danger": XP_DANGER_BG,
     "danger_hover": XP_DANGER_HOVER, "danger_pressed": XP_DANGER_PRESSED,
@@ -203,10 +212,10 @@ class JitterApp(tk.Tk):
                         relief="raised", borderwidth=1,
                         font=BODY_FONT, padding=(10, 5))
         style.map("XP.Secondary.TButton",
-                  background=[("disabled", "#D4D4CF"),
+                  background=[("disabled", p["secondary_disabled"]),
                               ("pressed", p["secondary_pressed"]),
                               ("active", p["secondary_hover"])],
-                  foreground=[("disabled", p["muted"])],
+                  foreground=[("disabled", p["secondary_disabled_text"])],
                   bordercolor=[("focus", p["focus"]),
                                ("!focus", p["border"])],
                   relief=[("pressed", "sunken"), ("!pressed", "raised")])
@@ -532,29 +541,52 @@ class JitterApp(tk.Tk):
         )
         self.reconnect_button.bind("<Leave>", self._hide_action_tooltip)
         self.test_button.bind("<Leave>", self._hide_action_tooltip)
+        self.reconnect_button.bind(
+            "<FocusIn>",
+            lambda event: self._show_action_tooltip(
+                event, self.reconnect_tooltip_text
+            ),
+        )
+        self.test_button.bind(
+            "<FocusIn>",
+            lambda event: self._show_action_tooltip(
+                event, self.test_tooltip_text
+            ),
+        )
+        self.reconnect_button.bind("<FocusOut>", self._hide_action_tooltip)
+        self.test_button.bind("<FocusOut>", self._hide_action_tooltip)
         self.theme_button.bind("<Enter>", self._show_theme_tooltip)
         self.theme_button.bind("<Leave>", self._hide_theme_tooltip)
+        self.theme_button.bind("<FocusIn>", self._show_theme_tooltip)
+        self.theme_button.bind("<FocusOut>", self._hide_theme_tooltip)
 
     def _show_action_tooltip(self, event: tk.Event, text: str) -> None:
         self._hide_action_tooltip()
-        widget = event.widget
-        tooltip = tk.Toplevel(self)
-        tooltip.wm_overrideredirect(True)
-        tooltip.wm_geometry(
-            f"+{widget.winfo_rootx()}+{widget.winfo_rooty() - 26}"
-        )
-        p = self._palette
-        tk.Label(
-            tooltip,
-            text=text,
-            background=p["panel"],
-            foreground=p["text"],
-            borderwidth=1,
-            relief="solid",
-            font=SMALL_FONT,
-            padx=5,
-            pady=2,
-        ).pack()
+        widget = getattr(event, "widget", None)
+        if widget is None or self._closing:
+            return
+        try:
+            if not widget.winfo_exists():
+                return
+            tooltip = tk.Toplevel(self)
+            tooltip.wm_overrideredirect(True)
+            tooltip.wm_geometry(
+                f"+{widget.winfo_rootx()}+{widget.winfo_rooty() - 26}"
+            )
+            p = self._palette
+            tk.Label(
+                tooltip,
+                text=text,
+                background=p["panel"],
+                foreground=p["text"],
+                borderwidth=1,
+                relief="solid",
+                font=SMALL_FONT,
+                padx=5,
+                pady=2,
+            ).pack()
+        except (tk.TclError, RuntimeError):
+            return
         self._action_tooltip = tooltip
 
     def _hide_action_tooltip(self, _event: tk.Event | None = None) -> None:
@@ -600,6 +632,7 @@ class JitterApp(tk.Tk):
         controls = (
             ("Strength", "motion_strength_pps", 0, 500, 1),
             ("Jitter Rate", "jitter_rate_hz", 0.1, 60, 0.1),
+            ("Angle", "motion_angle_deg", 0, 360, 1),
         )
         for index, control in enumerate(controls):
             self._numeric_control(self.quick_grid, index // 2, index % 2, *control)
@@ -614,17 +647,16 @@ class JitterApp(tk.Tk):
         self.advanced_grid.columnconfigure(0, weight=1, uniform="advanced")
         self.advanced_grid.columnconfigure(1, weight=1, uniform="advanced")
         controls = (
-            (0, 0, "Angle", "motion_angle_deg", 0, 360, 1),
-            (0, 1, "Horizontal", "horizontal_jitter_pps", 0, 500, 1),
-            (1, 0, "Vertical", "vertical_jitter_pps", 0, 500, 1),
-            (1, 1, "Randomness", "jitter_randomness_percent", 0, 100, 1),
-            (2, 0, "Axis Phase", "jitter_axis_phase_deg", 0, 360, 1),
-            (2, 1, "Smoothness", "smoothness_percent", 1, 100, 1),
-            (3, 0, "Ramp (ms)", "ramp_up_ms", 0, 2000, 1),
-            (3, 1, "Update Rate", "update_rate_hz", 20, 500, 1),
-            (4, 0, "Max Step", "max_step_px", 1, 50, 1),
-            (4, 1, "Acceleration", "acceleration_pps2", 1, 10000, 1),
-            (5, 0, "Deceleration", "deceleration_pps2", 1, 10000, 1),
+            (0, 0, "Horizontal", "horizontal_jitter_pps", 0, 500, 1),
+            (0, 1, "Vertical", "vertical_jitter_pps", 0, 500, 1),
+            (1, 0, "Randomness", "jitter_randomness_percent", 0, 100, 1),
+            (1, 1, "Axis Phase", "jitter_axis_phase_deg", 0, 360, 1),
+            (2, 0, "Smoothness", "smoothness_percent", 1, 100, 1),
+            (2, 1, "Ramp (ms)", "ramp_up_ms", 0, 2000, 1),
+            (3, 0, "Update Rate", "update_rate_hz", 20, 500, 1),
+            (3, 1, "Max Step", "max_step_px", 1, 50, 1),
+            (4, 0, "Acceleration", "acceleration_pps2", 1, 10000, 1),
+            (4, 1, "Deceleration", "deceleration_pps2", 1, 10000, 1),
         )
         for row, column, label, key, low, high, resolution in controls:
             self._numeric_control(
@@ -632,7 +664,7 @@ class JitterApp(tk.Tk):
             )
 
         waveform_row = ttk.Frame(self.advanced_grid, style="XP.App.TFrame")
-        waveform_row.grid(row=6, column=0, columnspan=2, sticky="ew", padx=5, pady=(8, 3))
+        waveform_row.grid(row=5, column=0, columnspan=2, sticky="ew", padx=5, pady=(8, 3))
         ttk.Label(waveform_row, text="Waveform",
                   style="XP.Group.TLabel").pack(side="left")
         self.waveform_combo = ttk.Combobox(
@@ -641,7 +673,7 @@ class JitterApp(tk.Tk):
         self.waveform_combo.pack(side="right", fill="x", expand=True, padx=(8, 0))
 
         curve_row = ttk.Frame(self.advanced_grid, style="XP.App.TFrame")
-        curve_row.grid(row=7, column=0, columnspan=2, sticky="ew", padx=5, pady=3)
+        curve_row.grid(row=6, column=0, columnspan=2, sticky="ew", padx=5, pady=3)
         ttk.Label(curve_row, text="Motion Curve",
                   style="XP.Group.TLabel").pack(side="left")
         self.motion_curve_combo = ttk.Combobox(
@@ -662,24 +694,31 @@ class JitterApp(tk.Tk):
 
     def _show_theme_tooltip(self, _event: tk.Event | None = None) -> None:
         self._hide_theme_tooltip()
-        tooltip = tk.Toplevel(self)
-        tooltip.wm_overrideredirect(True)
-        tooltip.wm_geometry(
-            f"+{self.theme_button.winfo_rootx()}+"
-            f"{self.theme_button.winfo_rooty() - 26}"
-        )
-        p = self._palette
-        tk.Label(
-            tooltip,
-            text=self.theme_tooltip_text,
-            background=p["panel"],
-            foreground=p["text"],
-            borderwidth=1,
-            relief="solid",
-            font=SMALL_FONT,
-            padx=5,
-            pady=2,
-        ).pack()
+        if self._closing:
+            return
+        widget = getattr(_event, "widget", self.theme_button)
+        try:
+            if not widget.winfo_exists():
+                return
+            tooltip = tk.Toplevel(self)
+            tooltip.wm_overrideredirect(True)
+            tooltip.wm_geometry(
+                f"+{widget.winfo_rootx()}+{widget.winfo_rooty() - 26}"
+            )
+            p = self._palette
+            tk.Label(
+                tooltip,
+                text=self.theme_tooltip_text,
+                background=p["panel"],
+                foreground=p["text"],
+                borderwidth=1,
+                relief="solid",
+                font=SMALL_FONT,
+                padx=5,
+                pady=2,
+            ).pack()
+        except (tk.TclError, RuntimeError):
+            return
         self._theme_tooltip = tooltip
 
     def _hide_theme_tooltip(self, _event: tk.Event | None = None) -> None:
@@ -956,16 +995,37 @@ class JitterApp(tk.Tk):
         self._ui_pump_after_id = None
         if self._closing or self._closed:
             return
-        while True:
-            try:
-                kind, payload = self._ui_queue.get_nowait()
-            except queue.Empty:
-                break
-            if kind == "service":
-                self.handle_service_event(payload)
-            elif kind == "hotkey":
-                self.toggle_enabled()
-        self._ui_pump_after_id = self.after(15, self._drain_ui_queue)
+        next_delay_ms = _UI_QUEUE_IDLE_DELAY_MS
+        deadline = time.monotonic() + _UI_QUEUE_TIME_SLICE_S
+        processed = 0
+        try:
+            while processed < _UI_QUEUE_MAX_BATCH:
+                try:
+                    kind, payload = self._ui_queue.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    if kind == "service":
+                        self.handle_service_event(payload)
+                    elif kind == "hotkey":
+                        self.toggle_enabled()
+                except Exception:
+                    logging.exception("UI queue handler failed for %s event", kind)
+                processed += 1
+                if time.monotonic() >= deadline:
+                    next_delay_ms = 0
+                    break
+            if processed >= _UI_QUEUE_MAX_BATCH or not self._ui_queue.empty():
+                next_delay_ms = 0
+        finally:
+            if not self._closing and not self._closed:
+                try:
+                    self._ui_pump_after_id = self.after(
+                        next_delay_ms,
+                        self._drain_ui_queue,
+                    )
+                except (tk.TclError, RuntimeError):
+                    self._ui_pump_after_id = None
 
     def _get_async_key_state(self, vk: int) -> int:
         try:

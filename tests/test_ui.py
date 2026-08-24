@@ -136,6 +136,9 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertEqual(self.app.theme_button.cget("text"), "☀")
         self.assertEqual(self.app.theme_tooltip_text,
                          "Switch to Light Mode")
+        self.assertEqual(self.app.nav.cget("background"), "#171B22")
+        self.assertEqual(self.app.nav.itemcget("capsule", "fill"), "#303846")
+        self.assertEqual(self.app.nav.itemcget("pill", "fill"), "#4C8CCC")
 
         self.app._cancel_after("_save_after_id")
         self.app.save_config()
@@ -215,6 +218,10 @@ class JitterLayoutTests(unittest.TestCase):
                                             self.app.setup_page))
         self.assertTrue(self._is_descendant(
             self.app.motion_strength_pps_entry, self.app.motion_page))
+        self.assertTrue(self._is_descendant(
+            self.app.motion_angle_deg_entry, self.app.motion_page))
+        self.assertFalse(self._is_descendant(
+            self.app.motion_angle_deg_entry, self.app.advanced_page))
         self.assertTrue(self._is_descendant(
             self.app.waveform_combo, self.app.advanced_page))
 
@@ -303,6 +310,26 @@ class JitterLayoutTests(unittest.TestCase):
         self.app._hide_action_tooltip()
         self.assertIsNone(self.app._action_tooltip)
 
+    def test_mini_action_tooltips_are_available_from_keyboard_focus(self):
+        cases = (
+            (self.app.reconnect_button, "Reconnect Makcu", "_action_tooltip"),
+            (self.app.test_button, "Test Run 3s", "_action_tooltip"),
+            (self.app.theme_button, "Switch to Dark Mode", "_theme_tooltip"),
+        )
+        for button, expected_text, tooltip_attribute in cases:
+            with self.subTest(button=str(button)):
+                self.assertTrue(button.bind("<FocusIn>"))
+                self.assertTrue(button.bind("<FocusOut>"))
+                button.event_generate("<FocusIn>")
+                tooltip = getattr(self.app, tooltip_attribute)
+                self.assertIsNotNone(tooltip)
+                self.assertEqual(
+                    tooltip.winfo_children()[0].cget("text"),
+                    expected_text,
+                )
+                button.event_generate("<FocusOut>")
+                self.assertIsNone(getattr(self.app, tooltip_attribute))
+
     def test_select_page_shows_one_page_without_resetting_values(self):
         self.app.motion_strength_pps_var.set("123")
         self.app.select_page(2)
@@ -313,17 +340,16 @@ class JitterLayoutTests(unittest.TestCase):
 
     def test_advanced_uses_approved_two_column_grid(self):
         expected_positions = {
-            "motion_angle_deg": (0, 0),
-            "horizontal_jitter_pps": (0, 1),
-            "vertical_jitter_pps": (1, 0),
-            "jitter_randomness_percent": (1, 1),
-            "jitter_axis_phase_deg": (2, 0),
-            "smoothness_percent": (2, 1),
-            "ramp_up_ms": (3, 0),
-            "update_rate_hz": (3, 1),
-            "max_step_px": (4, 0),
-            "acceleration_pps2": (4, 1),
-            "deceleration_pps2": (5, 0),
+            "horizontal_jitter_pps": (0, 0),
+            "vertical_jitter_pps": (0, 1),
+            "jitter_randomness_percent": (1, 0),
+            "jitter_axis_phase_deg": (1, 1),
+            "smoothness_percent": (2, 0),
+            "ramp_up_ms": (2, 1),
+            "update_rate_hz": (3, 0),
+            "max_step_px": (3, 1),
+            "acceleration_pps2": (4, 0),
+            "deceleration_pps2": (4, 1),
         }
         for key, expected in expected_positions.items():
             with self.subTest(key=key):
@@ -337,8 +363,8 @@ class JitterLayoutTests(unittest.TestCase):
         curve_row = self.app.motion_curve_combo.master
         self.assertIsNot(waveform_row, curve_row)
         for combo, expected_row in (
-            (self.app.waveform_combo, 6),
-            (self.app.motion_curve_combo, 7),
+            (self.app.waveform_combo, 5),
+            (self.app.motion_curve_combo, 6),
         ):
             with self.subTest(combo=str(combo)):
                 choice_row = combo.master
@@ -462,6 +488,12 @@ class JitterLayoutTests(unittest.TestCase):
                                       ("pressed",)), "sunken")
         self.assertEqual(style.lookup("XP.Primary.TButton", "bordercolor",
                                       ("focus",)), "#E4A43A")
+
+        self.app.toggle_theme()
+        self.assertEqual(style.lookup("XP.Secondary.TButton", "background",
+                                      ("disabled",)), "#252C36")
+        self.assertEqual(style.lookup("XP.Secondary.TButton", "foreground",
+                                      ("disabled",)), "#AAB4C2")
 
     def test_required_actions_are_present_and_stop_is_outside_advanced(self):
         texts = widget_texts(self.app)
@@ -605,6 +637,71 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.assertGreaterEqual(self.service.stopped, 1)
         self.assertEqual(self.service.closed, 1)
 
+    def test_close_cancels_queue_polling_callback(self):
+        queue_poll_id = self.app._ui_pump_after_id
+        self.assertIsNotNone(queue_poll_id)
+        cancelled = []
+        original_after_cancel = self.app.after_cancel
+
+        def recording_after_cancel(callback_id):
+            cancelled.append(callback_id)
+            return original_after_cancel(callback_id)
+
+        self.app.after_cancel = recording_after_cancel
+        self.app.close_app()
+        self.assertIn(queue_poll_id, cancelled)
+        self.assertIsNone(self.app._ui_pump_after_id)
+
+    def test_queue_drain_yields_after_a_bounded_batch(self):
+        self.app._cancel_after("_ui_pump_after_id")
+        handled = []
+        scheduled = []
+        self.app.handle_service_event = handled.append
+
+        def recording_after(delay, callback):
+            scheduled.append((delay, callback))
+            return f"scheduled-{len(scheduled)}"
+
+        self.app.after = recording_after
+        for index in range(200):
+            self.app._ui_queue.put(("service", ServiceEvent("item", index)))
+
+        self.app._drain_ui_queue()
+
+        self.assertGreater(len(handled), 0)
+        self.assertLess(len(handled), 200)
+        self.assertEqual(scheduled[-1][0], 0)
+
+    def test_queue_drain_recovers_from_handler_failure_and_keeps_polling(self):
+        self.app._cancel_after("_ui_pump_after_id")
+        hotkeys = []
+        scheduled = []
+
+        def failing_handler(_event):
+            raise RuntimeError("bad service event")
+
+        def recording_after(delay, callback):
+            scheduled.append((delay, callback))
+            return f"scheduled-{len(scheduled)}"
+
+        self.app.handle_service_event = failing_handler
+        self.app.toggle_enabled = lambda: hotkeys.append("handled")
+        self.app.after = recording_after
+        self.app._ui_queue.put(("service", ServiceEvent("bad")))
+        self.app._ui_queue.put(("hotkey", None))
+
+        with self.assertLogs(level="ERROR") as captured_logs:
+            try:
+                self.app._drain_ui_queue()
+            except RuntimeError as exc:
+                self.fail(f"queue handler failure escaped the UI pump: {exc}")
+            if not hotkeys:
+                scheduled[-1][1]()
+
+        self.assertEqual(hotkeys, ["handled"])
+        self.assertTrue(scheduled)
+        self.assertIn("UI queue handler failed", captured_logs.output[0])
+
     def test_service_events_are_marshaled_to_tk_thread(self):
         self.app.queue_service_event(ServiceEvent("connected", "Fake Makcu"))
         self.assertEqual(self.app.connection_state_var.get(), "Disconnected")
@@ -631,6 +728,24 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.app.handle_service_event(ServiceEvent("motion_stopped", "duration_complete"))
         self.assertEqual(self.app.runtime_state_var.get(), "Armed")
         self.assertTrue(self.app.enabled)
+
+    def test_test_run_button_is_disabled_only_while_test_is_active(self):
+        self.assertFalse(self.app.test_button.instate(("disabled",)))
+        self.app.start_test_run()
+        self.assertFalse(self.app.test_button.instate(("disabled",)))
+
+        self.service.connected = True
+        self.app.start_test_run()
+        self.assertTrue(self.app.test_button.instate(("disabled",)))
+        self.app.handle_service_event(
+            ServiceEvent("motion_stopped", "duration_complete")
+        )
+        self.assertFalse(self.app.test_button.instate(("disabled",)))
+
+        self.app.start_test_run()
+        self.assertTrue(self.app.test_button.instate(("disabled",)))
+        self.app.emergency_stop("Stopped by user")
+        self.assertFalse(self.app.test_button.instate(("disabled",)))
 
     def test_invalid_motion_edit_keeps_last_snapshot(self):
         previous = self.app.get_motion_settings()
