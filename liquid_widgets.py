@@ -285,18 +285,6 @@ class LiquidNavigation(tk.Canvas):
             outline=self._palette["border"],
             tags="glass",
         )
-        self.create_arc(
-            glass_left + 2,
-            glass_top + 2,
-            glass_right - 2,
-            glass_bottom - 4,
-            start=20,
-            extent=140,
-            style="arc",
-            outline=self._palette["surface_highlight"],
-            width=2,
-            tags="glass-highlight",
-        )
         if not self._pill_initialized:
             self._pill_x, self._pill_y = self._target_lens_position(
                 self.selected_index,

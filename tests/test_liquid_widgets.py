@@ -259,7 +259,15 @@ class LiquidNavigationTests(unittest.TestCase):
 
         nav.select(2)
         self.assertIsNotNone(nav._animation_after_id)
-        self.root.after(50, self.root.quit)
+
+        def quit_when_animation_finishes():
+            if nav._animation_after_id is None:
+                self.root.quit()
+            else:
+                self.root.after(5, quit_when_animation_finishes)
+
+        self.root.after(5, quit_when_animation_finishes)
+        self.root.after(1000, self.root.quit)
         self.root.mainloop()
 
         self.assertIsNone(nav._animation_after_id)
@@ -473,6 +481,15 @@ class LiquidNavigationTests(unittest.TestCase):
 
         self.assertEqual(len(outlined), 1)
         self.assertEqual(nav.type(outlined[0]), "polygon")
+
+    def test_navigation_has_no_large_decorative_arc(self):
+        """Fails if a circular glass highlight crosses the navigation menu."""
+        nav = self.make_vertical_nav()
+        nav.pack()
+        self.root.deiconify()
+        self.root.update()
+
+        self.assertNotIn("arc", {nav.type(item) for item in nav.find_all()})
 
     def test_destroy_cancels_animation(self):
         self.nav.select(2)
