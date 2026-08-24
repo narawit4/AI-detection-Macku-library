@@ -225,10 +225,15 @@ class JitterLayoutTests(unittest.TestCase):
         return False
 
     def test_shell_uses_persistent_rail_and_console_columns(self):
+        self.assertIs(self.app.navigation_rail.master, self.app.shell)
+        self.assertIs(self.app.console_workspace.master, self.app.shell)
         self.assertEqual(int(self.app.navigation_rail.grid_info()["column"]), 0)
         self.assertEqual(int(self.app.console_workspace.grid_info()["column"]), 1)
         self.assertEqual(int(self.app.navigation_rail.cget("width")), 176)
         self.assertEqual(self.app.nav.orientation, "vertical")
+        self.app.deiconify()
+        self.app.update()
+        self.assertEqual(self.app.navigation_rail.winfo_width(), 176)
 
     def test_rail_owns_identity_connection_navigation_and_mini_actions(self):
         for widget in (
@@ -248,6 +253,10 @@ class JitterLayoutTests(unittest.TestCase):
         ):
             with self.subTest(button=str(button)):
                 self.assertIs(button.master, self.app.navigation_actions)
+        self.assertEqual(
+            self.app.navigation_actions.pack_info()["side"],
+            "bottom",
+        )
 
     def test_workspace_keeps_page_footer_runtime_order(self):
         widgets = (

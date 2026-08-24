@@ -1,5 +1,7 @@
+import gc
 import tkinter as tk
 import unittest
+import weakref
 from types import SimpleNamespace
 
 import liquid_widgets
@@ -22,6 +24,22 @@ def canvas_text_font_family(canvas, tag):
     raise AssertionError(f"no text item found for Canvas tag {tag!r}")
 
 
+def destroy_tk_test_root(test_case, *widget_attributes):
+    """Release destroyed Tcl interpreters deterministically on the Tk thread."""
+    root = test_case.root
+    root_ref = weakref.ref(root)
+    root.destroy()
+    for attribute in widget_attributes:
+        setattr(test_case, attribute, None)
+    test_case.root = None
+    del root
+    gc.collect()
+    test_case.assertIsNone(
+        root_ref(),
+        "destroyed Tk root survived test teardown",
+    )
+
+
 class _SliderTestCase(unittest.TestCase):
     slider_type = LiquidSlider
 
@@ -30,7 +48,7 @@ class _SliderTestCase(unittest.TestCase):
         self.root.withdraw()
 
     def tearDown(self):
-        self.root.destroy()
+        destroy_tk_test_root(self)
 
     def make_slider(self, **kwargs):
         options = {
@@ -210,7 +228,7 @@ class LiquidNavigationTests(unittest.TestCase):
         self.root.update_idletasks()
 
     def tearDown(self):
-        self.root.destroy()
+        destroy_tk_test_root(self, "nav")
 
     def make_vertical_nav(self):
         return LiquidNavigation(
@@ -453,7 +471,7 @@ class LiquidIconButtonTests(unittest.TestCase):
         self.root.update_idletasks()
 
     def tearDown(self):
-        self.root.destroy()
+        destroy_tk_test_root(self, "button")
 
     def test_click_enter_and_space_activate_when_enabled(self):
         """Fails if an enabled action stops invoking its real command."""
