@@ -126,7 +126,7 @@ class ConfigStore:
                 motion_raw if isinstance(motion_raw, Mapping) else None
             )
             selected_preset = document.get("selected_preset", "Custom")
-            if selected_preset not in {"Custom", *MOTION_PRESETS}:
+            if not isinstance(selected_preset, str) or selected_preset not in {"Custom", *MOTION_PRESETS}:
                 selected_preset = "Custom"
         config = AppConfig(
             motion=motion,

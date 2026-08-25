@@ -102,6 +102,20 @@ class ConfigStoreTests(unittest.TestCase):
         self.assertEqual(config.hotkey_vk, 255)
         self.assertEqual(config.selected_preset, "Custom")
 
+    def test_schema_two_list_preset_uses_custom_default(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            path.write_text(json.dumps({
+                "schema_version": 2,
+                "selected_preset": ["Strong"],
+            }), encoding="utf-8")
+            try:
+                config = ConfigStore(path).load().config
+            except TypeError:
+                config = None
+        self.assertIsNotNone(config)
+        self.assertEqual(config.selected_preset, "Custom")
+
     def test_schema_one_preserves_app_choices_but_migrates_motion_to_defaults(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.json"
