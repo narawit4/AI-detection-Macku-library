@@ -194,6 +194,7 @@ class JitterApp(tk.Tk):
         self._test_restore_enabled = False
         self._test_start_pending = False
         self._normal_motion_started = False
+        self._rounded_style_images: dict[str, tuple[tk.PhotoImage, ...]] = {}
         self._motion_lock = threading.RLock()
         self._motion_snapshot: MotionSettings = self.config.motion
         self._hotkey_vk = int(self.config.hotkey_vk)
@@ -222,6 +223,66 @@ class JitterApp(tk.Tk):
 
     # ---- setup ---------------------------------------------------------
 
+    def _rounded_style_image(
+        self,
+        fill: str,
+        border: str,
+        *,
+        size: int = 24,
+        radius: int = 8,
+    ) -> tk.PhotoImage:
+        image = tk.PhotoImage(master=self, width=size, height=size)
+        inner_radius = max(1, radius - 1)
+
+        def inside(px: int, py: int, inset: int, corner_radius: int) -> bool:
+            low = inset + corner_radius
+            high = size - inset - corner_radius - 1
+            nearest_x = min(max(px, low), high)
+            nearest_y = min(max(py, low), high)
+            return (
+                (px - nearest_x) * (px - nearest_x)
+                + (py - nearest_y) * (py - nearest_y)
+                <= corner_radius * corner_radius
+            )
+
+        for y in range(size):
+            outer = [x for x in range(size) if inside(x, y, 0, radius)]
+            if outer:
+                image.put(border, to=(outer[0], y, outer[-1] + 1, y + 1))
+            inner = [x for x in range(size) if inside(x, y, 1, inner_radius)]
+            if inner:
+                image.put(fill, to=(inner[0], y, inner[-1] + 1, y + 1))
+        return image
+
+    def _install_rounded_element(
+        self,
+        style: ttk.Style,
+        role: str,
+        colors: tuple[str, str, str, str, str],
+    ) -> str:
+        element = f"Liquid.Rounded.{self._theme}.{role}"
+        if element in style.element_names():
+            return element
+        normal, active, pressed, disabled, border = colors
+        images = (
+            self._rounded_style_image(normal, border),
+            self._rounded_style_image(active, border),
+            self._rounded_style_image(pressed, border),
+            self._rounded_style_image(disabled, border),
+        )
+        self._rounded_style_images[element] = images
+        style.element_create(
+            element,
+            "image",
+            images[0],
+            ("disabled", images[3]),
+            ("pressed", images[2]),
+            ("active", images[1]),
+            border=8,
+            sticky="nsew",
+        )
+        return element
+
     def _configure_styles(self) -> None:
         p = self._palette
         style = ttk.Style(self)
@@ -235,6 +296,36 @@ class JitterApp(tk.Tk):
         danger_pressed = p["danger_pressed"]
         disabled_background = p["disabled_surface"]
         disabled_text = p["disabled_text"]
+        primary_element = self._install_rounded_element(
+            style,
+            "Primary",
+            (p["accent"], p["accent_hover"], p["accent_pressed"],
+             disabled_background, p["accent_pressed"]),
+        )
+        secondary_element = self._install_rounded_element(
+            style,
+            "Secondary",
+            (p["raised"], secondary_hover, secondary_pressed,
+             disabled_background, p["border"]),
+        )
+        danger_element = self._install_rounded_element(
+            style,
+            "Danger",
+            (p["danger"], danger_hover, danger_pressed,
+             disabled_background, p["red"]),
+        )
+        entry_element = self._install_rounded_element(
+            style,
+            "Entry",
+            (p["raised"], p["raised"], p["raised"],
+             disabled_background, p["border"]),
+        )
+        invalid_element = self._install_rounded_element(
+            style,
+            "Invalid",
+            (p["raised"], p["raised"], p["raised"],
+             disabled_background, p["red"]),
+        )
 
         style.configure("Liquid.App.TFrame", background=p["window"])
         style.configure("Liquid.Surface.TFrame", background=p["surface"],
@@ -248,14 +339,13 @@ class JitterApp(tk.Tk):
         style.configure("Liquid.Muted.TLabel", background=p["window"],
                         foreground=p["muted"], font=SMALL_FONT)
         style.configure("Liquid.Card.TLabelframe", background=p["window"],
-                        foreground=p["text"], bordercolor=p["border"],
-                        relief="solid", borderwidth=1)
+                        foreground=p["text"], relief="flat", borderwidth=0)
         style.configure("Liquid.Card.TLabelframe.Label", background=p["window"],
                         foreground=p["muted"], font=SECTION_FONT)
         style.configure("Liquid.Primary.TButton", background=p["accent"],
                         foreground="#07252C", bordercolor=p["accent_pressed"],
                         focuscolor=p["accent"], focusthickness=0,
-                        relief="flat", borderwidth=1,
+                        relief="flat", borderwidth=0,
                         font=(FONT_FAMILY, 10, "bold"), padding=(14, 8))
         style.map("Liquid.Primary.TButton",
                   background=[("disabled", disabled_background),
@@ -266,7 +356,7 @@ class JitterApp(tk.Tk):
         style.configure("Liquid.Secondary.TButton", background=p["raised"],
                         foreground=p["text"], bordercolor=p["border"],
                         focuscolor=p["raised"], focusthickness=0,
-                        relief="flat", borderwidth=1,
+                        relief="flat", borderwidth=0,
                         font=BODY_FONT, padding=(12, 7))
         style.map("Liquid.Secondary.TButton",
                   background=[("disabled", disabled_background),
@@ -277,7 +367,7 @@ class JitterApp(tk.Tk):
         style.configure("Liquid.Danger.TButton", background=p["danger"],
                         foreground="#FFFFFF", bordercolor=p["red"],
                         focuscolor=p["danger"], focusthickness=0,
-                        relief="flat", borderwidth=1,
+                        relief="flat", borderwidth=0,
                         font=(FONT_FAMILY, 10, "bold"), padding=(14, 8))
         style.map("Liquid.Danger.TButton",
                   background=[("disabled", disabled_background),
@@ -295,16 +385,14 @@ class JitterApp(tk.Tk):
                             font=(FONT_FAMILY, 10, "bold"))
         style.configure("Liquid.Entry.TEntry", fieldbackground=p["raised"],
                         foreground=p["text"], insertcolor=p["text"],
-                        padding=(6, 4), bordercolor=p["border"],
-                        relief="solid", borderwidth=1)
+                        padding=(6, 4), relief="flat", borderwidth=0)
         style.configure("Liquid.Invalid.TEntry", fieldbackground=p["raised"],
                         foreground=p["text"], insertcolor=p["text"],
-                        padding=(6, 4), bordercolor=p["red"],
-                        relief="solid", borderwidth=1)
+                        padding=(6, 4), relief="flat", borderwidth=0)
         style.configure("Liquid.Readonly.TCombobox", fieldbackground=p["raised"],
                         background=p["raised"], foreground=p["text"],
                         arrowcolor=p["text"], padding=(5, 4),
-                        bordercolor=p["border"], relief="solid", borderwidth=1)
+                        relief="flat", borderwidth=0)
         style.map("Liquid.Readonly.TCombobox",
                   fieldbackground=[("readonly", p["raised"])],
                   foreground=[("readonly", p["text"])])
@@ -313,12 +401,46 @@ class JitterApp(tk.Tk):
             background=p["raised"],
             troughcolor=p["surface"],
             arrowcolor=p["text"],
-            bordercolor=p["border"],
-            borderwidth=1,
+            borderwidth=0,
             relief="flat",
             darkcolor=p["raised"],
             lightcolor=p["raised"],
         )
+        button_layout = lambda element: [
+            (element, {
+                "sticky": "nsew",
+                "children": [("Button.padding", {
+                    "sticky": "nsew",
+                    "children": [("Button.label", {"sticky": "nsew"})],
+                })],
+            }),
+        ]
+        style.layout("Liquid.Primary.TButton", button_layout(primary_element))
+        style.layout("Liquid.Secondary.TButton", button_layout(secondary_element))
+        style.layout("Liquid.Danger.TButton", button_layout(danger_element))
+        entry_layout = lambda element: [
+            (element, {
+                "sticky": "nsew",
+                "children": [("Entry.padding", {
+                    "sticky": "nsew",
+                    "children": [("Entry.textarea", {"sticky": "nsew"})],
+                })],
+            }),
+        ]
+        style.layout("Liquid.Entry.TEntry", entry_layout(entry_element))
+        style.layout("Liquid.Invalid.TEntry", entry_layout(invalid_element))
+        style.layout("Liquid.Readonly.TCombobox", [
+            (entry_element, {
+                "sticky": "nsew",
+                "children": [
+                    ("Combobox.downarrow", {"side": "right", "sticky": "ns"}),
+                    ("Combobox.padding", {
+                        "sticky": "nsew",
+                        "children": [("Combobox.textarea", {"sticky": "nsew"})],
+                    }),
+                ],
+            }),
+        ])
         style.map(
             "Liquid.Vertical.TScrollbar",
             background=[

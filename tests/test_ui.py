@@ -1058,7 +1058,7 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertEqual(self.app.stop_button.cget("style"),
                          "Liquid.Danger.TButton")
 
-    def test_liquid_buttons_show_hover_and_press_states_with_one_outer_border(self):
+    def test_liquid_buttons_show_hover_and_press_states_with_rounded_borders(self):
         style = ttk.Style(self.app)
         self.assertEqual(style.lookup("Liquid.Primary.TButton", "background",
                                       ("active",)), "#79E8FA")
@@ -1072,9 +1072,10 @@ class JitterLayoutTests(unittest.TestCase):
                                       ("active",)), "#D6F5FA")
         for name in ("Primary", "Secondary", "Danger"):
             widget_style = f"Liquid.{name}.TButton"
-            self.assertEqual(str(style.lookup(widget_style, "borderwidth")), "1")
+            self.assertEqual(str(style.lookup(widget_style, "borderwidth")), "0")
             self.assertEqual(style.lookup(widget_style, "relief", ("pressed",)), "flat")
             self.assertEqual(str(style.lookup(widget_style, "focusthickness")), "0")
+            self.assertIn("Rounded", style.layout(widget_style)[0][0])
 
         self.app.toggle_theme()
         self.assertEqual(style.lookup("Liquid.Secondary.TButton", "background",
@@ -1082,17 +1083,21 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertEqual(style.lookup("Liquid.Secondary.TButton", "foreground",
                                       ("disabled",)), "#91A5B8")
 
-    def test_form_controls_and_cards_use_one_outer_border(self):
-        """Fails if a standard control loses or doubles its outer frame."""
+    def test_form_controls_use_rounded_borders_without_square_frames(self):
+        """Fails if a native square border reappears around a form control."""
         style = ttk.Style(self.app)
         for widget_style in (
-            "Liquid.Card.TLabelframe",
             "Liquid.Entry.TEntry",
             "Liquid.Invalid.TEntry",
             "Liquid.Readonly.TCombobox",
+        ):
+            self.assertEqual(str(style.lookup(widget_style, "borderwidth")), "0")
+            self.assertIn("Rounded", style.layout(widget_style)[0][0])
+        for widget_style in (
+            "Liquid.Card.TLabelframe",
             "Liquid.Vertical.TScrollbar",
         ):
-            self.assertEqual(str(style.lookup(widget_style, "borderwidth")), "1")
+            self.assertEqual(str(style.lookup(widget_style, "borderwidth")), "0")
 
     def test_required_actions_are_present_and_stop_is_outside_advanced(self):
         texts = widget_texts(self.app)
