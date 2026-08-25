@@ -10,10 +10,15 @@ import shutil
 import sys
 from typing import Any, Mapping
 
-from motion import MotionSettings, motion_settings_from_mapping, motion_settings_to_mapping
+from motion import (
+    MOTION_PRESETS,
+    MotionSettings,
+    motion_settings_from_mapping,
+    motion_settings_to_mapping,
+)
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 VALID_BUTTONS = ("Left", "Right", "Middle", "Mouse4", "Mouse5")
 VALID_THEMES = ("light", "dark")
 
@@ -100,8 +105,6 @@ class ConfigStore:
         if schema < 1:
             return LoadOutcome(self._defaults(), warning="Unsupported configuration schema")
 
-        motion_raw = document.get("motion")
-        motion = motion_settings_from_mapping(motion_raw if isinstance(motion_raw, Mapping) else None)
         trigger = document.get("trigger", "Left")
         if trigger not in VALID_BUTTONS:
             trigger = "Left"
@@ -111,12 +114,20 @@ class ConfigStore:
         hotkey_name = document.get("hotkey_name", "-")
         if not isinstance(hotkey_name, str):
             hotkey_name = "-"
-        selected_preset = document.get("selected_preset", "Custom")
-        if not isinstance(selected_preset, str) or not selected_preset:
-            selected_preset = "Custom"
         theme = document.get("theme", "light")
         if theme not in VALID_THEMES:
             theme = "light"
+        if schema == 1:
+            motion = MotionSettings()
+            selected_preset = "Custom"
+        else:
+            motion_raw = document.get("motion")
+            motion = motion_settings_from_mapping(
+                motion_raw if isinstance(motion_raw, Mapping) else None
+            )
+            selected_preset = document.get("selected_preset", "Custom")
+            if selected_preset not in {"Custom", *MOTION_PRESETS}:
+                selected_preset = "Custom"
         config = AppConfig(
             motion=motion,
             trigger=trigger,

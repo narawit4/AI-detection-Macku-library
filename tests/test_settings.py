@@ -1,7 +1,6 @@
 import json
 import tempfile
 import unittest
-from dataclasses import replace
 from pathlib import Path
 
 from motion import MotionSettings
@@ -19,23 +18,24 @@ class ConfigStoreTests(unittest.TestCase):
         self.assertEqual(outcome.config.theme, "light")
         self.assertTrue(outcome.save_allowed)
 
-    def test_valid_config_round_trips_without_runtime_state(self):
+    def test_schema_two_round_trip_saves_only_paired_pulse_motion(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.json"
             store = ConfigStore(path)
             config = AppConfig(
-                motion=replace(MotionSettings(), strength_pps=123.0),
-                trigger="Mouse4", modifier="Right", hotkey_vk=0x77,
-                hotkey_name="F8", selected_preset="Custom", theme="dark",
+                motion=MotionSettings(4.0, 45.0, "Instant"),
+                selected_preset="Strong",
             )
             store.save(config)
             document = json.loads(path.read_text(encoding="utf-8"))
-            outcome = store.load()
-        self.assertEqual(document["schema_version"], SCHEMA_VERSION)
-        self.assertEqual(document["theme"], "dark")
+            restored = store.load().config
+        self.assertEqual(document["schema_version"], 2)
+        self.assertEqual(document["motion"], {
+            "pulse_size_px": "4", "pulse_rate_hz": "45", "ramp_mode": "Instant",
+        })
         self.assertNotIn("enabled", document)
         self.assertNotIn("moving", document)
-        self.assertEqual(outcome.config, config)
+        self.assertEqual(restored, config)
 
     def test_invalid_theme_uses_safe_light_default(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -52,7 +52,7 @@ class ConfigStoreTests(unittest.TestCase):
             path = Path(directory) / "config.json"
             store = ConfigStore(path)
             first = AppConfig(selected_preset="Soft")
-            second = AppConfig(selected_preset="Extreme")
+            second = AppConfig(selected_preset="Strong")
             store.save(first)
             store.save(second)
             backup = json.loads((Path(str(path) + ".bak")).read_text(encoding="utf-8"))
@@ -80,21 +80,51 @@ class ConfigStoreTests(unittest.TestCase):
         self.assertIsNotNone(outcome.warning)
         self.assertEqual(outcome.config, AppConfig())
 
-    def test_invalid_values_are_safely_coerced(self):
+    def test_malformed_schema_two_values_are_safely_coerced(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            path.write_text(json.dumps({
+                "schema_version": 2,
+                "motion": {
+                    "pulse_size_px": "bad",
+                    "pulse_rate_hz": 9999,
+                    "ramp_mode": "Unknown",
+                },
+                "trigger": "NoSuchButton",
+                "modifier": "NoSuchButton",
+                "hotkey_vk": 9999,
+                "selected_preset": "Strong Shake",
+            }), encoding="utf-8")
+            config = ConfigStore(path).load().config
+        self.assertEqual(config.motion, MotionSettings(2.0, 60.0, "Smooth"))
+        self.assertEqual(config.trigger, "Left")
+        self.assertEqual(config.modifier, "None")
+        self.assertEqual(config.hotkey_vk, 255)
+        self.assertEqual(config.selected_preset, "Custom")
+
+    def test_schema_one_preserves_app_choices_but_migrates_motion_to_defaults(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.json"
             path.write_text(json.dumps({
                 "schema_version": 1,
-                "motion": {"motion_strength_pps": "bad"},
-                "trigger": "NoSuchButton",
-                "modifier": "NoSuchButton",
-                "hotkey_vk": 9999,
+                "motion": {"motion_strength_pps": "123"},
+                "trigger": "Right",
+                "modifier": "Mouse4",
+                "hotkey_vk": 65,
+                "hotkey_name": "A",
+                "selected_preset": "Strong Shake",
+                "theme": "dark",
             }), encoding="utf-8")
-            config = ConfigStore(path).load().config
-        self.assertEqual(config.motion, MotionSettings())
-        self.assertEqual(config.trigger, "Left")
-        self.assertEqual(config.modifier, "None")
-        self.assertEqual(config.hotkey_vk, 255)
+            outcome = ConfigStore(path).load()
+            document = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(outcome.config.motion, MotionSettings())
+        self.assertEqual(outcome.config.trigger, "Right")
+        self.assertEqual(outcome.config.modifier, "Mouse4")
+        self.assertEqual(outcome.config.hotkey_vk, 65)
+        self.assertEqual(outcome.config.hotkey_name, "A")
+        self.assertEqual(outcome.config.selected_preset, "Custom")
+        self.assertEqual(outcome.config.theme, "dark")
+        self.assertEqual(document["schema_version"], 1)
 
 
 if __name__ == "__main__":
