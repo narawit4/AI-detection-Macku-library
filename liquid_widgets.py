@@ -292,18 +292,18 @@ class LiquidNavigation(tk.Canvas):
             self._pill_initialized = True
         if self.orientation == "horizontal":
             item_width = float(width) / len(self.labels)
-            lens_half_width = max(4.0, item_width / 2.0 - 3.0)
-            pill_left = max(glass_left + 2.0, self._pill_x - lens_half_width)
-            pill_right = min(glass_right - 2.0, self._pill_x + lens_half_width)
+            lens_half_width = max(4.0, item_width / 2.0 - 4.0)
+            pill_left = max(glass_left + 3.0, self._pill_x - lens_half_width)
+            pill_right = min(glass_right - 3.0, self._pill_x + lens_half_width)
             pill_top = glass_top + 3.0
             pill_bottom = glass_bottom - 3.0
         else:
             item_height = float(height) / len(self.labels)
-            lens_half_height = max(4.0, item_height / 2.0 - 3.0)
+            lens_half_height = max(4.0, item_height / 2.0 - 4.0)
             pill_left = glass_left + 3.0
             pill_right = glass_right - 3.0
-            pill_top = max(glass_top + 2.0, self._pill_y - lens_half_height)
-            pill_bottom = min(glass_bottom - 2.0, self._pill_y + lens_half_height)
+            pill_top = max(glass_top + 3.0, self._pill_y - lens_half_height)
+            pill_bottom = min(glass_bottom - 3.0, self._pill_y + lens_half_height)
         self._rounded_box(
             pill_left,
             pill_top,
@@ -327,20 +327,6 @@ class LiquidNavigation(tk.Canvas):
                 font=("Segoe UI", 9, "bold" if index == self.selected_index else "normal"),
                 tags=("tab", f"tab-{index}", "label"),
             )
-        if self._focused:
-            left, top, right, bottom = self._item_bounds(self.selected_index)
-            marker_x = left + 7.0
-            marker_y = (top + bottom) / 2.0
-            self.create_rectangle(
-                marker_x - 2.0,
-                marker_y - 2.0,
-                marker_x + 2.0,
-                marker_y + 2.0,
-                fill=self._palette["focus"],
-                outline="",
-                tags="focus-ring",
-            )
-
     def _rounded_box(
         self,
         left: float,

@@ -350,8 +350,8 @@ class LiquidNavigationTests(unittest.TestCase):
         self.nav._on_click(SimpleNamespace(x=(left + right) / 2))
         self.assertEqual(self.nav.selected_index, 1)
 
-    def test_navigation_palette_updates_glass_lens_and_focus_ring(self):
-        """Fails if navigation drops a liquid surface, lens, or focus role."""
+    def test_navigation_palette_updates_glass_and_lens(self):
+        """Fails if navigation drops either liquid surface color role."""
         palette = {
             "background": "#111827", "surface": "#1B2638",
             "surface_highlight": "#33445E", "border": "#45566F",
@@ -365,20 +365,37 @@ class LiquidNavigationTests(unittest.TestCase):
         self.assertEqual(self.nav.cget("background"), "#111827")
         self.assertEqual(self.nav.itemcget("glass", "fill"), "#1B2638")
         self.assertEqual(self.nav.itemcget("lens", "fill"), "#63E6FF")
-        self.assertEqual(self.nav.itemcget("focus-ring", "fill"), "#FFE08A")
         self.assertEqual(
             canvas_text_font_family(self.nav, "label"),
             "Segoe UI",
         )
 
-    def test_navigation_focus_ring_follows_rounded_control_shape(self):
+    def test_navigation_focus_does_not_draw_a_colored_marker(self):
+        """Fails if keyboard focus adds a stray colored dot to the menu."""
         self.nav._on_focus_in()
-        focus_items = self.nav.find_withtag("focus-ring")
-        self.assertTrue(focus_items)
-        self.assertEqual({self.nav.type(item) for item in focus_items}, {"rectangle"})
-        self.assertTrue(
-            all(not self.nav.itemcget(item, "outline") for item in focus_items)
-        )
+        self.assertFalse(self.nav.find_withtag("focus-ring"))
+
+    def test_navigation_lens_has_equal_padding_on_every_side(self):
+        """Fails if the selected fill sits closer to one menu edge than another."""
+        for nav in (self.nav, self.make_vertical_nav()):
+            nav.pack()
+            self.root.deiconify()
+            self.root.update()
+            glass = nav.coords(nav.find_withtag("glass")[0])
+            lens = nav.coords(nav.find_withtag("lens")[0])
+            glass_left, glass_top = min(glass[::2]), min(glass[1::2])
+            lens_left, lens_top = min(lens[::2]), min(lens[1::2])
+            self.assertEqual(lens_left - glass_left, 3.0)
+            self.assertEqual(lens_top - glass_top, 3.0)
+
+            if nav.orientation == "horizontal":
+                glass_bottom = max(glass[1::2])
+                lens_bottom = max(lens[1::2])
+                self.assertEqual(glass_bottom - lens_bottom, 3.0)
+            else:
+                glass_right = max(glass[::2])
+                lens_right = max(lens[::2])
+                self.assertEqual(glass_right - lens_right, 3.0)
 
     def test_new_selection_replaces_obsolete_animation(self):
         self.nav.select(2)
