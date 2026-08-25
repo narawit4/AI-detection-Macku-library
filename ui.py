@@ -11,6 +11,7 @@ import re
 import threading
 import time
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import ttk
 import tokenize
 from typing import Any, Callable, Mapping
@@ -75,7 +76,7 @@ _BACKGROUND_BANDS = {
     "light": ("#F8FBFD", "#F4F9FB", "#EFF6F9", "#EAF4F8", "#E5F1F6"),
 }
 
-FONT_FAMILY = "Segoe UI"
+FONT_FAMILY = "Consolas"
 BODY_FONT = (FONT_FAMILY, 10)
 SMALL_FONT = (FONT_FAMILY, 9)
 TITLE_FONT = (FONT_FAMILY, 18, "bold")
@@ -165,6 +166,15 @@ class JitterApp(tk.Tk):
         auto_start: bool = True,
     ) -> None:
         super().__init__()
+        for font_name in (
+            "TkDefaultFont", "TkTextFont", "TkFixedFont",
+            "TkMenuFont", "TkHeadingFont", "TkCaptionFont",
+            "TkSmallCaptionFont", "TkIconFont", "TkTooltipFont",
+        ):
+            tkfont.nametofont(font_name, root=self).configure(
+                family=FONT_FAMILY,
+            )
+        self.option_add("*Font", BODY_FONT)
         self.title("Jitter " + chr(0x2014) + " Makcu Control")
         self.geometry("840x620")
         self.resizable(False, False)

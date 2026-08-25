@@ -884,8 +884,20 @@ class JitterLayoutTests(unittest.TestCase):
             self.app.tk.splitlist(
                 style.lookup("Liquid.Title.TLabel", "font")
             ),
-            ("Segoe UI", "18", "bold"),
+            ("Consolas", "18", "bold"),
         )
+
+    def test_application_named_fonts_use_consolas(self):
+        """Fails if an unstyled Tk control falls back to another family."""
+        for name in (
+            "TkDefaultFont", "TkTextFont", "TkFixedFont",
+            "TkMenuFont", "TkHeadingFont", "TkCaptionFont",
+            "TkSmallCaptionFont", "TkIconFont", "TkTooltipFont",
+        ):
+            self.assertEqual(
+                self.app.tk.call("font", "actual", name, "-family"),
+                "Consolas",
+            )
 
     def test_advanced_scrollbar_uses_liquid_colors_in_both_themes(self):
         """Fails if Advanced scrolling falls back to the platform theme."""

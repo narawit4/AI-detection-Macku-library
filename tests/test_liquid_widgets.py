@@ -145,7 +145,7 @@ class LiquidSliderInteractionTests(_SliderTestCase):
         self.root.update()
         self.assertTrue(slider.find_withtag("halo"))
         self.assertTrue(slider.find_withtag("bubble"))
-        self.assertEqual(canvas_text_font_family(slider, "bubble"), "Segoe UI")
+        self.assertEqual(canvas_text_font_family(slider, "bubble"), "Consolas")
         slider.event_generate("<Button-1>", x=14, y=17)
         self.root.update()
         pressed_fill = slider.itemcget("thumb_body", "fill")
@@ -169,6 +169,15 @@ class LiquidSliderInteractionTests(_SliderTestCase):
             self.assertTrue(slider.itemcget(shapes[0], "outline"))
         self.assertTrue(slider.itemcget("thumb_body", "outline"))
         self.assertTrue(slider.itemcget("bubble", "outline"))
+
+    def test_slider_rounded_rail_has_symmetric_corner_control_points(self):
+        """Fails if a slider rail renders square on one side."""
+        slider = self.make_slider()
+        slider._redraw()
+        coords = slider.coords(slider.find_withtag("rail")[0])
+        points = list(zip(coords[::2], coords[1::2]))
+        for first, second in ((0, 1), (2, 3), (7, 8), (10, 11), (12, 13)):
+            self.assertEqual(points[first], points[second])
 
     def test_slider_palette_updates_rail_fill_thumb_and_disabled_colors(self):
         """Fails if the slider stops rendering liquid palette roles."""
@@ -384,7 +393,7 @@ class LiquidNavigationTests(unittest.TestCase):
         self.assertEqual(self.nav.itemcget("lens", "outline"), "#B8F6FF")
         self.assertEqual(
             canvas_text_font_family(self.nav, "label"),
-            "Segoe UI",
+            "Consolas",
         )
 
     def test_navigation_focus_does_not_draw_a_colored_marker(self):
@@ -550,6 +559,35 @@ class LiquidNavigationTests(unittest.TestCase):
             self.assertEqual(len(shapes), 1)
             self.assertTrue(nav.itemcget(shapes[0], "outline"))
 
+    def test_vertical_navigation_draws_one_rounded_surface_per_destination(self):
+        """Fails if unselected destinations fall back to square shared rows."""
+        nav = self.make_vertical_nav()
+        nav.pack()
+        self.root.deiconify()
+        self.root.update()
+
+        surfaces = nav.find_withtag("destination-surface")
+        self.assertEqual(len(surfaces), 3)
+        for index, surface in enumerate(surfaces):
+            self.assertEqual(nav.type(surface), "polygon")
+            self.assertIn(surface, nav.find_withtag(f"destination-{index}"))
+            self.assertTrue(nav.itemcget(surface, "outline"))
+
+    def test_vertical_navigation_glass_rounds_top_and_bottom_corners_equally(self):
+        """Fails if the outer menu renders square at the top and round below."""
+        nav = self.make_vertical_nav()
+        nav.pack()
+        self.root.deiconify()
+        self.root.update()
+
+        coords = nav.coords(nav.find_withtag("glass")[0])
+        points = list(zip(coords[::2], coords[1::2]))
+        self.assertEqual(points[0], points[1])
+        self.assertEqual(points[2], points[3])
+        self.assertEqual(points[7], points[8])
+        self.assertEqual(points[10], points[11])
+        self.assertEqual(points[12], points[13])
+
     def test_destroy_cancels_animation(self):
         self.nav.select(2)
         self.nav.destroy()
@@ -641,7 +679,7 @@ class LiquidIconButtonTests(unittest.TestCase):
         self.assertFalse(self.button.find_withtag("focus-ring"))
         self.assertEqual(
             canvas_text_font_family(self.button, "icon"),
-            "Segoe UI",
+            "Consolas",
         )
         self.assertEqual(self.button.accessible_name, "Reconnect Makcu")
 
@@ -654,6 +692,14 @@ class LiquidIconButtonTests(unittest.TestCase):
         self.assertEqual(len(surface), 1)
         self.assertEqual(self.button.type(surface[0]), "polygon")
         self.assertTrue(self.button.itemcget(surface[0], "outline"))
+
+    def test_icon_button_has_symmetric_corner_control_points(self):
+        """Fails if an icon button renders square on one side."""
+        self.button._redraw()
+        coords = self.button.coords(self.button.find_withtag("surface")[0])
+        points = list(zip(coords[::2], coords[1::2]))
+        for first, second in ((0, 1), (2, 3), (7, 8), (10, 11), (12, 13)):
+            self.assertEqual(points[first], points[second])
 
     def test_pointer_release_activates_and_clears_pressed_state(self):
         """Fails if a normal release leaves a button visibly pressed."""

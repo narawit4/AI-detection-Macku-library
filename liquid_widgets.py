@@ -32,6 +32,51 @@ DEFAULT_ICON_PALETTE = {
 }
 
 
+def _draw_rounded_box(
+    canvas: tk.Canvas,
+    left: float,
+    top: float,
+    right: float,
+    bottom: float,
+    *,
+    fill: str,
+    outline: str,
+    tags: str | tuple[str, ...],
+) -> None:
+    """Draw one symmetric rounded polygon on a Canvas."""
+    radius = max(
+        1.0,
+        min(14.0, (bottom - top) / 2.0, (right - left) / 2.0),
+    )
+    canvas.create_polygon(
+        left + radius, top,
+        left + radius, top,
+        right - radius, top,
+        right - radius, top,
+        right, top,
+        right, top + radius,
+        right, top + radius,
+        right, bottom - radius,
+        right, bottom - radius,
+        right, bottom,
+        right - radius, bottom,
+        right - radius, bottom,
+        left + radius, bottom,
+        left + radius, bottom,
+        left, bottom,
+        left, bottom - radius,
+        left, bottom - radius,
+        left, top + radius,
+        left, top + radius,
+        left, top,
+        fill=fill,
+        outline=outline,
+        smooth=True,
+        splinesteps=24,
+        tags=tags,
+    )
+
+
 class LiquidNavigation(tk.Canvas):
     """Keyboard-accessible animated navigation for the liquid dashboard."""
 
@@ -285,6 +330,27 @@ class LiquidNavigation(tk.Canvas):
             outline=self._palette["border"],
             tags="glass",
         )
+        for index in range(len(self.labels)):
+            item_left, item_top, item_right, item_bottom = self._item_bounds(index)
+            if self.orientation == "horizontal":
+                surface_left = item_left + 4.0
+                surface_right = item_right - 4.0
+                surface_top = glass_top + 3.0
+                surface_bottom = glass_bottom - 3.0
+            else:
+                surface_left = glass_left + 3.0
+                surface_right = glass_right - 3.0
+                surface_top = item_top + 4.0
+                surface_bottom = item_bottom - 4.0
+            self._rounded_box(
+                surface_left,
+                surface_top,
+                surface_right,
+                surface_bottom,
+                fill=self._palette["surface"],
+                outline=self._palette["border"],
+                tags=("destination-surface", f"destination-{index}"),
+            )
         if not self._pill_initialized:
             self._pill_x, self._pill_y = self._target_lens_position(
                 self.selected_index,
@@ -324,7 +390,7 @@ class LiquidNavigation(tk.Canvas):
                     if index == self.selected_index
                     else self._palette["text"]
                 ),
-                font=("Segoe UI", 9, "bold" if index == self.selected_index else "normal"),
+                font=("Consolas", 9, "bold" if index == self.selected_index else "normal"),
                 tags=("tab", f"tab-{index}", "label"),
             )
     def _rounded_box(
@@ -338,26 +404,9 @@ class LiquidNavigation(tk.Canvas):
         outline: str,
         tags: str | tuple[str, ...],
     ) -> None:
-        radius = max(1.0, min((bottom - top) / 2.0, (right - left) / 2.0))
-        self.create_polygon(
-            left + radius, top,
-            right - radius, top,
-            right, top,
-            right, top + radius,
-            right, bottom - radius,
-            right, bottom,
-            right - radius, bottom,
-            left + radius, bottom,
-            left, bottom,
-            left, bottom - radius,
-            left, top + radius,
-            left, top,
-            left + radius, top,
-            fill=fill,
-            outline=outline,
-            smooth=True,
-            splinesteps=24,
-            tags=tags,
+        _draw_rounded_box(
+            self, left, top, right, bottom,
+            fill=fill, outline=outline, tags=tags,
         )
 
     def _on_configure(self, _event=None) -> None:
@@ -513,26 +562,9 @@ class LiquidSlider(tk.Canvas):
         outline: str,
         tags: str | tuple[str, ...],
     ) -> None:
-        radius = max(1.0, min((bottom - top) / 2.0, (right - left) / 2.0))
-        self.create_polygon(
-            left + radius, top,
-            right - radius, top,
-            right, top,
-            right, top + radius,
-            right, bottom - radius,
-            right, bottom,
-            right - radius, bottom,
-            left + radius, bottom,
-            left, bottom,
-            left, bottom - radius,
-            left, top + radius,
-            left, top,
-            left + radius, top,
-            fill=fill,
-            outline=outline,
-            smooth=True,
-            splinesteps=24,
-            tags=tags,
+        _draw_rounded_box(
+            self, left, top, right, bottom,
+            fill=fill, outline=outline, tags=tags,
         )
 
     def _redraw(self) -> None:
@@ -620,7 +652,7 @@ class LiquidSlider(tk.Canvas):
                 bubble_y,
                 text=text,
                 fill=(self._palette["disabled_text"] if disabled else self._palette["bubble_text"]),
-                font=("Segoe UI", 8),
+                font=("Consolas", 8),
                 tags="bubble",
             )
 
@@ -791,26 +823,9 @@ class LiquidIconButton(tk.Canvas):
         outline: str,
         tags: str | tuple[str, ...],
     ) -> None:
-        radius = max(1.0, min((bottom - top) / 2.0, (right - left) / 2.0))
-        self.create_polygon(
-            left + radius, top,
-            right - radius, top,
-            right, top,
-            right, top + radius,
-            right, bottom - radius,
-            right, bottom,
-            right - radius, bottom,
-            left + radius, bottom,
-            left, bottom,
-            left, bottom - radius,
-            left, top + radius,
-            left, top,
-            left + radius, top,
-            fill=fill,
-            outline=outline,
-            smooth=True,
-            splinesteps=24,
-            tags=tags,
+        _draw_rounded_box(
+            self, left, top, right, bottom,
+            fill=fill, outline=outline, tags=tags,
         )
 
     def _redraw(self) -> None:
@@ -846,7 +861,7 @@ class LiquidIconButton(tk.Canvas):
             height / 2,
             text=self.icon,
             fill=icon_color,
-            font=("Segoe UI", max(10, round(self.size * 0.45)), "bold"),
+            font=("Consolas", max(10, round(self.size * 0.45)), "bold"),
             tags="icon",
         )
     def _activate(self) -> None:
