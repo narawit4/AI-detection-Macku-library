@@ -1,130 +1,84 @@
 import unittest
-import random
-from dataclasses import replace
 
 from motion import (
-    JITTER_WAVEFORMS,
-    MOTION_CURVES,
-    MOTION_DEFAULTS,
     MOTION_PRESETS,
     MotionSettings,
+    PairedPulseEngine,
     motion_settings_from_mapping,
     motion_settings_to_mapping,
-    SmoothMotionEngine,
     TriggerGate,
 )
 
 
 class MotionSettingsTests(unittest.TestCase):
-    def test_defaults_match_the_approved_strong_jitter_starting_point(self):
-        settings = motion_settings_from_mapping({})
-        self.assertEqual(settings.angle_deg, 90.0)
-        self.assertEqual(settings.strength_pps, 80.0)
-        self.assertEqual(settings.horizontal_jitter_pps, 55.0)
-        self.assertEqual(settings.vertical_jitter_pps, 40.0)
-        self.assertEqual(settings.update_rate_hz, 240.0)
-
-    def test_numeric_values_are_clamped_and_invalid_choices_use_defaults(self):
-        settings = motion_settings_from_mapping({
-            "motion_angle_deg": -10,
-            "motion_strength_pps": 900,
-            "jitter_rate_hz": "bad",
-            "jitter_waveform": "Saw",
-            "motion_curve": "Instant",
-        })
-        self.assertEqual(settings.angle_deg, 0.0)
-        self.assertEqual(settings.strength_pps, 500.0)
-        self.assertEqual(settings.jitter_rate_hz, float(MOTION_DEFAULTS["jitter_rate_hz"]))
-        self.assertIn(settings.jitter_waveform, JITTER_WAVEFORMS)
-        self.assertIn(settings.motion_curve, MOTION_CURVES)
-
-    def test_all_eight_approved_presets_round_trip(self):
+    def test_defaults_match_balanced_paired_pulse(self):
+        self.assertEqual(MotionSettings(), MotionSettings(2.0, 30.0, "Smooth"))
         self.assertEqual(
-            tuple(MOTION_PRESETS),
-            ("Ultra Stable", "Training Stable", "Soft", "Balanced", "Fast Response", "Strong Shake", "Extreme", "Maximum Shake"),
+            motion_settings_to_mapping(MotionSettings()),
+            {"pulse_size_px": "2", "pulse_rate_hz": "30", "ramp_mode": "Smooth"},
         )
-        for name, raw in MOTION_PRESETS.items():
-            settings = motion_settings_from_mapping(raw)
-            restored = motion_settings_from_mapping(motion_settings_to_mapping(settings))
-            self.assertEqual(restored, settings, name)
 
-    def test_maximum_shake_is_strong_and_balanced(self):
-        settings = motion_settings_from_mapping(MOTION_PRESETS["Maximum Shake"])
-        self.assertEqual(settings.strength_pps, 80.0)
-        self.assertEqual(settings.horizontal_jitter_pps, 300.0)
-        self.assertEqual(settings.vertical_jitter_pps, 260.0)
-        self.assertEqual(settings.jitter_rate_hz, 30.0)
-        self.assertEqual(settings.jitter_randomness, 5.0)
-        self.assertEqual(settings.jitter_axis_phase_deg, 90.0)
-        self.assertEqual(settings.jitter_waveform, "Sine")
-        self.assertEqual(settings.update_rate_hz, 500.0)
+    def test_values_are_clamped_and_invalid_ramp_uses_default(self):
+        settings = motion_settings_from_mapping({
+            "pulse_size_px": "99",
+            "pulse_rate_hz": "-4",
+            "ramp_mode": "Unknown",
+        })
+        self.assertEqual(settings, MotionSettings(8.0, 10.0, "Smooth"))
 
-    def test_training_stable_has_no_drift_or_large_steps(self):
-        settings = motion_settings_from_mapping(MOTION_PRESETS["Training Stable"])
-        self.assertEqual(settings.strength_pps, 0.0)
-        self.assertEqual(settings.horizontal_jitter_pps, 80.0)
-        self.assertEqual(settings.vertical_jitter_pps, 60.0)
-        self.assertEqual(settings.jitter_rate_hz, 20.0)
-        self.assertEqual(settings.jitter_randomness, 0.0)
-        self.assertEqual(settings.jitter_axis_phase_deg, 90.0)
-        self.assertEqual(settings.jitter_waveform, "Sine")
-        self.assertEqual(settings.max_step_px, 1)
-
-    def test_motion_settings_are_immutable(self):
-        settings = MotionSettings()
-        with self.assertRaises(AttributeError):
-            settings.strength_pps = 20
+    def test_presets_are_exact_and_round_trip(self):
+        self.assertEqual(tuple(MOTION_PRESETS), ("Soft", "Balanced", "Strong"))
+        expected = {
+            "Soft": MotionSettings(1.0, 20.0, "Smooth"),
+            "Balanced": MotionSettings(2.0, 30.0, "Smooth"),
+            "Strong": MotionSettings(4.0, 45.0, "Instant"),
+        }
+        for name, want in expected.items():
+            got = motion_settings_from_mapping(MOTION_PRESETS[name])
+            self.assertEqual(got, want)
+            self.assertEqual(
+                motion_settings_from_mapping(motion_settings_to_mapping(got)),
+                want,
+            )
 
 
-class SmoothMotionEngineTests(unittest.TestCase):
-    def test_angle_uses_screen_coordinates(self):
-        engine = SmoothMotionEngine()
-        settings = replace(MotionSettings(), angle_deg=90, strength_pps=100,
-                           jitter_enabled=False, smoothness=0, ramp_up_ms=0,
-                           acceleration_pps2=10000, max_step_px=50)
-        x, y = engine.step(settings, 0.1, 1.0, random.Random(1))
-        self.assertEqual(x, 0)
-        self.assertGreater(y, 0)
+class PairedPulseEngineTests(unittest.TestCase):
+    def test_complete_pairs_alternate_order_and_have_zero_net_motion(self):
+        engine = PairedPulseEngine()
+        settings = MotionSettings(2.0, 10.0, "Instant")
+        reports = [engine.step(settings, 0.05, elapsed) for elapsed in (0.0, 0.05, 0.10, 0.15)]
+        self.assertEqual(reports, [(0, -2), (0, 2), (0, 2), (0, -2)])
+        self.assertEqual(tuple(map(sum, zip(*reports))), (0, 0))
 
-    def test_fractional_motion_accumulates(self):
-        engine = SmoothMotionEngine()
-        settings = replace(MotionSettings(), angle_deg=0, strength_pps=3,
-                           jitter_enabled=False, smoothness=0, ramp_up_ms=0,
-                           acceleration_pps2=10000, max_step_px=50)
-        reports = [engine.step(settings, 0.1, 1.0, random.Random(1))[0] for _ in range(10)]
-        self.assertEqual(sum(reports), 3)
+    def test_many_complete_pairs_never_emit_horizontal_or_net_drift(self):
+        engine = PairedPulseEngine()
+        settings = MotionSettings(3.0, 20.0, "Instant")
+        reports = [engine.step(settings, 0.025, index * 0.025) for index in range(400)]
+        self.assertTrue(all(x == 0 for x, _y in reports))
+        self.assertEqual(sum(y for _x, y in reports), 0)
 
-    def test_balanced_jitter_has_near_zero_net_drift(self):
-        engine = SmoothMotionEngine()
-        settings = replace(MotionSettings(), strength_pps=0, jitter_enabled=True,
-                           horizontal_jitter_pps=20, vertical_jitter_pps=0,
-                           jitter_rate_hz=1, jitter_randomness=0, jitter_waveform="Sine",
-                           smoothness=0, ramp_up_ms=0, acceleration_pps2=10000,
-                           max_step_px=50)
-        reports = [engine.step(settings, 0.01, 1.0, random.Random(2))[0] for _ in range(100)]
-        self.assertLessEqual(abs(sum(reports)), 1)
+    def test_smooth_ramp_accumulates_fraction_without_directional_bias(self):
+        engine = PairedPulseEngine()
+        settings = MotionSettings(2.0, 30.0, "Smooth")
+        reports = [engine.step(settings, 1 / 60, index / 60) for index in range(20)]
+        self.assertTrue(all(x == 0 for x, _y in reports))
+        self.assertLessEqual(max(abs(y) for _x, y in reports), 2)
+        for pair_start in range(0, len(reports), 2):
+            self.assertEqual(sum(y for _x, y in reports[pair_start:pair_start + 2]), 0)
+        self.assertTrue(any(y for _x, y in reports))
 
-    def test_max_step_discards_excess_without_backlog(self):
-        engine = SmoothMotionEngine()
-        strong = replace(MotionSettings(), angle_deg=0, strength_pps=500,
-                         jitter_enabled=False, smoothness=0, ramp_up_ms=0,
-                         acceleration_pps2=10000, max_step_px=2)
-        stopped = replace(strong, strength_pps=0)
-        self.assertEqual(engine.step(strong, 0.1, 1.0, random.Random(3))[0], 2)
-        self.assertEqual(engine.step(stopped, 0.1, 1.0, random.Random(3))[0], 0)
+    def test_late_step_discards_missed_half_pulses(self):
+        engine = PairedPulseEngine()
+        settings = MotionSettings(2.0, 10.0, "Instant")
+        self.assertEqual(engine.step(settings, 0.05, 0.0), (0, -2))
+        self.assertEqual(engine.step(settings, 0.1, 1.0), (0, 2))
 
-    def test_random_blend_honors_configured_randomness(self):
-        base = replace(MotionSettings(), strength_pps=0, horizontal_jitter_pps=20,
-                       vertical_jitter_pps=0, jitter_rate_hz=3,
-                       jitter_waveform="Random blend", smoothness=0,
-                       ramp_up_ms=0, acceleration_pps2=10000, max_step_px=50)
-        coherent = replace(base, jitter_randomness=0)
-        random_only = replace(base, jitter_randomness=100)
-        first_engine = SmoothMotionEngine()
-        second_engine = SmoothMotionEngine()
-        first_engine.step(coherent, 0.01, 1.0, random.Random(9))
-        second_engine.step(random_only, 0.01, 1.0, random.Random(9))
-        self.assertNotEqual(first_engine.filtered_x, second_engine.filtered_x)
+    def test_reset_starts_a_fresh_up_down_pair(self):
+        engine = PairedPulseEngine()
+        settings = MotionSettings(2.0, 30.0, "Instant")
+        engine.step(settings, 1 / 60, 0.0)
+        engine.reset()
+        self.assertEqual(engine.step(settings, 1 / 60, 0.0), (0, -2))
 
 
 class TriggerGateTests(unittest.TestCase):

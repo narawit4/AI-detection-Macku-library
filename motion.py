@@ -1,99 +1,35 @@
-"""Motion settings domain model and serialization helpers."""
+"""Paired-pulse motion settings and pure motion engine."""
 
 from dataclasses import dataclass
 import math
-import random
 from typing import Any, Mapping
 
 
 MOTION_DEFAULTS = {
-    "motion_angle_deg": "90",
-    "motion_strength_pps": "80",
-    "jitter_enabled": True,
-    "horizontal_jitter_pps": "55",
-    "vertical_jitter_pps": "40",
-    "smoothness_percent": "25",
-    "update_rate_hz": "240",
-    "ramp_up_ms": "80",
-    "jitter_rate_hz": "14",
-    "jitter_randomness_percent": "25",
-    "jitter_axis_phase_deg": "90",
-    "jitter_waveform": "Random blend",
-    "max_step_px": "8",
-    "acceleration_pps2": "2500",
-    "deceleration_pps2": "3500",
-    "motion_curve": "S-curve",
+    "pulse_size_px": "2",
+    "pulse_rate_hz": "30",
+    "ramp_mode": "Smooth",
 }
-
 MOTION_LIMITS = {
-    "motion_angle_deg": (0.0, 360.0),
-    "motion_strength_pps": (0.0, 500.0),
-    "horizontal_jitter_pps": (0.0, 500.0),
-    "vertical_jitter_pps": (0.0, 500.0),
-    "smoothness_percent": (1.0, 100.0),
-    "update_rate_hz": (20.0, 500.0),
-    "ramp_up_ms": (0.0, 2000.0),
-    "jitter_rate_hz": (0.1, 60.0),
-    "jitter_randomness_percent": (0.0, 100.0),
-    "jitter_axis_phase_deg": (0.0, 360.0),
-    "max_step_px": (1.0, 50.0),
-    "acceleration_pps2": (1.0, 10000.0),
-    "deceleration_pps2": (1.0, 10000.0),
+    "pulse_size_px": (1.0, 8.0),
+    "pulse_rate_hz": (10.0, 60.0),
 }
-
-MOTION_CURVES = ("Linear", "Ease-in", "S-curve")
-JITTER_WAVEFORMS = ("Sine", "Triangle", "Square", "Random blend")
-
+RAMP_MODES = ("Instant", "Smooth")
 MOTION_PRESETS = {
-    "Ultra Stable": {"motion_strength_pps": "15", "horizontal_jitter_pps": "0", "vertical_jitter_pps": "0", "smoothness_percent": "95", "ramp_up_ms": "400", "max_step_px": "1", "acceleration_pps2": "60", "deceleration_pps2": "160", "motion_curve": "S-curve", "jitter_enabled": False},
-    "Training Stable": {"motion_strength_pps": "0", "horizontal_jitter_pps": "80", "vertical_jitter_pps": "60", "smoothness_percent": "10", "update_rate_hz": "500", "ramp_up_ms": "20", "jitter_rate_hz": "20", "jitter_randomness_percent": "0", "jitter_axis_phase_deg": "90", "jitter_waveform": "Sine", "max_step_px": "1", "acceleration_pps2": "6000", "deceleration_pps2": "6000", "motion_curve": "Linear", "jitter_enabled": True},
-    "Soft": {"motion_strength_pps": "25", "horizontal_jitter_pps": "1", "vertical_jitter_pps": "0", "smoothness_percent": "90", "ramp_up_ms": "300", "max_step_px": "1", "acceleration_pps2": "80", "deceleration_pps2": "180", "motion_curve": "S-curve", "jitter_enabled": True},
-    "Balanced": {"motion_strength_pps": "40", "horizontal_jitter_pps": "2", "vertical_jitter_pps": "0", "smoothness_percent": "80", "ramp_up_ms": "250", "max_step_px": "2", "acceleration_pps2": "120", "deceleration_pps2": "240", "motion_curve": "S-curve", "jitter_enabled": True},
-    "Fast Response": {"motion_strength_pps": "60", "horizontal_jitter_pps": "2", "vertical_jitter_pps": "1", "smoothness_percent": "55", "ramp_up_ms": "100", "max_step_px": "2", "acceleration_pps2": "260", "deceleration_pps2": "400", "motion_curve": "Ease-in", "jitter_enabled": True},
-    "Strong Shake": {"motion_strength_pps": "80", "horizontal_jitter_pps": "90", "vertical_jitter_pps": "70", "smoothness_percent": "18", "update_rate_hz": "240", "ramp_up_ms": "40", "jitter_rate_hz": "16", "jitter_randomness_percent": "20", "jitter_axis_phase_deg": "90", "jitter_waveform": "Random blend", "max_step_px": "10", "acceleration_pps2": "4000", "deceleration_pps2": "5000", "motion_curve": "Linear", "jitter_enabled": True},
-    "Extreme": {"motion_strength_pps": "120", "horizontal_jitter_pps": "180", "vertical_jitter_pps": "150", "smoothness_percent": "5", "update_rate_hz": "360", "ramp_up_ms": "0", "jitter_rate_hz": "24", "jitter_randomness_percent": "40", "jitter_axis_phase_deg": "135", "jitter_waveform": "Square", "max_step_px": "18", "acceleration_pps2": "8000", "deceleration_pps2": "9000", "motion_curve": "Linear", "jitter_enabled": True},
-    "Maximum Shake": {"motion_strength_pps": "80", "horizontal_jitter_pps": "300", "vertical_jitter_pps": "260", "smoothness_percent": "3", "update_rate_hz": "500", "ramp_up_ms": "0", "jitter_rate_hz": "30", "jitter_randomness_percent": "5", "jitter_axis_phase_deg": "90", "jitter_waveform": "Sine", "max_step_px": "25", "acceleration_pps2": "10000", "deceleration_pps2": "10000", "motion_curve": "Linear", "jitter_enabled": True},
+    "Soft": {"pulse_size_px": "1", "pulse_rate_hz": "20", "ramp_mode": "Smooth"},
+    "Balanced": {"pulse_size_px": "2", "pulse_rate_hz": "30", "ramp_mode": "Smooth"},
+    "Strong": {"pulse_size_px": "4", "pulse_rate_hz": "45", "ramp_mode": "Instant"},
 }
 
 
 @dataclass(frozen=True)
 class MotionSettings:
-    angle_deg: float = 90.0
-    strength_pps: float = 80.0
-    jitter_enabled: bool = True
-    horizontal_jitter_pps: float = 55.0
-    vertical_jitter_pps: float = 40.0
-    smoothness: float = 25.0
-    update_rate_hz: float = 240.0
-    ramp_up_ms: float = 80.0
-    jitter_rate_hz: float = 14.0
-    jitter_randomness: float = 25.0
-    jitter_axis_phase_deg: float = 90.0
-    jitter_waveform: str = "Random blend"
-    max_step_px: int = 8
-    acceleration_pps2: float = 2500.0
-    deceleration_pps2: float = 3500.0
-    motion_curve: str = "S-curve"
+    pulse_size_px: float = 2.0
+    pulse_rate_hz: float = 30.0
+    ramp_mode: str = "Smooth"
 
 
-_FIELD_KEYS = (
-    ("angle_deg", "motion_angle_deg"),
-    ("strength_pps", "motion_strength_pps"),
-    ("horizontal_jitter_pps", "horizontal_jitter_pps"),
-    ("vertical_jitter_pps", "vertical_jitter_pps"),
-    ("smoothness", "smoothness_percent"),
-    ("update_rate_hz", "update_rate_hz"),
-    ("ramp_up_ms", "ramp_up_ms"),
-    ("jitter_rate_hz", "jitter_rate_hz"),
-    ("jitter_randomness", "jitter_randomness_percent"),
-    ("jitter_axis_phase_deg", "jitter_axis_phase_deg"),
-    ("max_step_px", "max_step_px"),
-    ("acceleration_pps2", "acceleration_pps2"),
-    ("deceleration_pps2", "deceleration_pps2"),
-)
-
-
-def _number(raw: Any, default: Any, key: str) -> float:
+def _number(raw: Any, default: str, key: str) -> float:
     try:
         value = float(raw)
         if not math.isfinite(value):
@@ -104,142 +40,67 @@ def _number(raw: Any, default: Any, key: str) -> float:
     return max(low, min(high, value))
 
 
-def _bool(raw: Any, default: bool) -> bool:
-    if isinstance(raw, bool):
-        return raw
-    if isinstance(raw, str):
-        lowered = raw.strip().lower()
-        if lowered in {"true", "1", "yes", "on"}:
-            return True
-        if lowered in {"false", "0", "no", "off"}:
-            return False
-    return default
-
-
 def motion_settings_from_mapping(raw: Mapping[str, Any] | None) -> MotionSettings:
     values = dict(MOTION_DEFAULTS)
     if raw:
         values.update(raw)
-    converted = {}
-    for field, key in _FIELD_KEYS:
-        value = _number(values.get(key), MOTION_DEFAULTS[key], key)
-        converted[field] = int(value) if key == "max_step_px" else value
-    converted["jitter_enabled"] = _bool(values.get("jitter_enabled"), bool(MOTION_DEFAULTS["jitter_enabled"]))
-    waveform = values.get("jitter_waveform")
-    converted["jitter_waveform"] = waveform if waveform in JITTER_WAVEFORMS else MOTION_DEFAULTS["jitter_waveform"]
-    curve = values.get("motion_curve")
-    converted["motion_curve"] = curve if curve in MOTION_CURVES else MOTION_DEFAULTS["motion_curve"]
-    return MotionSettings(**converted)
+    ramp_mode = values.get("ramp_mode")
+    if ramp_mode not in RAMP_MODES:
+        ramp_mode = MOTION_DEFAULTS["ramp_mode"]
+    return MotionSettings(
+        pulse_size_px=_number(
+            values.get("pulse_size_px"), MOTION_DEFAULTS["pulse_size_px"], "pulse_size_px"
+        ),
+        pulse_rate_hz=_number(
+            values.get("pulse_rate_hz"), MOTION_DEFAULTS["pulse_rate_hz"], "pulse_rate_hz"
+        ),
+        ramp_mode=ramp_mode,
+    )
 
 
-def _compact(value: float | int) -> str:
-    number = float(value)
-    return str(int(number)) if number.is_integer() else str(number)
+def _compact(value: float) -> str:
+    return str(int(value)) if value.is_integer() else str(value)
 
 
-def motion_settings_to_mapping(settings: MotionSettings) -> dict[str, Any]:
-    result = {key: _compact(getattr(settings, field)) for field, key in _FIELD_KEYS}
-    result["jitter_enabled"] = settings.jitter_enabled
-    result["jitter_waveform"] = settings.jitter_waveform
-    result["motion_curve"] = settings.motion_curve
-    return result
+def motion_settings_to_mapping(settings: MotionSettings) -> dict[str, str]:
+    return {
+        "pulse_size_px": _compact(settings.pulse_size_px),
+        "pulse_rate_hz": _compact(settings.pulse_rate_hz),
+        "ramp_mode": settings.ramp_mode,
+    }
 
 
 @dataclass
-class SmoothMotionEngine:
-    """Deterministic, stateful smooth motion generator."""
+class PairedPulseEngine:
+    half_pulse_index: int = 0
+    magnitude_residual: float = 0.0
+    current_pair_size: int = 0
+    next_due_elapsed: float = 0.0
 
-    velocity_x: float = 0.0
-    velocity_y: float = 0.0
-    residual_x: float = 0.0
-    residual_y: float = 0.0
-    filtered_x: float = 0.0
-    filtered_y: float = 0.0
-    jitter_phase: float = 0.0
+    def reset(self) -> None:
+        self.half_pulse_index = 0
+        self.magnitude_residual = 0.0
+        self.current_pair_size = 0
+        self.next_due_elapsed = 0.0
 
-    @staticmethod
-    def _wave(phase: float, waveform: str, randomness: float,
-              rng: random.Random) -> float:
-        cycle = (phase / math.tau) % 1.0
-        sine = math.sin(phase)
-        if waveform == "Triangle":
-            wave = 1.0 - 4.0 * abs(round(cycle - 0.25) - (cycle - 0.25))
-        elif waveform == "Square":
-            wave = 1.0 if sine >= 0.0 else -1.0
-        else:
-            wave = sine
-        noise = rng.uniform(-1.0, 1.0)
-        return wave * (1.0 - randomness) + noise * randomness
-
-    @staticmethod
-    def _ramp(progress: float, curve: str) -> float:
-        progress = max(0.0, min(1.0, progress))
-        if curve == "Ease-in":
-            return progress * progress
-        if curve == "S-curve":
-            return progress * progress * (3.0 - 2.0 * progress)
-        return progress
-
-    def step(self, settings: MotionSettings, dt: float, elapsed: float,
-             rng: random.Random = random) -> tuple[int, int]:
-        dt = max(0.0, min(float(dt), 0.1))
-        self.jitter_phase = (self.jitter_phase + math.tau * settings.jitter_rate_hz * dt) % math.tau
-        jitter_x = jitter_y = 0.0
-        if settings.jitter_enabled:
-            randomness = max(0.0, min(100.0, settings.jitter_randomness)) / 100.0
-            phase = self.jitter_phase
-            axis_phase = math.radians(settings.jitter_axis_phase_deg)
-            wave_x = self._wave(phase, settings.jitter_waveform, randomness, rng)
-            wave_y = self._wave(phase + axis_phase, settings.jitter_waveform, randomness, rng)
-            jitter_x = wave_x * settings.horizontal_jitter_pps
-            jitter_y = wave_y * settings.vertical_jitter_pps
-
-        angle = math.radians(settings.angle_deg)
-        target_x = math.cos(angle) * settings.strength_pps + jitter_x
-        target_y = math.sin(angle) * settings.strength_pps + jitter_y
-        progress = 1.0 if settings.ramp_up_ms <= 0 else min(1.0, elapsed / (settings.ramp_up_ms / 1000.0))
-        ramp = self._ramp(progress, settings.motion_curve)
-        target_x *= ramp
-        target_y *= ramp
-
-        tau = (max(0.0, min(settings.smoothness, 100.0)) / 100.0) ** 2 * 0.250
-        alpha = 1.0 if tau <= 0 else 1.0 - math.exp(-dt / tau)
-        self.filtered_x += (target_x - self.filtered_x) * alpha
-        self.filtered_y += (target_y - self.filtered_y) * alpha
-
-        target_speed = math.hypot(self.filtered_x, self.filtered_y)
-        current_speed = math.hypot(self.velocity_x, self.velocity_y)
-        limit = settings.acceleration_pps2 if target_speed >= current_speed else settings.deceleration_pps2
-        max_delta = max(0.0, limit) * dt
-        delta_x = self.filtered_x - self.velocity_x
-        delta_y = self.filtered_y - self.velocity_y
-        delta_len = math.hypot(delta_x, delta_y)
-        if delta_len > max_delta > 0:
-            scale = max_delta / delta_len
-            delta_x *= scale
-            delta_y *= scale
-        elif max_delta <= 0:
-            delta_x = delta_y = 0.0
-        self.velocity_x += delta_x
-        self.velocity_y += delta_y
-
-        total_x = self.velocity_x * dt + self.residual_x
-        total_y = self.velocity_y * dt + self.residual_y
-        raw_x = int(total_x)
-        raw_y = int(total_y)
-        self.residual_x = total_x - raw_x
-        self.residual_y = total_y - raw_y
-        cap = max(1, int(settings.max_step_px))
-        report_x = max(-cap, min(cap, raw_x))
-        report_y = max(-cap, min(cap, raw_y))
-        # A capped report must not leave hidden velocity that becomes a
-        # multi-frame backlog when the target changes or stops.
-        if dt > 0.0:
-            if report_x != raw_x:
-                self.velocity_x = report_x / dt
-            if report_y != raw_y:
-                self.velocity_y = report_y / dt
-        return report_x, report_y
+    def step(self, settings: MotionSettings, dt: float, elapsed: float) -> tuple[int, int]:
+        elapsed = max(0.0, float(elapsed))
+        interval = 1.0 / (settings.pulse_rate_hz * 2.0)
+        if elapsed + 1e-12 < self.next_due_elapsed:
+            return 0, 0
+        directions = (-1.0, 1.0, 1.0, -1.0)
+        direction = directions[self.half_pulse_index % 4]
+        if self.half_pulse_index % 2 == 0:
+            ramp = 1.0
+            if settings.ramp_mode == "Smooth":
+                ramp = min(1.0, elapsed / 0.150)
+            magnitude = settings.pulse_size_px * ramp + self.magnitude_residual
+            self.current_pair_size = math.trunc(magnitude)
+            self.magnitude_residual = magnitude - self.current_pair_size
+        report_y = max(-8, min(8, int(direction * self.current_pair_size)))
+        self.half_pulse_index += 1
+        self.next_due_elapsed = elapsed + interval
+        return 0, report_y
 
 
 @dataclass
