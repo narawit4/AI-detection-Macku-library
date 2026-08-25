@@ -31,9 +31,12 @@ obsolete half-pulses are discarded instead of replayed, so movement never
 builds a backlog.
 
 `Smooth` ramping scales pulse magnitude from zero to the requested size during
-the first 150 ms. A fractional accumulator preserves sub-pixel ramp output
-without bias. `Instant` uses the requested pulse size immediately. Every emitted
-axis is clamped to the configured pulse size and to the Makcu-safe integer range.
+the first 150 ms. The magnitude is sampled once at the start of each pair and
+reused for its opposite half, so ramp growth cannot create pair drift. An
+unsigned fractional magnitude accumulator chooses the integer size for a whole
+pair and preserves sub-pixel ramp output without directional bias. `Instant`
+uses the requested pulse size immediately. Every emitted axis is clamped to the
+configured pulse size and to the Makcu-safe integer range.
 No separate acceleration, waveform, randomization, angle, or horizontal-motion
 system remains.
 
