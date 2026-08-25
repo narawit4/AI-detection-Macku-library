@@ -307,7 +307,6 @@ class JitterLayoutTests(unittest.TestCase):
             "workspace-band",
             "rounded-surface",
             "floating-panel",
-            "panel-highlight",
             "floating-panel-rail",
             "floating-panel-page",
             "floating-panel-runtime",
@@ -318,6 +317,9 @@ class JitterLayoutTests(unittest.TestCase):
                 self.assertEqual(self.app.theme_var.get(), theme)
                 for tag in required_tags:
                     self.assertTrue(shell.find_withtag(tag), tag)
+                self.assertFalse(shell.find_withtag("panel-highlight"))
+                for item in shell.find_withtag("floating-panel"):
+                    self.assertFalse(shell.itemcget(item, "outline"))
                 rail_fill = shell.itemcget(
                     shell.find_withtag("rail-surface")[0], "fill"
                 )
@@ -1055,7 +1057,7 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertEqual(self.app.stop_button.cget("style"),
                          "Liquid.Danger.TButton")
 
-    def test_liquid_buttons_show_hover_press_and_focus_states(self):
+    def test_liquid_buttons_show_hover_and_press_states_without_borders(self):
         style = ttk.Style(self.app)
         self.assertEqual(style.lookup("Liquid.Primary.TButton", "background",
                                       ("active",)), "#79E8FA")
@@ -1067,16 +1069,29 @@ class JitterLayoutTests(unittest.TestCase):
                                       ("pressed", "active")), "#9F3140")
         self.assertEqual(style.lookup("Liquid.Secondary.TButton", "background",
                                       ("active",)), "#D6F5FA")
-        self.assertEqual(style.lookup("Liquid.Secondary.TButton", "relief",
-                                      ("pressed",)), "sunken")
-        self.assertEqual(style.lookup("Liquid.Primary.TButton", "bordercolor",
-                                      ("focus",)), "#8B5CF6")
+        for name in ("Primary", "Secondary", "Danger"):
+            widget_style = f"Liquid.{name}.TButton"
+            self.assertEqual(str(style.lookup(widget_style, "borderwidth")), "0")
+            self.assertEqual(style.lookup(widget_style, "relief", ("pressed",)), "flat")
+            self.assertEqual(str(style.lookup(widget_style, "focusthickness")), "0")
 
         self.app.toggle_theme()
         self.assertEqual(style.lookup("Liquid.Secondary.TButton", "background",
                                       ("disabled",)), "#34465C")
         self.assertEqual(style.lookup("Liquid.Secondary.TButton", "foreground",
                                       ("disabled",)), "#91A5B8")
+
+    def test_form_controls_and_cards_are_borderless(self):
+        """Fails if a standard control reintroduces a visible frame."""
+        style = ttk.Style(self.app)
+        for widget_style in (
+            "Liquid.Card.TLabelframe",
+            "Liquid.Entry.TEntry",
+            "Liquid.Invalid.TEntry",
+            "Liquid.Readonly.TCombobox",
+            "Liquid.Vertical.TScrollbar",
+        ):
+            self.assertEqual(str(style.lookup(widget_style, "borderwidth")), "0")
 
     def test_required_actions_are_present_and_stop_is_outside_advanced(self):
         texts = widget_texts(self.app)

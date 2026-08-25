@@ -556,15 +556,13 @@ class LiquidSlider(tk.Canvas):
         thumb_color = self._palette["disabled"] if disabled else (
             self._palette["fill"] if self._pressed else self._palette["thumb"]
         )
-        thumb_border = self._palette["disabled"] if disabled else self._palette["thumb_border"]
-
         self._rounded_box(
             left,
             center_y - 4,
             right,
             center_y + 4,
             fill=rail_color,
-            outline=rail_color,
+            outline="",
             tags="rail",
         )
         fill_right = max(left, thumb_x)
@@ -575,7 +573,7 @@ class LiquidSlider(tk.Canvas):
                 fill_right,
                 center_y + 3,
                 fill=fill_color,
-                outline=fill_color,
+                outline="",
                 tags="fill",
             )
         else:
@@ -585,20 +583,10 @@ class LiquidSlider(tk.Canvas):
                 fill_right,
                 center_y + 3,
                 fill=fill_color,
-                outline=fill_color,
+                outline="",
                 tags="fill",
             )
 
-        if self._focused and not disabled:
-            self.create_oval(
-                thumb_x - 11,
-                center_y - 11,
-                thumb_x + 11,
-                center_y + 11,
-                outline=self._palette["focus"],
-                width=2,
-                tags="focus-ring",
-            )
         if self._hovered and not self._pressed and not disabled:
             self.create_oval(
                 thumb_x - 10,
@@ -616,23 +604,9 @@ class LiquidSlider(tk.Canvas):
             thumb_x + 8,
             center_y + 8,
             fill=thumb_color,
-            outline=thumb_border,
-            width=1,
+            outline="",
             tags=("thumb", "thumb_body"),
         )
-        if not self._pressed and not disabled:
-            self.create_arc(
-                thumb_x - 6,
-                center_y - 6,
-                thumb_x + 6,
-                center_y + 5,
-                start=20,
-                extent=140,
-                style="arc",
-                outline=self._palette["halo"],
-                width=2,
-                tags=("thumb", "thumb_highlight"),
-            )
 
         if self._bubble_visible or self._hovered or self._pressed:
             text = self._format_value(self._value)
@@ -644,7 +618,7 @@ class LiquidSlider(tk.Canvas):
                 thumb_x + half_width,
                 bubble_y + 7,
                 fill=self._palette["bubble"],
-                outline=fill_color,
+                outline="",
                 tags="bubble",
             )
             self.create_text(
@@ -877,20 +851,8 @@ class LiquidIconButton(tk.Canvas):
             width - inset,
             height - inset,
             fill=surface,
-            outline=self._palette["border"],
+            outline="",
             tags="surface",
-        )
-        self.create_arc(
-            inset + 3,
-            inset + 3,
-            width - inset - 3,
-            height - inset - 5,
-            start=20,
-            extent=140,
-            style="arc",
-            outline=self._palette["highlight"],
-            width=1,
-            tags="surface-highlight",
         )
         self.create_text(
             width / 2,
@@ -900,17 +862,6 @@ class LiquidIconButton(tk.Canvas):
             font=("Segoe UI", max(10, round(self.size * 0.45)), "bold"),
             tags="icon",
         )
-        if self._focused and self._enabled:
-            self._rounded_box(
-                2,
-                2,
-                width - 2,
-                height - 2,
-                fill="",
-                outline=self._palette["focus"],
-                tags="focus-ring",
-            )
-
     def _activate(self) -> None:
         if self._enabled and not self._destroyed:
             self.command()

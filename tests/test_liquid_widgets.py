@@ -153,7 +153,18 @@ class LiquidSliderInteractionTests(_SliderTestCase):
         slider.focus_set()
         slider.event_generate("<FocusIn>")
         self.root.update()
-        self.assertTrue(slider.find_withtag("focus-ring"))
+        self.assertFalse(slider.find_withtag("focus-ring"))
+
+    def test_slider_uses_filled_shapes_without_visible_strokes(self):
+        """Fails if any slider state brings back a line or shape outline."""
+        slider = self.make_slider()
+        slider._on_enter()
+        slider._on_focus_in()
+        slider._redraw()
+        self.assertNotIn("arc", {slider.type(item) for item in slider.find_all()})
+        for item in slider.find_all():
+            if slider.type(item) in {"oval", "rectangle", "polygon"}:
+                self.assertFalse(slider.itemcget(item, "outline"))
 
     def test_slider_palette_updates_rail_fill_thumb_and_disabled_colors(self):
         """Fails if the slider stops rendering liquid palette roles."""
@@ -583,13 +594,13 @@ class LiquidIconButtonTests(unittest.TestCase):
         self.assertEqual(self.calls, [])
 
     def test_disable_and_reenable_preserves_actual_keyboard_focus(self):
-        """Fails if a temporary disabled state loses the retained focus ring."""
+        """Fails if a temporary disabled state loses keyboard focus."""
         self.root.deiconify()
         self.root.update()
         self.button.focus_force()
         self.root.update()
         self.assertIs(self.root.focus_get(), self.button)
-        self.assertTrue(self.button.find_withtag("focus-ring"))
+        self.assertFalse(self.button.find_withtag("focus-ring"))
 
         self.button.set_enabled(False)
         self.root.update()
@@ -599,7 +610,7 @@ class LiquidIconButtonTests(unittest.TestCase):
         self.button.set_enabled(True)
         self.root.update()
         self.assertIs(self.root.focus_get(), self.button)
-        self.assertTrue(self.button.find_withtag("focus-ring"))
+        self.assertFalse(self.button.find_withtag("focus-ring"))
 
         other = tk.Entry(self.root)
         other.pack()
@@ -616,21 +627,26 @@ class LiquidIconButtonTests(unittest.TestCase):
         self.button._on_press(SimpleNamespace(x=17, y=17))
         self.assertFalse(self.button._pressed)
 
-    def test_palette_redraws_surface_icon_and_focus(self):
+    def test_palette_redraws_surface_and_icon_without_focus_stroke(self):
         """Fails if a palette update does not redraw visible icon controls."""
         self.button.set_palette(DARK_ICON_PALETTE)
         self.button._on_focus_in()
         self.assertEqual(self.button.itemcget("surface", "fill"), "#243247")
         self.assertEqual(self.button.itemcget("icon", "fill"), "#EAF7FF")
-        self.assertEqual(
-            self.button.itemcget("focus-ring", "outline"),
-            "#FFE08A",
-        )
+        self.assertFalse(self.button.find_withtag("focus-ring"))
         self.assertEqual(
             canvas_text_font_family(self.button, "icon"),
             "Segoe UI",
         )
         self.assertEqual(self.button.accessible_name, "Reconnect Makcu")
+
+    def test_icon_button_uses_filled_surface_without_visible_strokes(self):
+        """Fails if an icon action brings back a border or highlight line."""
+        self.button._on_enter()
+        self.button._on_focus_in()
+        self.assertNotIn("arc", {self.button.type(item) for item in self.button.find_all()})
+        for item in self.button.find_withtag("surface"):
+            self.assertFalse(self.button.itemcget(item, "outline"))
 
     def test_pointer_release_activates_and_clears_pressed_state(self):
         """Fails if a normal release leaves a button visibly pressed."""
