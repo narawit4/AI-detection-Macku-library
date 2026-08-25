@@ -38,9 +38,13 @@ class FakeController:
         self.disconnected = True
 
 
-class ConstantEngine:
+class RecordingEngine:
+    def __init__(self):
+        self.calls = []
+
     def step(self, _settings, _dt, _elapsed):
-        return 2, -1
+        self.calls.append((_settings, _dt, _elapsed))
+        return 0, -1
 
 
 def wait_until(predicate, timeout=1.0):
@@ -139,38 +143,39 @@ class MakcuConnectionTests(unittest.TestCase):
 
 
 class MakcuMovementTests(unittest.TestCase):
-    def connected_service(self):
+    def connected_service(self, *, use_default_engine=False):
         controller = FakeController()
         events = []
+        kwargs = {}
+        if not use_default_engine:
+            kwargs["engine_factory"] = RecordingEngine
         service = MakcuService(
-            events.append,
-            controller_factory=lambda **_kwargs: controller,
-            engine_factory=ConstantEngine,
+            events.append, controller_factory=lambda **_kwargs: controller, **kwargs
         )
         generation = service._begin_connection()
         service._connect_worker(generation)
         return service, controller, events
 
-    def test_start_motion_sends_reports_and_stop_is_interruptible(self):
-        service, controller, _events = self.connected_service()
-        self.assertTrue(service.start_motion(lambda: MotionSettings()))
-        deadline = threading.Event()
-        for _index in range(100):
-            if controller.moves:
-                break
-            deadline.wait(0.005)
-        service.stop_motion()
-        service.join_motion(1.0)
-        count_after_stop = len(controller.moves)
-        deadline.wait(0.03)
-        self.assertGreater(count_after_stop, 0)
-        self.assertEqual(len(controller.moves), count_after_stop)
+    def test_paired_pulse_worker_sends_vertical_reports_and_stop_prevents_next_half(self):
+        service, controller, _events = self.connected_service(use_default_engine=True)
+        self.assertTrue(
+            service.start_motion(lambda: MotionSettings(2, 20, "Instant"))
+        )
+        self.assertTrue(wait_until(lambda: len(controller.moves) >= 1))
+        service.stop_motion("manual")
+        moves_after_stop = list(controller.moves)
+        time.sleep(0.06)
+        self.assertEqual(controller.moves, moves_after_stop)
+        self.assertTrue(
+            all(x == 0 and abs(y) <= 2 for x, y in moves_after_stop)
+        )
 
     def test_timed_motion_finishes_and_emits_test_complete(self):
         service, controller, events = self.connected_service()
         self.assertTrue(
             service.start_motion(
-                lambda: MotionSettings(update_rate_hz=500), duration_s=0.02
+                lambda: MotionSettings(2, pulse_rate_hz=20, ramp_mode="Instant"),
+                duration_s=0.02,
             )
         )
         service.join_motion(1.0)
@@ -196,7 +201,7 @@ class MakcuMovementTests(unittest.TestCase):
         service = MakcuService(
             events.append,
             controller_factory=lambda **_kwargs: controller,
-            engine_factory=ConstantEngine,
+            engine_factory=RecordingEngine,
         )
         generation = service._begin_connection()
         service._connect_worker(generation)

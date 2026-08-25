@@ -12,7 +12,7 @@ import time
 from typing import Any, Callable
 
 from makcu import MouseButton, create_controller
-from motion import SmoothMotionEngine
+from motion import PairedPulseEngine
 
 
 _MISSING = object()
@@ -45,7 +45,7 @@ class MakcuService:
         self,
         event_sink: Callable[[ServiceEvent], None],
         controller_factory: Callable[..., Any] = create_controller,
-        engine_factory: Callable[[], Any] = SmoothMotionEngine,
+        engine_factory: Callable[[], Any] = PairedPulseEngine,
     ) -> None:
         self._event_sink = event_sink
         self._controller_factory = controller_factory
@@ -272,8 +272,10 @@ class MakcuService:
                             error_payload = f"{type(exc).__name__}: {exc}"
                             break
                 try:
-                    settings_rate = getattr(settings, "update_rate_hz", 20.0)
-                    interval = 1.0 / max(float(settings_rate), 20.0)
+                    settings_rate = float(settings.pulse_rate_hz)
+                    interval = 1.0 / (
+                        max(10.0, min(60.0, settings_rate)) * 2.0
+                    )
                 except Exception as exc:
                     error_payload = f"{type(exc).__name__}: {exc}"
                     break
