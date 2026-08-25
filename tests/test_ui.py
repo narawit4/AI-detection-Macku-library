@@ -7,6 +7,7 @@ import unittest
 from ui import JitterApp
 from makcu_service import ServiceEvent
 from liquid_widgets import LiquidIconButton, LiquidSlider
+from motion import MotionSettings
 
 
 class StubStore:
@@ -143,7 +144,7 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertEqual(self.app.cget("background"), "#0D1420")
         self.assertEqual(style.lookup("Liquid.Body.TLabel", "foreground"),
                          "#EEF8FF")
-        self.assertEqual(self.app.motion_strength_pps_scale.cget("background"),
+        self.assertEqual(self.app.pulse_size_px_scale.cget("background"),
                          "#0D1420")
         self.assertEqual(self.app.theme_button.icon, "☀")
         self.assertEqual(self.app.theme_tooltip_text,
@@ -174,21 +175,7 @@ class JitterLayoutTests(unittest.TestCase):
         )
 
     def test_every_numeric_control_uses_liquid_slider(self):
-        numeric_keys = (
-            "motion_angle_deg",
-            "motion_strength_pps",
-            "horizontal_jitter_pps",
-            "vertical_jitter_pps",
-            "jitter_rate_hz",
-            "jitter_randomness_percent",
-            "jitter_axis_phase_deg",
-            "smoothness_percent",
-            "ramp_up_ms",
-            "update_rate_hz",
-            "max_step_px",
-            "acceleration_pps2",
-            "deceleration_pps2",
-        )
+        numeric_keys = ("pulse_size_px", "pulse_rate_hz")
         for key in numeric_keys:
             with self.subTest(key=key):
                 self.assertIsInstance(
@@ -197,23 +184,23 @@ class JitterLayoutTests(unittest.TestCase):
                 )
 
     def test_liquid_slider_user_change_updates_exact_entry_and_snapshot(self):
-        slider = self.app.motion_strength_pps_scale
-        slider._set_from_user(123)
+        slider = self.app.pulse_size_px_scale
+        slider._set_from_user(4)
         self.app.update()
-        self.assertEqual(self.app.motion_strength_pps_var.get(), "123")
-        self.assertEqual(self.app.get_motion_settings().strength_pps, 123.0)
+        self.assertEqual(self.app.pulse_size_px_var.get(), "4")
+        self.assertEqual(self.app.get_motion_settings().pulse_size_px, 4.0)
 
     def test_exact_entry_and_preset_changes_update_liquid_slider_silently(self):
-        slider = self.app.motion_strength_pps_scale
-        self.app.motion_strength_pps_var.set("77")
+        slider = self.app.pulse_size_px_scale
+        self.app.pulse_size_px_var.set("7")
         self.app.update()
-        self.assertEqual(slider.get(), 77.0)
+        self.assertEqual(slider.get(), 7.0)
         self.app.preset_var.set("Balanced")
         self.app.apply_preset()
         self.app.update()
         self.assertEqual(
             slider.get(),
-            self.app.get_motion_settings().strength_pps,
+            self.app.get_motion_settings().pulse_size_px,
         )
 
     def _is_descendant(self, widget, ancestor):
@@ -352,12 +339,14 @@ class JitterLayoutTests(unittest.TestCase):
         connected_fill = indicator.itemcget("status-marker", "fill")
         self.assertEqual(len({disconnected_fill, connecting_fill, connected_fill}), 3)
 
-    def test_navigation_owns_control_motion_and_advanced_pages(self):
-        self.assertEqual(self.app.nav.labels, ("Control", "Motion", "Advanced"))
+    def test_navigation_contains_only_control_and_motion(self):
+        self.assertEqual(self.app.nav.labels, ("Control", "Motion"))
         self.assertEqual(
             self.app.pages,
-            (self.app.control_page, self.app.motion_page, self.app.advanced_page),
+            (self.app.control_page, self.app.motion_page),
         )
+        self.assertFalse(hasattr(self.app, "advanced_page"))
+        self.assertFalse(hasattr(self.app, "advanced_canvas"))
         for widget in (
             self.app.trigger_combo,
             self.app.modifier_combo,
@@ -368,31 +357,26 @@ class JitterLayoutTests(unittest.TestCase):
             with self.subTest(widget=str(widget)):
                 self.assertTrue(self._is_descendant(widget, self.app.control_page))
         for widget in (
-            self.app.motion_strength_pps_entry,
-            self.app.jitter_rate_hz_entry,
+            self.app.pulse_size_px_entry,
+            self.app.pulse_rate_hz_entry,
+            self.app.ramp_mode_combo,
         ):
             with self.subTest(widget=str(widget)):
                 self.assertTrue(self._is_descendant(widget, self.app.motion_page))
-        for key in (
-            "motion_angle_deg",
-            "horizontal_jitter_pps",
-            "vertical_jitter_pps",
-            "jitter_randomness_percent",
-            "jitter_axis_phase_deg",
-            "smoothness_percent",
-            "ramp_up_ms",
-            "update_rate_hz",
-            "max_step_px",
-            "acceleration_pps2",
-            "deceleration_pps2",
-        ):
-            with self.subTest(key=key):
-                self.assertTrue(self._is_descendant(
-                    getattr(self.app, f"{key}_entry"), self.app.advanced_page
-                ))
-        for widget in (self.app.waveform_combo, self.app.motion_curve_combo):
-            with self.subTest(widget=str(widget)):
-                self.assertTrue(self._is_descendant(widget, self.app.advanced_page))
+
+    def test_motion_page_exposes_only_paired_pulse_controls(self):
+        self.assertEqual(
+            set(self.app.motion_vars),
+            {"pulse_size_px", "pulse_rate_hz", "ramp_mode"},
+        )
+        self.assertEqual(
+            self.app.ramp_mode_combo.cget("values"),
+            ("Instant", "Smooth"),
+        )
+        self.assertEqual(
+            self.app.preset_values,
+            ("Custom", "Soft", "Balanced", "Strong"),
+        )
 
     def test_split_console_control_uses_exact_three_to_two_columns(self):
         self.assertEqual(
@@ -503,7 +487,7 @@ class JitterLayoutTests(unittest.TestCase):
             ),
             (3, 2),
         )
-        for key in ("motion_strength_pps", "jitter_rate_hz"):
+        for key in ("pulse_size_px", "pulse_rate_hz"):
             for suffix in ("scale", "entry"):
                 with self.subTest(key=key, suffix=suffix):
                     self.assertTrue(
@@ -516,25 +500,6 @@ class JitterLayoutTests(unittest.TestCase):
             self._is_descendant(
                 self.app.motion_summary_label, self.app.motion_summary_card
             )
-        )
-
-    def test_split_console_advanced_is_the_only_page_with_a_scroll_canvas(self):
-        scroll_canvases = {
-            page: [
-                widget for widget in self._descendants(page)
-                if isinstance(widget, tk.Canvas)
-                and str(widget.cget("yscrollcommand"))
-            ]
-            for page in self.app.pages
-        }
-        self.assertEqual(scroll_canvases[self.app.control_page], [])
-        self.assertEqual(scroll_canvases[self.app.motion_page], [])
-        self.assertEqual(
-            scroll_canvases[self.app.advanced_page],
-            [self.app.advanced_canvas],
-        )
-        self.assertFalse(
-            self._is_descendant(self.app.footer_frame, self.app.advanced_canvas)
         )
 
     def test_motion_page_has_snapshot_backed_live_summary(self):
@@ -550,31 +515,50 @@ class JitterLayoutTests(unittest.TestCase):
         )
         self.assertEqual(
             summary_var.get(),
-            "Strength 80 px/s | Angle 90 deg | Jitter 55 x 40 px/s "
-            "at 14 Hz | Random blend | Smooth 25%",
+            "2 px paired pulse at 30 Hz | Smooth",
         )
 
     def test_motion_summary_refreshes_after_edit_and_preset(self):
         """Fails if the summary drifts from the immutable motion snapshot."""
         summary_var = getattr(self.app, "motion_summary_var", None)
         self.assertIsInstance(summary_var, tk.StringVar)
-        self.app.motion_strength_pps_var.set("123")
+        self.app.pulse_size_px_var.set("4")
         self.app.update()
-        self.assertEqual(self.app.get_motion_settings().strength_pps, 123.0)
+        self.assertEqual(self.app.get_motion_settings().pulse_size_px, 4.0)
         self.assertEqual(
             summary_var.get(),
-            "Strength 123 px/s | Angle 90 deg | Jitter 55 x 40 px/s "
-            "at 14 Hz | Random blend | Smooth 25%",
+            "4 px paired pulse at 30 Hz | Smooth",
         )
 
-        self.app.preset_var.set("Balanced")
+        self.app.preset_var.set("Strong")
         self.app.apply_preset()
         self.app.update()
-        self.assertEqual(self.app.get_motion_settings().strength_pps, 40.0)
+        self.assertEqual(
+            self.app.get_motion_settings(),
+            MotionSettings(4.0, 45.0, "Instant"),
+        )
         self.assertEqual(
             summary_var.get(),
-            "Strength 40 px/s | Angle 90 deg | Jitter 2 x 0 px/s "
-            "at 14 Hz | Random blend | Smooth 80%",
+            "4 px paired pulse at 45 Hz | Instant",
+        )
+
+    def test_motion_summary_describes_paired_pulse_snapshot(self):
+        self.app._replace_motion_snapshot(
+            MotionSettings(2.0, 30.0, "Smooth")
+        )
+        self.assertEqual(
+            self.app.motion_summary_var.get(),
+            "2 px paired pulse at 30 Hz | Smooth",
+        )
+
+    def test_pulse_edits_update_immutable_snapshot(self):
+        self.app.pulse_size_px_var.set("4")
+        self.app.pulse_rate_hz_var.set("45")
+        self.app.ramp_mode_var.set("Instant")
+        self.app._motion_changed("pulse_size_px")
+        self.assertEqual(
+            self.app.get_motion_settings(),
+            MotionSettings(4.0, 45.0, "Instant"),
         )
 
     def test_mini_actions_are_liquid_icon_buttons(self):
@@ -594,7 +578,7 @@ class JitterLayoutTests(unittest.TestCase):
     def test_split_console_keeps_actions_footer_runtime_and_stop_on_every_page(self):
         self.app.deiconify()
         self.app.update()
-        for index in range(3):
+        for index in range(2):
             with self.subTest(index=index):
                 self.app.select_page(index)
                 self.app.update_idletasks()
@@ -610,7 +594,7 @@ class JitterLayoutTests(unittest.TestCase):
 
     def test_stop_is_visible_on_every_navigation_page(self):
         self.app.deiconify()
-        for index in range(3):
+        for index in range(2):
             with self.subTest(index=index):
                 self.app.select_page(index)
                 self.app.update()
@@ -619,7 +603,7 @@ class JitterLayoutTests(unittest.TestCase):
     def test_split_console_close_cancels_all_widget_callbacks_before_service_close(self):
         self.app.deiconify()
         self.app.update()
-        self.app.nav.select(2)
+        self.app.nav.select(1)
         self.assertIsNotNone(self.app.nav._animation_after_id)
         sliders = [
             widget for widget in self._descendants(self.app)
@@ -655,17 +639,11 @@ class JitterLayoutTests(unittest.TestCase):
         )
         self.assertIsNone(self.app.nav._animation_after_id)
 
-    def test_advanced_canvas_belongs_only_to_advanced_page(self):
-        self.assertTrue(self._is_descendant(self.app.advanced_canvas,
-                                            self.app.advanced_page))
-        self.assertFalse(self._is_descendant(self.app.stop_button,
-                                             self.app.advanced_page))
-
-    def test_invalid_advanced_edit_does_not_change_page(self):
-        self.app.select_page(2)
-        self.app.horizontal_jitter_pps_var.set("not-a-number")
-        self.app._motion_changed("horizontal_jitter_pps")
-        self.assertEqual(self.app.nav.selected_index, 2)
+    def test_invalid_motion_edit_does_not_change_page(self):
+        self.app.select_page(1)
+        self.app.pulse_size_px_var.set("not-a-number")
+        self.app._motion_changed("pulse_size_px")
+        self.assertEqual(self.app.nav.selected_index, 1)
         self.assertTrue(self.app.footer_var.get().startswith("Invalid value for "))
 
     def test_mini_actions_keep_icon_button_size_and_tooltips(self):
@@ -715,8 +693,9 @@ class JitterLayoutTests(unittest.TestCase):
                 self.assertIsNone(getattr(self.app, tooltip_attribute))
 
     def test_split_console_page_and_theme_changes_preserve_state_and_geometry(self):
-        self.app.motion_strength_pps_var.set("123")
-        self.app.jitter_rate_hz_var.set("17.5")
+        self.app.pulse_size_px_var.set("4")
+        self.app.pulse_rate_hz_var.set("45")
+        self.app.ramp_mode_var.set("Instant")
         self.app.trigger_var.set("Mouse4")
         self.app.modifier_var.set("Right")
         self.app.preset_var.set("Custom")
@@ -734,7 +713,7 @@ class JitterLayoutTests(unittest.TestCase):
         )
         expected_geometry = self.app.geometry()
 
-        for index in (2, 1, 0):
+        for index in (1, 0):
             with self.subTest(index=index):
                 self.app.select_page(index)
                 self.app.toggle_theme()
@@ -762,42 +741,6 @@ class JitterLayoutTests(unittest.TestCase):
                 )
                 self.assertEqual(self.app.geometry(), expected_geometry)
 
-    def test_advanced_uses_approved_two_column_grid(self):
-        expected_positions = {
-            "motion_angle_deg": (0, 0),
-            "horizontal_jitter_pps": (0, 1),
-            "vertical_jitter_pps": (1, 0),
-            "jitter_randomness_percent": (1, 1),
-            "jitter_axis_phase_deg": (2, 0),
-            "smoothness_percent": (2, 1),
-            "ramp_up_ms": (3, 0),
-            "update_rate_hz": (3, 1),
-            "max_step_px": (4, 0),
-            "acceleration_pps2": (4, 1),
-            "deceleration_pps2": (5, 0),
-        }
-        for key, expected in expected_positions.items():
-            with self.subTest(key=key):
-                block = getattr(self.app, f"{key}_entry").master.master
-                info = block.grid_info()
-                self.assertEqual((int(info["row"]), int(info["column"])), expected)
-                self.assertIs(block.master, self.app.advanced_grid)
-
-    def test_advanced_choices_span_the_full_grid_width(self):
-        waveform_row = self.app.waveform_combo.master
-        curve_row = self.app.motion_curve_combo.master
-        self.assertIsNot(waveform_row, curve_row)
-        for combo, expected_row in (
-            (self.app.waveform_combo, 6),
-            (self.app.motion_curve_combo, 7),
-        ):
-            with self.subTest(combo=str(combo)):
-                choice_row = combo.master
-                info = choice_row.grid_info()
-                self.assertEqual(int(info["row"]), expected_row)
-                self.assertEqual(int(info["columnspan"]), 2)
-                self.assertIs(choice_row.master, self.app.advanced_grid)
-
     def test_runtime_actions_have_equal_fixed_weight(self):
         self.assertIs(self.app.enable_button.master, self.app.runtime_frame)
         self.assertIs(self.app.stop_button.master, self.app.runtime_frame)
@@ -815,11 +758,13 @@ class JitterLayoutTests(unittest.TestCase):
             2,
         )
 
-    def test_footer_and_runtime_are_outside_scrollable_workspace(self):
+    def test_footer_and_runtime_are_owned_by_the_persistent_workspace(self):
         for widget in (self.app.footer_frame, self.app.runtime_frame,
                        self.app.enable_button, self.app.stop_button):
             with self.subTest(widget=str(widget)):
-                self.assertFalse(self._is_descendant(widget, self.app.advanced_host))
+                self.assertTrue(
+                    self._is_descendant(widget, self.app.console_workspace)
+                )
 
     def test_identity_shows_connection_and_control_shows_device_summary(self):
         self.assertTrue(self._is_descendant(self.app.device_label,
@@ -833,8 +778,6 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertIs(self.app.theme_button.master, self.app.navigation_actions)
         self.assertFalse(self._is_descendant(self.app.theme_button,
                                              self.app.identity_frame))
-        self.assertFalse(self._is_descendant(self.app.theme_button,
-                                             self.app.advanced_host))
         self.assertEqual(self.app.theme_button.pack_info()["side"], "left")
 
     def test_theme_icon_tooltip_appears_on_hover_and_is_removed(self):
@@ -851,29 +794,6 @@ class JitterLayoutTests(unittest.TestCase):
     def test_runtime_group_keeps_stop_always_visible(self):
         self.assertTrue(self._is_descendant(self.app.stop_button,
                                             self.app.runtime_frame))
-        self.assertFalse(self._is_descendant(self.app.stop_button,
-                                             self.app.advanced_frame))
-
-    def test_stop_remains_inside_application_viewport_when_advanced_is_scrolled(self):
-        self.app.deiconify()
-        self.app.select_page(2)
-        self.app.update()
-        self.app.advanced_canvas.yview_moveto(1.0)
-        self.app.update()
-
-        app_left = self.app.winfo_rootx()
-        app_top = self.app.winfo_rooty()
-        app_right = app_left + self.app.winfo_width()
-        app_bottom = app_top + self.app.winfo_height()
-        stop_left = self.app.stop_button.winfo_rootx()
-        stop_top = self.app.stop_button.winfo_rooty()
-        stop_right = stop_left + self.app.stop_button.winfo_width()
-        stop_bottom = stop_top + self.app.stop_button.winfo_height()
-
-        self.assertGreaterEqual(stop_left, app_left)
-        self.assertGreaterEqual(stop_top, app_top)
-        self.assertLessEqual(stop_right, app_right)
-        self.assertLessEqual(stop_bottom, app_bottom)
 
     def test_liquid_styles_are_registered(self):
         style = ttk.Style(self.app)
@@ -899,40 +819,13 @@ class JitterLayoutTests(unittest.TestCase):
                 "Consolas",
             )
 
-    def test_advanced_scrollbar_uses_liquid_colors_in_both_themes(self):
-        """Fails if Advanced scrolling falls back to the platform theme."""
-        style = ttk.Style(self.app)
-        self.assertEqual(
-            self.app.advanced_scrollbar.cget("style"),
-            "Liquid.Vertical.TScrollbar",
-        )
-        for expected_trough, expected_thumb, expected_arrow in (
-            ("#E5F0F5", "#FFFFFF", "#263640"),
-            ("#172232", "#202F43", "#EEF8FF"),
-        ):
-            with self.subTest(theme=self.app.theme_var.get()):
-                self.assertEqual(
-                    style.lookup("Liquid.Vertical.TScrollbar", "troughcolor"),
-                    expected_trough,
-                )
-                self.assertEqual(
-                    style.lookup("Liquid.Vertical.TScrollbar", "background"),
-                    expected_thumb,
-                )
-                self.assertEqual(
-                    style.lookup("Liquid.Vertical.TScrollbar", "arrowcolor"),
-                    expected_arrow,
-                )
-            self.app.toggle_theme()
-
     def test_combobox_popups_use_liquid_colors_in_both_themes(self):
         """Fails if classic Tk popup Listboxes ignore the active theme."""
         combos = (
             self.app.trigger_combo,
             self.app.modifier_combo,
             self.app.preset_combo,
-            self.app.waveform_combo,
-            self.app.motion_curve_combo,
+            self.app.ramp_mode_combo,
         )
         for expected in (
             ("#FFFFFF", "#263640", "#55DDF6", "#07252C"),
@@ -1111,57 +1004,19 @@ class JitterLayoutTests(unittest.TestCase):
         ):
             self.assertEqual(str(style.lookup(widget_style, "borderwidth")), "0")
 
-    def test_required_actions_are_present_and_stop_is_outside_advanced(self):
+    def test_required_actions_are_present(self):
         texts = widget_texts(self.app)
-        for expected in ("Enable Jitter", "STOP", "Advanced Settings"):
+        for expected in ("Enable Jitter", "STOP"):
             self.assertIn(expected, texts)
         self.assertEqual(self.app.reconnect_button.icon, "↻")
         self.assertEqual(self.app.test_button.icon, "▶")
-        stop = self.app.stop_button
-        ancestor = stop.master
-        while ancestor is not self.app:
-            self.assertIsNot(ancestor, self.app.advanced_frame)
-            ancestor = ancestor.master
-
     def test_page_selection_does_not_change_outer_geometry(self):
         self.app.update_idletasks()
         before = self.app.geometry().split("+")[0]
-        self.app.select_page(2)
+        self.app.select_page(1)
         self.app.update_idletasks()
         after = self.app.geometry().split("+")[0]
         self.assertEqual(after, before)
-
-    def test_advanced_controls_are_mounted_in_the_persistent_page(self):
-        self.assertEqual(self.app.advanced_frame.winfo_manager(), "pack")
-        self.assertTrue(self._is_descendant(self.app.advanced_frame,
-                                            self.app.advanced_page))
-        self.assertIs(self.app.advanced_canvas.master, self.app.advanced_host)
-
-    def test_mousewheel_scrolls_only_over_advanced_page(self):
-        self.app.deiconify()
-        self.app.select_page(2)
-        self.app.update()
-        self.app.advanced_canvas.yview_moveto(0.0)
-
-        advanced_event = SimpleNamespace(
-            delta=-120,
-            x_root=self.app.advanced_canvas.winfo_rootx() + 10,
-            y_root=self.app.advanced_canvas.winfo_rooty() + 10,
-        )
-        self.assertEqual(self.app._on_advanced_mousewheel(advanced_event), "break")
-        self.app.update_idletasks()
-        after_advanced = self.app.advanced_canvas.yview()[0]
-        self.assertGreater(after_advanced, 0.0)
-
-        self.app.select_page(0)
-        self.app.update_idletasks()
-        control_event = SimpleNamespace(
-            delta=-120,
-            x_root=self.app.control_page.winfo_rootx() + 10,
-            y_root=self.app.control_page.winfo_rooty() + 10,
-        )
-        self.assertIsNone(self.app._on_advanced_mousewheel(control_event))
-        self.assertEqual(self.app.advanced_canvas.yview()[0], after_advanced)
 
 
 class JitterRuntimeTests(JitterLayoutTests):
@@ -1385,13 +1240,13 @@ class JitterRuntimeTests(JitterLayoutTests):
 
     def test_invalid_motion_edit_keeps_last_snapshot(self):
         previous = self.app.get_motion_settings()
-        self.app.motion_angle_deg_var.set("not-a-number")
+        self.app.pulse_size_px_var.set("not-a-number")
         self.app.update()
         self.assertEqual(self.app.get_motion_settings(), previous)
-        self.assertIn("motion_angle_deg", self.app._invalid_motion_keys)
-        self.app.motion_angle_deg_var.set("180")
+        self.assertIn("pulse_size_px", self.app._invalid_motion_keys)
+        self.app.pulse_size_px_var.set("4")
         self.app.update()
-        self.assertEqual(self.app.get_motion_settings().angle_deg, 180.0)
+        self.assertEqual(self.app.get_motion_settings().pulse_size_px, 4.0)
 
     def test_future_schema_save_protection_is_honored(self):
         self.app._save_allowed = False
@@ -1474,37 +1329,37 @@ class JitterRuntimeTests(JitterLayoutTests):
         lock = CountingLock()
         self.app._motion_lock = lock
         self.app.get_motion_settings()
-        self.app.motion_strength_pps_var.set("81")
+        self.app.pulse_size_px_var.set("4")
         self.app.update()
         self.assertGreaterEqual(lock.enters, 2)
 
     def test_preset_clears_stale_invalid_entry_style(self):
-        self.app.motion_angle_deg_var.set("not-a-number")
+        self.app.pulse_size_px_var.set("not-a-number")
         self.app.update()
-        self.assertEqual(self.app.motion_angle_deg_entry.cget("style"),
+        self.assertEqual(self.app.pulse_size_px_entry.cget("style"),
                          "Liquid.Invalid.TEntry")
         self.assertEqual(
             self.app.footer_var.get(),
-            "Invalid value for motion angle deg",
+            "Invalid value for pulse size px",
         )
         self.app.preset_var.set("Balanced")
         self.app.apply_preset()
-        self.assertEqual(self.app.motion_angle_deg_entry.cget("style"),
+        self.assertEqual(self.app.pulse_size_px_entry.cget("style"),
                          "Liquid.Entry.TEntry")
         self.assertEqual(self.app.footer_var.get(), "Ready")
 
     def test_valid_motion_edit_clears_stale_invalid_footer(self):
-        self.app.motion_strength_pps_var.set("not-a-number")
+        self.app.pulse_size_px_var.set("not-a-number")
         self.app.update()
         self.assertEqual(
             self.app.footer_var.get(),
-            "Invalid value for motion strength pps",
+            "Invalid value for pulse size px",
         )
 
-        self.app.motion_strength_pps_var.set("75")
+        self.app.pulse_size_px_var.set("4")
         self.app.update()
 
-        self.assertEqual(self.app.motion_strength_pps_entry.cget("style"),
+        self.assertEqual(self.app.pulse_size_px_entry.cget("style"),
                          "Liquid.Entry.TEntry")
         self.assertEqual(self.app.footer_var.get(), "Ready")
 

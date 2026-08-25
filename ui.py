@@ -19,10 +19,9 @@ from typing import Any, Callable, Mapping
 from hotkeys import HotkeyWatcher
 from makcu_service import MakcuService, ServiceEvent
 from motion import (
-    JITTER_WAVEFORMS,
-    MOTION_CURVES,
     MOTION_LIMITS,
     MOTION_PRESETS,
+    RAMP_MODES,
     MotionSettings,
     TriggerGate,
     motion_settings_from_mapping,
@@ -95,13 +94,8 @@ def _display_value(value: Any) -> str:
 
 def _motion_summary_text(settings: MotionSettings) -> str:
     return (
-        f"Strength {_display_value(settings.strength_pps)} px/s | "
-        f"Angle {_display_value(settings.angle_deg)} deg | "
-        f"Jitter {_display_value(settings.horizontal_jitter_pps)} x "
-        f"{_display_value(settings.vertical_jitter_pps)} px/s at "
-        f"{_display_value(settings.jitter_rate_hz)} Hz | "
-        f"{settings.jitter_waveform} | "
-        f"Smooth {_display_value(settings.smoothness)}%"
+        f"{_display_value(settings.pulse_size_px)} px paired pulse at "
+        f"{_display_value(settings.pulse_rate_hz)} Hz | {settings.ramp_mode}"
     )
 
 
@@ -186,7 +180,6 @@ class JitterApp(tk.Tk):
         self._theme = self.config.theme
         self.configure(background=self._palette["window"])
         self._save_allowed = bool(self.load_outcome.save_allowed)
-        self._advanced_visible = False
         self._closed = False
         self._runtime_started = False
         self._closing = False
@@ -212,7 +205,6 @@ class JitterApp(tk.Tk):
         self._configure_styles()
         self._create_variables()
         self._build_page()
-        self.bind("<MouseWheel>", self._on_advanced_mousewheel, add="+")
 
         self.service_factory = service_factory or (lambda sink: MakcuService(sink))
         self.hotkey_factory = hotkey_factory or HotkeyWatcher
@@ -478,7 +470,6 @@ class JitterApp(tk.Tk):
         self.hotkey_name_var = tk.StringVar(self, self.config.hotkey_name)
         self.preset_var = tk.StringVar(self, self._selected_preset())
         self.footer_var = tk.StringVar(self, "Ready")
-        self.advanced_state_var = tk.BooleanVar(self, False)
         self.theme_var = tk.StringVar(self, self._theme)
         self.motion_summary_var = tk.StringVar(
             self, _motion_summary_text(self._motion_snapshot)
@@ -487,11 +478,7 @@ class JitterApp(tk.Tk):
         mapping = motion_settings_to_mapping(self.config.motion)
         self.motion_vars: dict[str, tk.Variable] = {}
         for key, value in mapping.items():
-            variable: tk.Variable
-            if key == "jitter_enabled":
-                variable = tk.BooleanVar(self, bool(value))
-            else:
-                variable = tk.StringVar(self, _display_value(value))
+            variable = tk.StringVar(self, _display_value(value))
             self.motion_vars[key] = variable
             setattr(self, f"{key}_var", variable)
 
@@ -544,7 +531,7 @@ class JitterApp(tk.Tk):
         self.navigation_frame.pack(side="top", fill="x", pady=(18, 0))
         self.nav = LiquidNavigation(
             self.navigation_frame,
-            labels=("Control", "Motion", "Advanced"),
+            labels=("Control", "Motion"),
             command=self.select_page,
             palette=self._navigation_palette(),
             orientation="vertical",
@@ -571,15 +558,12 @@ class JitterApp(tk.Tk):
         self.page_host.columnconfigure(0, weight=1)
         self.control_page = ttk.Frame(self.page_host, style="Liquid.App.TFrame")
         self.motion_page = ttk.Frame(self.page_host, style="Liquid.App.TFrame")
-        self.advanced_page = ttk.Frame(self.page_host, style="Liquid.App.TFrame")
-        self.pages = (self.control_page, self.motion_page, self.advanced_page)
+        self.pages = (self.control_page, self.motion_page)
         for page in self.pages:
             page.grid(row=0, column=0, sticky="nsew")
 
         self._build_trigger_card()
-        self._build_advanced_workspace()
         self._build_quick_card()
-        self._build_advanced_card()
         self._apply_combobox_popup_palette()
         self.select_page(0)
         self._build_main_control_card()
@@ -633,7 +617,6 @@ class JitterApp(tk.Tk):
         self._configure_styles()
         self.configure(background=self._palette["window"])
         self.shell.configure(background=self._palette["window"])
-        self.advanced_canvas.configure(background=self._palette["window"])
         self._redraw_shell_art()
         self._redraw_connection_indicator()
         self.nav.set_palette(self._navigation_palette())
@@ -712,8 +695,7 @@ class JitterApp(tk.Tk):
             self.trigger_combo,
             self.modifier_combo,
             self.preset_combo,
-            self.waveform_combo,
-            self.motion_curve_combo,
+            self.ramp_mode_combo,
         ):
             try:
                 popdown = self.tk.call(
@@ -737,51 +719,6 @@ class JitterApp(tk.Tk):
                     "Could not apply combobox popup palette to %s", combo,
                     exc_info=True,
                 )
-
-    def _build_advanced_workspace(self) -> None:
-        self.advanced_host = ttk.Frame(
-            self.advanced_page, style="Liquid.App.TFrame"
-        )
-        self.advanced_host.pack(fill="both", expand=True)
-        self.advanced_host.rowconfigure(0, weight=1)
-        self.advanced_host.columnconfigure(0, weight=1)
-        self.advanced_canvas = tk.Canvas(
-            self.advanced_host,
-            background=self._palette["window"],
-            highlightthickness=0,
-            borderwidth=0,
-        )
-        self.advanced_scrollbar = ttk.Scrollbar(
-            self.advanced_host,
-            orient="vertical",
-            command=self.advanced_canvas.yview,
-            style="Liquid.Vertical.TScrollbar",
-        )
-        self.advanced_canvas.configure(yscrollcommand=self.advanced_scrollbar.set)
-        self.advanced_canvas.grid(row=0, column=0, sticky="nsew")
-        self.advanced_scrollbar.grid(row=0, column=1, sticky="ns")
-        self.advanced_content = ttk.Frame(
-            self.advanced_canvas,
-            style="Liquid.App.TFrame",
-            padding=(0, 0, 4, 8),
-        )
-        self.advanced_content_window = self.advanced_canvas.create_window(
-            (0, 0),
-            window=self.advanced_content,
-            anchor="nw",
-        )
-        self.canvas = self.advanced_canvas
-        self.content = self.advanced_content
-        self.content_window = self.advanced_content_window
-        # Keep the established widget seams until the scrolling follow-up
-        # renames the remaining right-workspace compatibility aliases.
-        self.right_host = self.advanced_host
-        self.right_canvas = self.advanced_canvas
-        self.right_scrollbar = self.advanced_scrollbar
-        self.right_content = self.advanced_content
-        self.right_content_window = self.advanced_content_window
-        self.advanced_content.bind("<Configure>", self._refresh_scrollregion)
-        self.advanced_canvas.bind("<Configure>", self._resize_content_window)
 
     def _card(self, title: str, parent: tk.Misc) -> ttk.LabelFrame:
         card = ttk.LabelFrame(
@@ -1081,11 +1018,28 @@ class JitterApp(tk.Tk):
         self.quick_grid.columnconfigure(0, weight=1, uniform="quick")
         self.quick_grid.columnconfigure(1, weight=1, uniform="quick")
         controls = (
-            ("Strength", "motion_strength_pps", 0, 500, 1),
-            ("Jitter Rate", "jitter_rate_hz", 0.1, 60, 0.1),
+            ("Pulse Size", "pulse_size_px", 1, 8, 1),
+            ("Pulse Rate", "pulse_rate_hz", 10, 60, 1),
         )
         for index, control in enumerate(controls):
             self._numeric_control(self.quick_grid, index // 2, index % 2, *control)
+        ramp_row = ttk.Frame(self.quick_grid, style="Liquid.App.TFrame")
+        ramp_row.grid(
+            row=1, column=0, columnspan=2, sticky="ew", padx=5, pady=(8, 4)
+        )
+        ttk.Label(
+            ramp_row, text="Ramp Mode", style="Liquid.Body.TLabel"
+        ).pack(side="left")
+        self.ramp_mode_combo = ttk.Combobox(
+            ramp_row,
+            textvariable=self.motion_vars["ramp_mode"],
+            values=RAMP_MODES,
+            state="readonly",
+            style="Liquid.Readonly.TCombobox",
+        )
+        self.ramp_mode_combo.pack(
+            side="right", fill="x", expand=True, padx=(8, 0)
+        )
         self.motion_summary_frame = ttk.Frame(
             self.motion_summary_card,
             style="Liquid.Surface.TFrame",
@@ -1105,60 +1059,6 @@ class JitterApp(tk.Tk):
             wraplength=190,
         )
         self.motion_summary_label.pack(anchor="w", fill="x", pady=(2, 0))
-
-    def _build_advanced_card(self) -> None:
-        self.advanced_frame = ttk.LabelFrame(
-            self.advanced_content, text="Advanced Settings",
-            style="Liquid.Card.TLabelframe",
-            padding=(11, 8, 11, 10))
-        self.advanced_frame.pack(fill="x", pady=(0, 9))
-        self.advanced_grid = ttk.Frame(
-            self.advanced_frame, style="Liquid.App.TFrame"
-        )
-        self.advanced_grid.pack(fill="x")
-        self.advanced_grid.columnconfigure(0, weight=1, uniform="advanced")
-        self.advanced_grid.columnconfigure(1, weight=1, uniform="advanced")
-        controls = (
-            (0, 0, "Angle", "motion_angle_deg", 0, 360, 1),
-            (0, 1, "Horizontal", "horizontal_jitter_pps", 0, 500, 1),
-            (1, 0, "Vertical", "vertical_jitter_pps", 0, 500, 1),
-            (1, 1, "Randomness", "jitter_randomness_percent", 0, 100, 1),
-            (2, 0, "Axis Phase", "jitter_axis_phase_deg", 0, 360, 1),
-            (2, 1, "Smoothness", "smoothness_percent", 1, 100, 1),
-            (3, 0, "Ramp (ms)", "ramp_up_ms", 0, 2000, 1),
-            (3, 1, "Update Rate", "update_rate_hz", 20, 500, 1),
-            (4, 0, "Max Step", "max_step_px", 1, 50, 1),
-            (4, 1, "Acceleration", "acceleration_pps2", 1, 10000, 1),
-            (5, 0, "Deceleration", "deceleration_pps2", 1, 10000, 1),
-        )
-        for row, column, label, key, low, high, resolution in controls:
-            self._numeric_control(
-                self.advanced_grid, row, column, label, key, low, high, resolution
-            )
-
-        waveform_row = ttk.Frame(
-            self.advanced_grid, style="Liquid.App.TFrame"
-        )
-        waveform_row.grid(row=6, column=0, columnspan=2, sticky="ew", padx=5, pady=(8, 3))
-        ttk.Label(waveform_row, text="Waveform",
-                  style="Liquid.Body.TLabel").pack(side="left")
-        self.waveform_combo = ttk.Combobox(
-            waveform_row, textvariable=self.motion_vars["jitter_waveform"],
-            values=JITTER_WAVEFORMS, state="readonly",
-            style="Liquid.Readonly.TCombobox")
-        self.waveform_combo.pack(side="right", fill="x", expand=True, padx=(8, 0))
-
-        curve_row = ttk.Frame(
-            self.advanced_grid, style="Liquid.App.TFrame"
-        )
-        curve_row.grid(row=7, column=0, columnspan=2, sticky="ew", padx=5, pady=3)
-        ttk.Label(curve_row, text="Motion Curve",
-                  style="Liquid.Body.TLabel").pack(side="left")
-        self.motion_curve_combo = ttk.Combobox(
-            curve_row, textvariable=self.motion_vars["motion_curve"],
-            values=MOTION_CURVES, state="readonly",
-            style="Liquid.Readonly.TCombobox")
-        self.motion_curve_combo.pack(side="right", fill="x", expand=True, padx=(8, 0))
 
     def _build_footer(self) -> None:
         self.footer_frame = ttk.Frame(
@@ -1346,50 +1246,6 @@ class JitterApp(tk.Tk):
         self.pages[selected].grid()
         if self.nav.selected_index != selected:
             self.nav.select(selected, notify=False)
-
-    def _refresh_scrollregion(self, _event: tk.Event | None = None) -> None:
-        self.advanced_canvas.configure(
-            scrollregion=self.advanced_canvas.bbox("all")
-        )
-
-    def _resize_content_window(self, event: tk.Event) -> None:
-        self.advanced_canvas.itemconfigure(
-            self.advanced_content_window, width=event.width
-        )
-
-    def toggle_advanced(self) -> None:
-        self._advanced_visible = True
-        self.advanced_state_var.set(True)
-        self.select_page(2)
-
-    @staticmethod
-    def _is_descendant_of(widget: tk.Misc | None, ancestor: tk.Misc) -> bool:
-        current = widget
-        while current is not None:
-            if current is ancestor:
-                return True
-            current = getattr(current, "master", None)
-        return False
-
-    def _on_advanced_mousewheel(self, event) -> str | None:
-        if self.nav.selected_index != 2:
-            return None
-        target = self.winfo_containing(event.x_root, event.y_root)
-        if target is None and self.advanced_host.winfo_ismapped():
-            host_left = self.advanced_host.winfo_rootx()
-            host_top = self.advanced_host.winfo_rooty()
-            host_right = host_left + self.advanced_host.winfo_width()
-            host_bottom = host_top + self.advanced_host.winfo_height()
-            if host_left <= event.x_root < host_right and host_top <= event.y_root < host_bottom:
-                target = self.advanced_host
-        if not self._is_descendant_of(target, self.advanced_host):
-            return None
-        bounds = self.advanced_canvas.bbox("all")
-        if bounds is None or bounds[3] <= self.advanced_canvas.winfo_height():
-            return None
-        direction = -1 if event.delta > 0 else 1
-        self.advanced_canvas.yview_scroll(direction, "units")
-        return "break"
 
     # ---- runtime wiring -----------------------------------------------
 
@@ -1792,7 +1648,7 @@ class JitterApp(tk.Tk):
         try:
             for key, value in motion_settings_to_mapping(settings).items():
                 variable = self.motion_vars[key]
-                variable.set(bool(value) if key == "jitter_enabled" else str(value))
+                variable.set(str(value))
                 scale = getattr(self, f"{key}_scale", None)
                 if scale is not None:
                     scale.set(float(value))
