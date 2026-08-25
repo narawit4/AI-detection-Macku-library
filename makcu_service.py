@@ -57,6 +57,7 @@ class MakcuService:
         self._closed = False
         self._setup_disconnected: set[int] = set()
         self._disconnect_notified: set[int] = set()
+        self._motion_cancel_lock = threading.Lock()
         self._motion_generation = 0
         self._motion_stop = threading.Event()
         self._motion_thread: threading.Thread | None = None
@@ -155,12 +156,13 @@ class MakcuService:
                 duration = None if duration_s is None else max(0.0, float(duration_s))
             except (TypeError, ValueError):
                 return False
-            self._motion_generation += 1
-            motion_generation = self._motion_generation
             connection_generation = self._generation
             stop_event = threading.Event()
-            self._motion_stop = stop_event
-            self._motion_stop_reasons[motion_generation] = None
+            with self._motion_cancel_lock:
+                self._motion_generation += 1
+                motion_generation = self._motion_generation
+                self._motion_stop = stop_event
+                self._motion_stop_reasons[motion_generation] = None
             self._motion_active = True
             thread = threading.Thread(
                 target=self._motion_worker,
@@ -182,20 +184,41 @@ class MakcuService:
                 if self._motion_generation == motion_generation:
                     self._motion_active = False
                     self._motion_thread = None
-                    self._motion_stop_reasons.pop(motion_generation, None)
+                    with self._motion_cancel_lock:
+                        self._motion_stop_reasons.pop(motion_generation, None)
             return False
         return True
 
     def stop_motion(self, reason: str = "manual") -> None:
-        """Request an immediate stop without waiting for the worker thread."""
+        """Signal cancellation immediately, then serialize the stop return."""
         reason = str(reason or "manual")
+
+        # This first signal deliberately takes no lock.  A controller move can
+        # hold ``_lock`` for an arbitrary duration, but STOP must still wake
+        # every waiter immediately.  Revalidation below handles an event that
+        # became stale because a new generation started concurrently.
+        self._motion_stop.set()
+        with self._motion_cancel_lock:
+            generation = self._motion_generation
+            self._motion_stop.set()
+            if (
+                generation in self._motion_stop_reasons
+                and self._motion_stop_reasons[generation] is None
+            ):
+                self._motion_stop_reasons[generation] = reason
+
+        # This is the same lock used for the final stop check plus move call.
+        # Crossing it guarantees that no report can begin after this method
+        # returns.  Re-signal and re-record in case start_motion installed a
+        # new generation between the lock-free snapshot and this barrier.
         with self._lock:
             if not self._motion_active:
                 return
-            generation = self._motion_generation
-            if self._motion_stop_reasons.get(generation) is None:
-                self._motion_stop_reasons[generation] = reason
-            self._motion_stop.set()
+            with self._motion_cancel_lock:
+                generation = self._motion_generation
+                self._motion_stop.set()
+                if self._motion_stop_reasons.get(generation) is None:
+                    self._motion_stop_reasons[generation] = reason
 
     def join_motion(self, timeout: float | None = None) -> None:
         """Bounded lifecycle/testing helper; do not call this from the Tk thread."""
@@ -230,7 +253,11 @@ class MakcuService:
                     break
                 with self._lock:
                     if stop_event.is_set():
-                        reason = self._motion_stop_reasons.get(motion_generation) or "manual"
+                        with self._motion_cancel_lock:
+                            reason = (
+                                self._motion_stop_reasons.get(motion_generation)
+                                or "manual"
+                            )
                         break
                     if (
                         motion_generation != self._motion_generation
@@ -264,7 +291,11 @@ class MakcuService:
                             or not self._connected
                             or controller is not self._controller
                         ):
-                            reason = self._motion_stop_reasons.get(motion_generation) or "disconnected"
+                            with self._motion_cancel_lock:
+                                reason = (
+                                    self._motion_stop_reasons.get(motion_generation)
+                                    or "disconnected"
+                                )
                             break
                         try:
                             controller.move(report_x, report_y)
@@ -286,7 +317,10 @@ class MakcuService:
                     motion_generation == self._motion_generation
                     and self._motion_thread is threading.current_thread()
                 )
-                explicit_reason = self._motion_stop_reasons.pop(motion_generation, None)
+                with self._motion_cancel_lock:
+                    explicit_reason = self._motion_stop_reasons.pop(
+                        motion_generation, None
+                    )
                 if current:
                     self._motion_active = False
                     self._motion_thread = None

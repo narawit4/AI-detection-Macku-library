@@ -30,9 +30,9 @@ class AppConfig:
     modifier: str = "None"
     hotkey_vk: int = 0xBD
     hotkey_name: str = "-"
-    # The numeric defaults are intentionally a custom combination rather than
-    # the Strong Shake preset, so the label must describe the actual values.
-    selected_preset: str = "Custom"
+    # The motion defaults exactly match the Balanced preset; Custom is only
+    # used when the current values do not match a named preset.
+    selected_preset: str = "Balanced"
     theme: str = "light"
 
 
@@ -69,6 +69,21 @@ def _safe_int(raw: Any, default: int, low: int, high: int) -> int:
     return max(low, min(high, value))
 
 
+def _schema_identifier(raw: Any) -> int:
+    """Return an exact integral schema identifier without truncation."""
+    if isinstance(raw, bool):
+        raise ValueError
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, float):
+        if not raw.is_integer():
+            raise ValueError
+        return int(raw)
+    if isinstance(raw, str):
+        return int(raw)
+    raise TypeError
+
+
 class ConfigStore:
     """Load and atomically save one schema-versioned Jitter config file."""
 
@@ -87,15 +102,22 @@ class ConfigStore:
         try:
             with self.path.open("r", encoding="utf-8") as handle:
                 document = json.load(handle)
-        except (OSError, json.JSONDecodeError, UnicodeError) as exc:
+        except (OSError, ValueError, UnicodeError) as exc:
             return LoadOutcome(self._defaults(), warning=f"Configuration load failed: {type(exc).__name__}")
 
         if not isinstance(document, dict):
             return LoadOutcome(self._defaults(), warning="Configuration root must be an object")
         try:
-            schema = int(document.get("schema_version", SCHEMA_VERSION))
+            schema = _schema_identifier(
+                document.get("schema_version", SCHEMA_VERSION)
+            )
         except (TypeError, ValueError, OverflowError):
-            return LoadOutcome(self._defaults(), warning="Invalid configuration schema")
+            self._save_allowed = False
+            return LoadOutcome(
+                self._defaults(),
+                save_allowed=False,
+                warning="Invalid configuration schema",
+            )
         if schema > SCHEMA_VERSION:
             self._save_allowed = False
             return LoadOutcome(
@@ -119,7 +141,7 @@ class ConfigStore:
             theme = "light"
         if schema == 1:
             motion = MotionSettings()
-            selected_preset = "Custom"
+            selected_preset = "Balanced"
         else:
             motion_raw = document.get("motion")
             motion = motion_settings_from_mapping(

@@ -1,3 +1,4 @@
+from dataclasses import FrozenInstanceError
 import unittest
 
 from motion import (
@@ -18,6 +19,11 @@ class MotionSettingsTests(unittest.TestCase):
             {"pulse_size_px": "2", "pulse_rate_hz": "30", "ramp_mode": "Smooth"},
         )
 
+    def test_motion_settings_snapshot_is_immutable(self):
+        settings = MotionSettings()
+        with self.assertRaises(FrozenInstanceError):
+            settings.pulse_size_px = 4.0
+
     def test_values_are_clamped_and_invalid_ramp_uses_default(self):
         settings = motion_settings_from_mapping({
             "pulse_size_px": "99",
@@ -25,6 +31,14 @@ class MotionSettingsTests(unittest.TestCase):
             "ramp_mode": "Unknown",
         })
         self.assertEqual(settings, MotionSettings(8.0, 10.0, "Smooth"))
+
+    def test_huge_integer_values_use_safe_defaults_instead_of_overflowing(self):
+        huge_integer = 10**10000
+        settings = motion_settings_from_mapping({
+            "pulse_size_px": huge_integer,
+            "pulse_rate_hz": huge_integer,
+        })
+        self.assertEqual(settings, MotionSettings())
 
     def test_presets_are_exact_and_round_trip(self):
         self.assertEqual(tuple(MOTION_PRESETS), ("Soft", "Balanced", "Strong"))
@@ -57,15 +71,20 @@ class PairedPulseEngineTests(unittest.TestCase):
         self.assertTrue(all(x == 0 for x, _y in reports))
         self.assertEqual(sum(y for _x, y in reports), 0)
 
-    def test_smooth_ramp_accumulates_fraction_without_directional_bias(self):
+    def test_smooth_ramp_has_exact_early_fractional_residual_sequence(self):
         engine = PairedPulseEngine()
         settings = MotionSettings(2.0, 30.0, "Smooth")
-        reports = [engine.step(settings, 1 / 60, index / 60) for index in range(20)]
-        self.assertTrue(all(x == 0 for x, _y in reports))
-        self.assertLessEqual(max(abs(y) for _x, y in reports), 2)
-        for pair_start in range(0, len(reports), 2):
-            self.assertEqual(sum(y for _x, y in reports[pair_start:pair_start + 2]), 0)
-        self.assertTrue(any(y for _x, y in reports))
+        reports = [engine.step(settings, 1 / 60, index / 60) for index in range(10)]
+        self.assertEqual(
+            reports,
+            [
+                (0, 0), (0, 0),
+                (0, 0), (0, 0),
+                (0, -1), (0, 1),
+                (0, 1), (0, -1),
+                (0, -2), (0, 2),
+            ],
+        )
 
     def test_late_step_discards_missed_half_pulses(self):
         engine = PairedPulseEngine()

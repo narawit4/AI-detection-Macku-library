@@ -488,8 +488,8 @@ class JitterApp(tk.Tk):
 
     @property
     def preset_values(self) -> tuple[str, ...]:
-        # Custom is display-only: its numeric values are the current controls,
-        # including the intentionally non-preset default combination.
+        # Custom is display-only and represents a non-preset combination in
+        # the current controls.
         return ("Custom", *MOTION_PRESETS.keys())
 
     def _build_page(self) -> None:

@@ -1,6 +1,7 @@
 import threading
 import time
 import unittest
+from unittest import mock
 
 from makcu import MouseButton
 
@@ -45,6 +46,20 @@ class RecordingEngine:
     def step(self, _settings, _dt, _elapsed):
         self.calls.append((_settings, _dt, _elapsed))
         return 0, -1
+
+
+class StopAfterFirstWait:
+    def __init__(self):
+        self.timeouts = []
+        self._set = False
+
+    def is_set(self):
+        return self._set
+
+    def wait(self, timeout):
+        self.timeouts.append(timeout)
+        self._set = True
+        return True
 
 
 def wait_until(predicate, timeout=1.0):
@@ -169,6 +184,82 @@ class MakcuMovementTests(unittest.TestCase):
         self.assertTrue(
             all(x == 0 and abs(y) <= 2 for x, y in moves_after_stop)
         )
+
+    def test_worker_waits_one_half_pulse_interval(self):
+        service, _controller, _events = self.connected_service()
+        stop_event = StopAfterFirstWait()
+        connection_generation = service.connection_generation
+        with service._lock:
+            service._motion_generation += 1
+            motion_generation = service._motion_generation
+            service._motion_stop_reasons[motion_generation] = None
+            service._motion_active = True
+            service._motion_thread = threading.current_thread()
+        with mock.patch("makcu_service.time.perf_counter", return_value=100.0):
+            service._motion_worker(
+                motion_generation,
+                connection_generation,
+                stop_event,
+                lambda: MotionSettings(2, 20, "Instant"),
+                None,
+            )
+        self.assertEqual(stop_event.timeouts, [0.025])
+
+    def test_stop_signals_while_move_is_blocked_and_serializes_its_return(self):
+        class GatedController(FakeController):
+            def __init__(self):
+                super().__init__()
+                self.move_entered = threading.Event()
+                self.release_move = threading.Event()
+                self.move_starts = 0
+
+            def move(self, x, y):
+                self.move_starts += 1
+                self.move_entered.set()
+                if not self.release_move.wait(1.0):
+                    raise TimeoutError("test did not release blocked move")
+                super().move(x, y)
+
+        controller = GatedController()
+        events = []
+        service = MakcuService(
+            events.append,
+            controller_factory=lambda **_kwargs: controller,
+            engine_factory=RecordingEngine,
+        )
+        generation = service._begin_connection()
+        service._connect_worker(generation)
+        self.assertTrue(service.start_motion(lambda: MotionSettings()))
+        self.assertTrue(controller.move_entered.wait(1.0))
+
+        stop_started = threading.Event()
+        stop_returned = threading.Event()
+
+        def request_stop():
+            stop_started.set()
+            service.stop_motion("gated_stop")
+            stop_returned.set()
+
+        stop_thread = threading.Thread(target=request_stop)
+        stop_thread.start()
+        try:
+            self.assertTrue(stop_started.wait(1.0))
+            self.assertTrue(service._motion_stop.wait(0.2))
+            self.assertFalse(stop_returned.is_set())
+            controller.release_move.set()
+            self.assertTrue(stop_returned.wait(1.0))
+            move_starts_when_stop_returned = controller.move_starts
+            service.join_motion(1.0)
+            self.assertFalse(service.motion_active)
+            self.assertEqual(controller.move_starts, move_starts_when_stop_returned)
+            self.assertEqual(controller.move_starts, 1)
+            self.assertEqual(
+                events[-1], ServiceEvent("motion_stopped", "gated_stop")
+            )
+        finally:
+            controller.release_move.set()
+            stop_thread.join(1.0)
+            service.join_motion(1.0)
 
     def test_timed_motion_finishes_and_emits_test_complete(self):
         service, controller, events = self.connected_service()

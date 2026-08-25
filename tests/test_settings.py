@@ -1,4 +1,5 @@
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,7 +15,7 @@ class ConfigStoreTests(unittest.TestCase):
         self.assertEqual(outcome.config.motion, MotionSettings())
         self.assertEqual(outcome.config.trigger, "Left")
         self.assertEqual(outcome.config.modifier, "None")
-        self.assertEqual(outcome.config.selected_preset, "Custom")
+        self.assertEqual(outcome.config.selected_preset, "Balanced")
         self.assertEqual(outcome.config.theme, "light")
         self.assertTrue(outcome.save_allowed)
 
@@ -71,6 +72,40 @@ class ConfigStoreTests(unittest.TestCase):
             restored = json.loads(path.read_text(encoding="utf-8"))
         self.assertEqual(restored, original)
 
+    def test_fractional_newer_schema_is_not_truncated_or_overwritten(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            original_text = json.dumps({
+                "schema_version": 2.5,
+                "future": {"keep": True},
+            })
+            path.write_text(original_text, encoding="utf-8")
+            store = ConfigStore(path)
+            outcome = store.load()
+            self.assertFalse(outcome.save_allowed)
+            self.assertIsNotNone(outcome.warning)
+            with self.assertRaises(PermissionError):
+                store.save(outcome.config)
+            restored_text = path.read_text(encoding="utf-8")
+        self.assertEqual(restored_text, original_text)
+
+    def test_ambiguous_schema_identifiers_disable_saving(self):
+        for schema in (True, 1.5, "1.5", "malformed"):
+            with self.subTest(schema=schema), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "config.json"
+                original_text = json.dumps({
+                    "schema_version": schema,
+                    "keep": "unchanged",
+                })
+                path.write_text(original_text, encoding="utf-8")
+                store = ConfigStore(path)
+                outcome = store.load()
+                self.assertFalse(outcome.save_allowed)
+                self.assertEqual(outcome.warning, "Invalid configuration schema")
+                with self.assertRaises(PermissionError):
+                    store.save(outcome.config)
+                self.assertEqual(path.read_text(encoding="utf-8"), original_text)
+
     def test_corrupt_json_uses_defaults_and_reports_warning(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.json"
@@ -79,6 +114,27 @@ class ConfigStoreTests(unittest.TestCase):
         self.assertTrue(outcome.save_allowed)
         self.assertIsNotNone(outcome.warning)
         self.assertEqual(outcome.config, AppConfig())
+
+    @unittest.skipUnless(
+        hasattr(sys, "set_int_max_str_digits"),
+        "Python integer digit limits are unavailable",
+    )
+    def test_oversized_json_integer_uses_defaults_and_reports_warning(self):
+        previous_limit = sys.get_int_max_str_digits()
+        try:
+            sys.set_int_max_str_digits(640)
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "config.json"
+                path.write_text(
+                    '{"schema_version":' + ("9" * 641) + "}",
+                    encoding="utf-8",
+                )
+                outcome = ConfigStore(path).load()
+        finally:
+            sys.set_int_max_str_digits(previous_limit)
+        self.assertEqual(outcome.config, AppConfig())
+        self.assertTrue(outcome.save_allowed)
+        self.assertEqual(outcome.warning, "Configuration load failed: ValueError")
 
     def test_malformed_schema_two_values_are_safely_coerced(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -136,7 +192,7 @@ class ConfigStoreTests(unittest.TestCase):
         self.assertEqual(outcome.config.modifier, "Mouse4")
         self.assertEqual(outcome.config.hotkey_vk, 65)
         self.assertEqual(outcome.config.hotkey_name, "A")
-        self.assertEqual(outcome.config.selected_preset, "Custom")
+        self.assertEqual(outcome.config.selected_preset, "Balanced")
         self.assertEqual(outcome.config.theme, "dark")
         self.assertEqual(document["schema_version"], 1)
 

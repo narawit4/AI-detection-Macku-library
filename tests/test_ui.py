@@ -1020,6 +1020,11 @@ class JitterLayoutTests(unittest.TestCase):
 
 
 class JitterRuntimeTests(JitterLayoutTests):
+    def test_fresh_balanced_preset_still_starts_disabled(self):
+        self.assertEqual(self.app.preset_var.get(), "Balanced")
+        self.assertFalse(self.app.enabled)
+        self.assertEqual(self.app.runtime_state_var.get(), "DISABLED")
+
     def test_runtime_state_uses_exact_uppercase_vocabulary(self):
         """Fails if a runtime transition emits stale or mixed-case wording."""
         observed = [self.app.runtime_state_var.get()]

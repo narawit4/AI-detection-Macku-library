@@ -34,7 +34,7 @@ def _number(raw: Any, default: str, key: str) -> float:
         value = float(raw)
         if not math.isfinite(value):
             raise ValueError
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         value = float(default)
     low, high = MOTION_LIMITS[key]
     return max(low, min(high, value))
