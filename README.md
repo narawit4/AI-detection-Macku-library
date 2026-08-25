@@ -2,11 +2,11 @@
 
 Jitter is a small Windows-only Tkinter controller for a Makcu USB device. It
 has a fixed-size English Liquid Split Console with Control and Motion pages.
-It sends vertical paired pulses: equal up/down movements with alternating
-starting directions. Complete pulse pairs have zero intended displacement;
-results vary with the receiving application's input processing. Choose a
-Trigger and optional Modifier, arm or stop movement, run a three-second test,
-and assign a global toggle hotkey.
+It sends vertical paired pulses: one equal pair moves up then down, and the
+following equal pair moves down then up; this two-pair order repeats. Complete
+pulse pairs have zero intended displacement; results vary with the receiving
+application's input processing. Choose a Trigger and optional Modifier, arm or
+stop movement, run a three-second test, and assign a global toggle hotkey.
 
 ## Motion controls
 
