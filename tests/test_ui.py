@@ -319,7 +319,8 @@ class JitterLayoutTests(unittest.TestCase):
                     self.assertTrue(shell.find_withtag(tag), tag)
                 self.assertFalse(shell.find_withtag("panel-highlight"))
                 for item in shell.find_withtag("floating-panel"):
-                    self.assertFalse(shell.itemcget(item, "outline"))
+                    self.assertTrue(shell.itemcget(item, "outline"))
+                    self.assertEqual(float(shell.itemcget(item, "width")), 1.0)
                 rail_fill = shell.itemcget(
                     shell.find_withtag("rail-surface")[0], "fill"
                 )
@@ -1057,7 +1058,7 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertEqual(self.app.stop_button.cget("style"),
                          "Liquid.Danger.TButton")
 
-    def test_liquid_buttons_show_hover_and_press_states_without_borders(self):
+    def test_liquid_buttons_show_hover_and_press_states_with_one_outer_border(self):
         style = ttk.Style(self.app)
         self.assertEqual(style.lookup("Liquid.Primary.TButton", "background",
                                       ("active",)), "#79E8FA")
@@ -1071,7 +1072,7 @@ class JitterLayoutTests(unittest.TestCase):
                                       ("active",)), "#D6F5FA")
         for name in ("Primary", "Secondary", "Danger"):
             widget_style = f"Liquid.{name}.TButton"
-            self.assertEqual(str(style.lookup(widget_style, "borderwidth")), "0")
+            self.assertEqual(str(style.lookup(widget_style, "borderwidth")), "1")
             self.assertEqual(style.lookup(widget_style, "relief", ("pressed",)), "flat")
             self.assertEqual(str(style.lookup(widget_style, "focusthickness")), "0")
 
@@ -1081,8 +1082,8 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertEqual(style.lookup("Liquid.Secondary.TButton", "foreground",
                                       ("disabled",)), "#91A5B8")
 
-    def test_form_controls_and_cards_are_borderless(self):
-        """Fails if a standard control reintroduces a visible frame."""
+    def test_form_controls_and_cards_use_one_outer_border(self):
+        """Fails if a standard control loses or doubles its outer frame."""
         style = ttk.Style(self.app)
         for widget_style in (
             "Liquid.Card.TLabelframe",
@@ -1091,7 +1092,7 @@ class JitterLayoutTests(unittest.TestCase):
             "Liquid.Readonly.TCombobox",
             "Liquid.Vertical.TScrollbar",
         ):
-            self.assertEqual(str(style.lookup(widget_style, "borderwidth")), "0")
+            self.assertEqual(str(style.lookup(widget_style, "borderwidth")), "1")
 
     def test_required_actions_are_present_and_stop_is_outside_advanced(self):
         texts = widget_texts(self.app)

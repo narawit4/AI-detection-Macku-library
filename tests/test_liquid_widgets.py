@@ -155,16 +155,20 @@ class LiquidSliderInteractionTests(_SliderTestCase):
         self.root.update()
         self.assertFalse(slider.find_withtag("focus-ring"))
 
-    def test_slider_uses_filled_shapes_without_visible_strokes(self):
-        """Fails if any slider state brings back a line or shape outline."""
+    def test_slider_uses_single_outer_borders_without_decorative_strokes(self):
+        """Fails if slider borders split into seams or regain decorative arcs."""
         slider = self.make_slider()
         slider._on_enter()
         slider._on_focus_in()
         slider._redraw()
         self.assertNotIn("arc", {slider.type(item) for item in slider.find_all()})
-        for item in slider.find_all():
-            if slider.type(item) in {"oval", "rectangle", "polygon"}:
-                self.assertFalse(slider.itemcget(item, "outline"))
+        for tag in ("rail", "fill"):
+            shapes = slider.find_withtag(tag)
+            self.assertEqual(len(shapes), 1)
+            self.assertIn(slider.type(shapes[0]), {"polygon", "rectangle"})
+            self.assertTrue(slider.itemcget(shapes[0], "outline"))
+        self.assertTrue(slider.itemcget("thumb_body", "outline"))
+        self.assertTrue(slider.itemcget("bubble", "outline"))
 
     def test_slider_palette_updates_rail_fill_thumb_and_disabled_colors(self):
         """Fails if the slider stops rendering liquid palette roles."""
@@ -376,6 +380,8 @@ class LiquidNavigationTests(unittest.TestCase):
         self.assertEqual(self.nav.cget("background"), "#111827")
         self.assertEqual(self.nav.itemcget("glass", "fill"), "#1B2638")
         self.assertEqual(self.nav.itemcget("lens", "fill"), "#63E6FF")
+        self.assertEqual(self.nav.itemcget("glass", "outline"), "#45566F")
+        self.assertEqual(self.nav.itemcget("lens", "outline"), "#B8F6FF")
         self.assertEqual(
             canvas_text_font_family(self.nav, "label"),
             "Segoe UI",
@@ -508,7 +514,7 @@ class LiquidNavigationTests(unittest.TestCase):
 
         self.assertEqual(len(shapes), 1)
         self.assertEqual(nav.type(shapes[0]), "polygon")
-        self.assertFalse(nav.itemcget(shapes[0], "outline"))
+        self.assertTrue(nav.itemcget(shapes[0], "outline"))
 
     def test_navigation_has_no_large_decorative_arc(self):
         """Fails if a circular glass highlight crosses the navigation menu."""
@@ -528,8 +534,8 @@ class LiquidNavigationTests(unittest.TestCase):
 
         self.assertFalse(nav.find_withtag("lens-highlight"))
 
-    def test_navigation_rounded_surfaces_have_no_visible_outer_stroke(self):
-        """Fails if glass or lens retains a circular outline around its fill."""
+    def test_navigation_rounded_surfaces_have_one_clean_outer_border(self):
+        """Fails if navigation loses its outer borders or splits them into seams."""
         nav = self.make_vertical_nav()
         nav.pack()
         self.root.deiconify()
@@ -541,9 +547,8 @@ class LiquidNavigationTests(unittest.TestCase):
                 if nav.type(item) == "polygon"
             ]
             self.assertTrue(shapes)
-            self.assertTrue(
-                all(not nav.itemcget(item, "outline") for item in shapes)
-            )
+            self.assertEqual(len(shapes), 1)
+            self.assertTrue(nav.itemcget(shapes[0], "outline"))
 
     def test_destroy_cancels_animation(self):
         self.nav.select(2)
@@ -640,13 +645,15 @@ class LiquidIconButtonTests(unittest.TestCase):
         )
         self.assertEqual(self.button.accessible_name, "Reconnect Makcu")
 
-    def test_icon_button_uses_filled_surface_without_visible_strokes(self):
-        """Fails if an icon action brings back a border or highlight line."""
+    def test_icon_button_uses_one_outer_border_without_decorative_strokes(self):
+        """Fails if an icon border splits into seams or regains a shine arc."""
         self.button._on_enter()
         self.button._on_focus_in()
         self.assertNotIn("arc", {self.button.type(item) for item in self.button.find_all()})
-        for item in self.button.find_withtag("surface"):
-            self.assertFalse(self.button.itemcget(item, "outline"))
+        surface = self.button.find_withtag("surface")
+        self.assertEqual(len(surface), 1)
+        self.assertEqual(self.button.type(surface[0]), "polygon")
+        self.assertTrue(self.button.itemcget(surface[0], "outline"))
 
     def test_pointer_release_activates_and_clears_pressed_state(self):
         """Fails if a normal release leaves a button visibly pressed."""

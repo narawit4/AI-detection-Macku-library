@@ -248,12 +248,14 @@ class JitterApp(tk.Tk):
         style.configure("Liquid.Muted.TLabel", background=p["window"],
                         foreground=p["muted"], font=SMALL_FONT)
         style.configure("Liquid.Card.TLabelframe", background=p["window"],
-                        foreground=p["text"], relief="flat", borderwidth=0)
+                        foreground=p["text"], bordercolor=p["border"],
+                        relief="solid", borderwidth=1)
         style.configure("Liquid.Card.TLabelframe.Label", background=p["window"],
                         foreground=p["muted"], font=SECTION_FONT)
         style.configure("Liquid.Primary.TButton", background=p["accent"],
-                        foreground="#07252C", focuscolor=p["accent"],
-                        focusthickness=0, relief="flat", borderwidth=0,
+                        foreground="#07252C", bordercolor=p["accent_pressed"],
+                        focuscolor=p["accent"], focusthickness=0,
+                        relief="flat", borderwidth=1,
                         font=(FONT_FAMILY, 10, "bold"), padding=(14, 8))
         style.map("Liquid.Primary.TButton",
                   background=[("disabled", disabled_background),
@@ -262,8 +264,9 @@ class JitterApp(tk.Tk):
                   foreground=[("disabled", disabled_text)],
                   relief=[("pressed", "flat"), ("!pressed", "flat")])
         style.configure("Liquid.Secondary.TButton", background=p["raised"],
-                        foreground=p["text"], focuscolor=p["raised"],
-                        focusthickness=0, relief="flat", borderwidth=0,
+                        foreground=p["text"], bordercolor=p["border"],
+                        focuscolor=p["raised"], focusthickness=0,
+                        relief="flat", borderwidth=1,
                         font=BODY_FONT, padding=(12, 7))
         style.map("Liquid.Secondary.TButton",
                   background=[("disabled", disabled_background),
@@ -272,8 +275,9 @@ class JitterApp(tk.Tk):
                   foreground=[("disabled", disabled_text)],
                   relief=[("pressed", "flat"), ("!pressed", "flat")])
         style.configure("Liquid.Danger.TButton", background=p["danger"],
-                        foreground="#FFFFFF", focuscolor=p["danger"],
-                        focusthickness=0, relief="flat", borderwidth=0,
+                        foreground="#FFFFFF", bordercolor=p["red"],
+                        focuscolor=p["danger"], focusthickness=0,
+                        relief="flat", borderwidth=1,
                         font=(FONT_FAMILY, 10, "bold"), padding=(14, 8))
         style.map("Liquid.Danger.TButton",
                   background=[("disabled", disabled_background),
@@ -291,14 +295,16 @@ class JitterApp(tk.Tk):
                             font=(FONT_FAMILY, 10, "bold"))
         style.configure("Liquid.Entry.TEntry", fieldbackground=p["raised"],
                         foreground=p["text"], insertcolor=p["text"],
-                        padding=(6, 4), relief="flat", borderwidth=0)
+                        padding=(6, 4), bordercolor=p["border"],
+                        relief="solid", borderwidth=1)
         style.configure("Liquid.Invalid.TEntry", fieldbackground=p["raised"],
                         foreground=p["text"], insertcolor=p["text"],
-                        padding=(6, 4), relief="flat", borderwidth=0)
+                        padding=(6, 4), bordercolor=p["red"],
+                        relief="solid", borderwidth=1)
         style.configure("Liquid.Readonly.TCombobox", fieldbackground=p["raised"],
                         background=p["raised"], foreground=p["text"],
                         arrowcolor=p["text"], padding=(5, 4),
-                        relief="flat", borderwidth=0)
+                        bordercolor=p["border"], relief="solid", borderwidth=1)
         style.map("Liquid.Readonly.TCombobox",
                   fieldbackground=[("readonly", p["raised"])],
                   foreground=[("readonly", p["text"])])
@@ -307,7 +313,8 @@ class JitterApp(tk.Tk):
             background=p["raised"],
             troughcolor=p["surface"],
             arrowcolor=p["text"],
-            borderwidth=0,
+            bordercolor=p["border"],
+            borderwidth=1,
             relief="flat",
             darkcolor=p["raised"],
             lightcolor=p["raised"],
@@ -867,8 +874,8 @@ class JitterApp(tk.Tk):
                 text=text,
                 background=p["raised"],
                 foreground=p["text"],
-                borderwidth=0,
-                relief="flat",
+                borderwidth=1,
+                relief="solid",
                 font=SMALL_FONT,
                 padx=5,
                 pady=2,
@@ -1055,8 +1062,8 @@ class JitterApp(tk.Tk):
                 text=self.theme_tooltip_text,
                 background=p["raised"],
                 foreground=p["text"],
-                borderwidth=0,
-                relief="flat",
+                borderwidth=1,
+                relief="solid",
                 font=SMALL_FONT,
                 padx=5,
                 pady=2,
@@ -1147,7 +1154,8 @@ class JitterApp(tk.Tk):
                 smooth=True,
                 splinesteps=24,
                 fill=p["surface"],
-                outline="",
+                outline=p["border"],
+                width=1,
                 tags=panel_tags,
             )
         self.shell.tag_lower("shell-art")
@@ -1180,7 +1188,8 @@ class JitterApp(tk.Tk):
             13,
             13,
             fill=p[role],
-            outline="",
+            outline=p["raised"],
+            width=1,
             tags=("status-marker", state_tag),
         )
         indicator.create_oval(

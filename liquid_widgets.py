@@ -282,7 +282,7 @@ class LiquidNavigation(tk.Canvas):
             glass_right,
             glass_bottom,
             fill=self._palette["surface"],
-            outline="",
+            outline=self._palette["border"],
             tags="glass",
         )
         if not self._pill_initialized:
@@ -310,7 +310,7 @@ class LiquidNavigation(tk.Canvas):
             pill_right,
             pill_bottom,
             fill=self._palette["lens"],
-            outline="",
+            outline=self._palette["lens_highlight"],
             tags="lens",
         )
         for index, label in enumerate(self.labels):
@@ -514,31 +514,24 @@ class LiquidSlider(tk.Canvas):
         tags: str | tuple[str, ...],
     ) -> None:
         radius = max(1.0, min((bottom - top) / 2.0, (right - left) / 2.0))
-        self.create_rectangle(
-            left + radius,
-            top,
-            right - radius,
-            bottom,
+        self.create_polygon(
+            left + radius, top,
+            right - radius, top,
+            right, top,
+            right, top + radius,
+            right, bottom - radius,
+            right, bottom,
+            right - radius, bottom,
+            left + radius, bottom,
+            left, bottom,
+            left, bottom - radius,
+            left, top + radius,
+            left, top,
+            left + radius, top,
             fill=fill,
             outline=outline,
-            tags=tags,
-        )
-        self.create_oval(
-            left,
-            top,
-            left + radius * 2.0,
-            bottom,
-            fill=fill,
-            outline=outline,
-            tags=tags,
-        )
-        self.create_oval(
-            right - radius * 2.0,
-            top,
-            right,
-            bottom,
-            fill=fill,
-            outline=outline,
+            smooth=True,
+            splinesteps=24,
             tags=tags,
         )
 
@@ -562,7 +555,7 @@ class LiquidSlider(tk.Canvas):
             right,
             center_y + 4,
             fill=rail_color,
-            outline="",
+            outline=rail_color,
             tags="rail",
         )
         fill_right = max(left, thumb_x)
@@ -573,7 +566,7 @@ class LiquidSlider(tk.Canvas):
                 fill_right,
                 center_y + 3,
                 fill=fill_color,
-                outline="",
+                outline=fill_color,
                 tags="fill",
             )
         else:
@@ -583,7 +576,7 @@ class LiquidSlider(tk.Canvas):
                 fill_right,
                 center_y + 3,
                 fill=fill_color,
-                outline="",
+                outline=fill_color,
                 tags="fill",
             )
 
@@ -604,7 +597,8 @@ class LiquidSlider(tk.Canvas):
             thumb_x + 8,
             center_y + 8,
             fill=thumb_color,
-            outline="",
+            outline=self._palette["thumb_border"],
+            width=1,
             tags=("thumb", "thumb_body"),
         )
 
@@ -618,7 +612,7 @@ class LiquidSlider(tk.Canvas):
                 thumb_x + half_width,
                 bubble_y + 7,
                 fill=self._palette["bubble"],
-                outline="",
+                outline=fill_color,
                 tags="bubble",
             )
             self.create_text(
@@ -798,31 +792,24 @@ class LiquidIconButton(tk.Canvas):
         tags: str | tuple[str, ...],
     ) -> None:
         radius = max(1.0, min((bottom - top) / 2.0, (right - left) / 2.0))
-        self.create_rectangle(
-            left + radius,
-            top,
-            right - radius,
-            bottom,
+        self.create_polygon(
+            left + radius, top,
+            right - radius, top,
+            right, top,
+            right, top + radius,
+            right, bottom - radius,
+            right, bottom,
+            right - radius, bottom,
+            left + radius, bottom,
+            left, bottom,
+            left, bottom - radius,
+            left, top + radius,
+            left, top,
+            left + radius, top,
             fill=fill,
             outline=outline,
-            tags=tags,
-        )
-        self.create_oval(
-            left,
-            top,
-            left + radius * 2.0,
-            bottom,
-            fill=fill,
-            outline=outline,
-            tags=tags,
-        )
-        self.create_oval(
-            right - radius * 2.0,
-            top,
-            right,
-            bottom,
-            fill=fill,
-            outline=outline,
+            smooth=True,
+            splinesteps=24,
             tags=tags,
         )
 
@@ -851,7 +838,7 @@ class LiquidIconButton(tk.Canvas):
             width - inset,
             height - inset,
             fill=surface,
-            outline="",
+            outline=self._palette["border"],
             tags="surface",
         )
         self.create_text(
