@@ -589,13 +589,16 @@ class MakcuMovementTests(unittest.TestCase):
 
     def test_composite_rejects_empty_sources_without_reserving_generation(self):
         service, _controller, _events = self.connected_service()
-        before = service.motion_generation
+        with service._lock:
+            before = service._motion_generation
 
         self.assertIsNone(service.start_composite_motion_source(
             MotionSources(), MotionSettings, lambda: None, AimSettings
         ))
 
-        self.assertEqual(service.motion_generation, before)
+        with service._lock:
+            after = service._motion_generation
+        self.assertEqual(after, before)
 
     def test_legacy_motion_starts_delegate_with_fixed_sources(self):
         for mode, expected_sources in (

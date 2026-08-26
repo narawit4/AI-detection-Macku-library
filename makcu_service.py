@@ -119,11 +119,6 @@ class MakcuService:
         with self._lock:
             return self._motion_active
 
-    @property
-    def motion_generation(self) -> int:
-        with self._lock:
-            return self._motion_generation
-
     def _emit(self, event: ServiceEvent) -> None:
         # A UI event sink normally just queues work for Tk's thread.  Keep a
         # bad sink from killing a daemon connection worker or cleanup thread.
