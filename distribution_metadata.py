@@ -564,16 +564,22 @@ def execute_build_plan(
         plan.test_argv,
         plan.runtime_import_argv,
     ):
-        runner(argv, cwd=plan.root, check=True)
+        runner(argv, cwd=plan.root, check=True, env=None)
     with plan.build_log.open("w", encoding="utf-8") as log:
         runner(
             plan.nuitka_argv,
             cwd=plan.root,
             check=True,
+            env=None,
             stdout=log,
             stderr=subprocess.STDOUT,
         )
-    runner(plan.packaged_self_check_argv, cwd=plan.root, check=True)
+    runner(
+        plan.packaged_self_check_argv,
+        cwd=plan.root,
+        check=True,
+        env=None,
+    )
     release_copier(
         plan.output_dir, root=plan.root, materials=plan.release_materials
     )

@@ -78,7 +78,7 @@ class EntryPointTests(unittest.TestCase):
         self.assertEqual(result, 1)
         self.assertEqual(payload["status"], "error")
         self.assertEqual(payload["provider"], "CPUExecutionProvider")
-        self.assertIn("DmlExecutionProvider", payload["error"])
+        self.assertEqual(payload["error"], "required_provider_unavailable")
 
     def test_ai_runtime_self_check_rejects_hash_and_contract_failures(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -95,7 +95,10 @@ class EntryPointTests(unittest.TestCase):
 
             self.assertEqual(result, 1)
             self.assertEqual(detector_calls, [])
-            self.assertIn("hash", json.loads(output.getvalue())["error"].lower())
+            self.assertEqual(
+                json.loads(output.getvalue())["error"],
+                "model_hash_mismatch",
+            )
 
         def reject_contract(_path):
             raise RuntimeError("model contract rejected")
@@ -107,7 +110,42 @@ class EntryPointTests(unittest.TestCase):
             output=output,
         )
         self.assertEqual(result, 1)
-        self.assertIn("contract", json.loads(output.getvalue())["error"].lower())
+        payload = json.loads(output.getvalue())
+        self.assertEqual(payload["error"], "runtime_initialization_failed")
+        self.assertNotIn("model contract rejected", output.getvalue())
+
+    def test_self_check_import_failure_is_one_safe_json_object_without_traceback(self):
+        secret = r"C:\private\native\onnxruntime.dll"
+        with tempfile.TemporaryDirectory() as temporary:
+            isolated = Path(temporary)
+            shutil.copy2(ROOT / "main.py", isolated / "main.py")
+            (isolated / "ai_detection.py").write_text(
+                f"raise ImportError({secret!r})\n",
+                encoding="utf-8",
+            )
+
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(isolated / "main.py"),
+                    "--ai-runtime-self-check",
+                ],
+                cwd=isolated,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+
+        lines = completed.stdout.splitlines()
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertEqual(len(lines), 1, completed.stdout + completed.stderr)
+        self.assertEqual(completed.stderr, "")
+        payload = json.loads(lines[0])
+        self.assertEqual(payload["status"], "error")
+        self.assertEqual(payload["error"], "runtime_initialization_failed")
+        self.assertIsNone(payload["model_path"])
+        self.assertNotIn(secret, completed.stdout + completed.stderr)
+        self.assertNotIn("Traceback", completed.stdout + completed.stderr)
 
     def test_source_self_check_runs_without_gui_or_settings_modules(self):
         model = ROOT / "models" / "all_games_320.onnx"
@@ -144,6 +182,40 @@ class EntryPointTests(unittest.TestCase):
             self.assertEqual(payload["provider"], "DmlExecutionProvider")
             self.assertFalse((isolated / "config.json").exists())
             self.assertFalse((isolated / "app.log").exists())
+
+    @unittest.skipUnless(
+        sys.platform == "win32",
+        "DirectML source smoke requires the Windows build host",
+    )
+    def test_real_source_self_check_loads_bundled_model_with_directml(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            working_directory = Path(temporary)
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "main.py"),
+                    "--ai-runtime-self-check",
+                ],
+                cwd=working_directory,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+
+            self.assertFalse((working_directory / "config.json").exists())
+            self.assertFalse((working_directory / "app.log").exists())
+
+        self.assertEqual(
+            completed.returncode, 0, completed.stdout + completed.stderr
+        )
+        self.assertEqual(completed.stderr, "")
+        payload = json.loads(completed.stdout)
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["provider"], "DmlExecutionProvider")
+        self.assertEqual(
+            payload["model_path"],
+            str((ROOT / "models" / "all_games_320.onnx").resolve()),
+        )
 
     def test_second_instance_returns_no_handle_and_closes_duplicate(self):
         kernel32 = FakeKernel32(last_error=183)

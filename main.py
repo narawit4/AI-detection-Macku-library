@@ -55,38 +55,45 @@ def run_ai_runtime_self_check(
     output: TextIO | None = None,
 ) -> int:
     """Validate the bundled model contract and require DirectML, reporting JSON."""
-    from ai_detection import OnnxDetector, model_resource_path
-
-    model = Path(model_path) if model_path is not None else model_resource_path()
-    model = model.resolve()
     payload: dict[str, object] = {
         "status": "error",
         "required_provider": REQUIRED_AI_PROVIDER,
         "provider": None,
-        "model_path": str(model),
+        "model_path": None,
         "model_sha256": None,
         "expected_model_sha256": AI_MODEL_SHA256,
     }
     result = 1
     try:
+        factory = detector_factory
+        resource_path = None
+        if factory is None or model_path is None:
+            from ai_detection import OnnxDetector, model_resource_path
+
+            factory = factory or OnnxDetector
+            resource_path = model_resource_path
+
+        model = Path(model_path) if model_path is not None else resource_path()
+        model = model.resolve()
+        payload["model_path"] = str(model)
         model_hash = hashlib.sha256(model.read_bytes()).hexdigest().upper()
         payload["model_sha256"] = model_hash
         if model_hash != AI_MODEL_SHA256:
-            raise RuntimeError("AI model hash mismatch")
-        factory = detector_factory or OnnxDetector
-        detector = factory(model)
-        provider = detector.provider
-        payload["provider"] = provider
-        if provider != REQUIRED_AI_PROVIDER:
-            raise RuntimeError(
-                f"required provider {REQUIRED_AI_PROVIDER} is unavailable"
-            )
-        payload["status"] = "ok"
-        result = 0
-    except Exception as error:
-        payload["error"] = f"{type(error).__name__}: {error}"
+            payload["error"] = "model_hash_mismatch"
+        else:
+            detector = factory(model)
+            provider = detector.provider
+            if isinstance(provider, str):
+                payload["provider"] = provider
+            if provider != REQUIRED_AI_PROVIDER:
+                payload["error"] = "required_provider_unavailable"
+            else:
+                payload["status"] = "ok"
+                result = 0
+    except Exception:
+        payload["error"] = "runtime_initialization_failed"
 
-    stream = sys.stdout if output is None else output
+    stream = output if output is not None else (sys.stdout or sys.stderr)
     if stream is not None:
         print(json.dumps(payload, sort_keys=True), file=stream)
     return result

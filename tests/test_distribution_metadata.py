@@ -8,7 +8,6 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
-from types import SimpleNamespace
 
 from distribution_metadata import (
     build_plan,
@@ -174,7 +173,7 @@ class BuildPlanTests(unittest.TestCase):
             assume_yes_for_downloads=False,
             check_checksums=False,
         )
-        dll_config = parsed.data["ai_detection"]["dlls"]
+        dll_config = parsed.get("ai_detection", section="dlls")
         self.assertEqual(len(dll_config), 1)
         rule = dll_config[0]
         source = rule["from_filenames"]
@@ -283,8 +282,12 @@ class BuildPlanTests(unittest.TestCase):
         events = []
 
         def runner(argv, **kwargs):
-            events.append(("run", tuple(argv)))
-            return SimpleNamespace(returncode=0)
+            self.assertEqual(kwargs["cwd"], executable_plan.root)
+            self.assertIs(kwargs["check"], True)
+            self.assertIn("env", kwargs)
+            self.assertIsNone(kwargs["env"])
+            events.append(("run", tuple(argv), kwargs))
+            return subprocess.CompletedProcess(argv, 0)
 
         def release_copier(output_dir, *, root, materials):
             events.append(
@@ -293,10 +296,21 @@ class BuildPlanTests(unittest.TestCase):
             return ()
 
         with tempfile.TemporaryDirectory() as temporary:
+            output_dir = Path(temporary) / "release-output"
             executable_plan = replace(
                 plan,
-                output_dir=Path(temporary),
-                build_log=Path(temporary) / "build.log",
+                output_dir=output_dir,
+                build_log=output_dir / "build.log",
+                nuitka_argv=tuple(
+                    f"--output-dir={output_dir}"
+                    if argument.startswith("--output-dir=")
+                    else argument
+                    for argument in plan.nuitka_argv
+                ),
+                packaged_self_check_argv=(
+                    str(output_dir / "Jitter.exe"),
+                    plan.packaged_self_check_argv[-1],
+                ),
             )
             execute_build_plan(
                 executable_plan,
@@ -305,40 +319,90 @@ class BuildPlanTests(unittest.TestCase):
             )
 
         self.assertEqual(
-            events,
+            [event[1] for event in events if event[0] == "run"],
             [
-                ("run", executable_plan.install_argv),
-                ("run", executable_plan.compile_argv),
-                ("run", executable_plan.test_argv),
-                ("run", executable_plan.runtime_import_argv),
-                ("run", executable_plan.nuitka_argv),
-                ("run", executable_plan.packaged_self_check_argv),
-                (
-                    "copy",
-                    (
-                        executable_plan.output_dir,
-                        executable_plan.root,
-                        executable_plan.release_materials,
-                    ),
-                ),
+                executable_plan.install_argv,
+                executable_plan.compile_argv,
+                executable_plan.test_argv,
+                executable_plan.runtime_import_argv,
+                executable_plan.nuitka_argv,
+                executable_plan.packaged_self_check_argv,
             ],
         )
+        self.assertIn(
+            f"--output-dir={executable_plan.output_dir}",
+            executable_plan.nuitka_argv,
+        )
+        self.assertEqual(
+            events[-1],
+            (
+                "copy",
+                (
+                    executable_plan.output_dir,
+                    executable_plan.root,
+                    executable_plan.release_materials,
+                ),
+            ),
+        )
+        for event in events[:4] + events[5:6]:
+            self.assertEqual(
+                set(event[2]),
+                {"cwd", "check", "env"},
+            )
+        nuitka_kwargs = events[4][2]
+        self.assertEqual(
+            set(nuitka_kwargs),
+            {"cwd", "check", "env", "stdout", "stderr"},
+        )
+        self.assertEqual(
+            nuitka_kwargs["stdout"].name,
+            str(executable_plan.build_log),
+        )
+        self.assertIs(nuitka_kwargs["stderr"], subprocess.STDOUT)
 
     def test_failed_packaged_self_check_prevents_release_copying(self):
         plan = build_plan(ROOT)
         copied = []
 
-        def runner(argv, **_kwargs):
-            if tuple(argv) == plan.packaged_self_check_argv:
-                raise subprocess.CalledProcessError(1, argv)
-            return SimpleNamespace(returncode=0)
-
         with tempfile.TemporaryDirectory() as temporary:
+            output_dir = Path(temporary) / "release-output"
             executable_plan = replace(
                 plan,
-                output_dir=Path(temporary),
-                build_log=Path(temporary) / "build.log",
+                output_dir=output_dir,
+                build_log=output_dir / "build.log",
+                nuitka_argv=tuple(
+                    f"--output-dir={output_dir}"
+                    if argument.startswith("--output-dir=")
+                    else argument
+                    for argument in plan.nuitka_argv
+                ),
+                packaged_self_check_argv=(
+                    str(output_dir / "Jitter.exe"),
+                    plan.packaged_self_check_argv[-1],
+                ),
             )
+
+            calls = []
+
+            def runner(argv, **kwargs):
+                command = tuple(argv)
+                calls.append((command, kwargs))
+                returncode = int(
+                    command == executable_plan.packaged_self_check_argv
+                )
+                completed = subprocess.CompletedProcess(argv, returncode)
+                if returncode and kwargs.get("check"):
+                    raise subprocess.CalledProcessError(returncode, argv)
+                return completed
+
+            unchecked = runner(
+                executable_plan.packaged_self_check_argv,
+                cwd=executable_plan.root,
+                check=False,
+                env=None,
+            )
+            self.assertEqual(unchecked.returncode, 1)
+            calls.clear()
             with self.assertRaises(subprocess.CalledProcessError):
                 execute_build_plan(
                     executable_plan,
@@ -347,6 +411,9 @@ class BuildPlanTests(unittest.TestCase):
                 )
 
         self.assertEqual(copied, [])
+        self.assertEqual(calls[-1][0], executable_plan.packaged_self_check_argv)
+        self.assertTrue(all(call[1]["check"] for call in calls))
+        self.assertTrue(all(call[1]["env"] is None for call in calls))
 
     def test_new_third_party_source_import_requires_pin_license_and_root_mapping(self):
         with tempfile.TemporaryDirectory() as temporary:
