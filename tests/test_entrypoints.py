@@ -3,7 +3,6 @@ import hashlib
 import json
 import re
 import subprocess
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -176,6 +175,8 @@ class EntryPointTests(unittest.TestCase):
         invalid_vectors = (
             ("--not-a-build-mode",),
             ("-h",),
+            ("--help!",),
+            ("--review-json!",),
             ("foo&echo INJECTED",),
             ('foo"bar',),
             ("", "--review-json"),
@@ -186,14 +187,10 @@ class EntryPointTests(unittest.TestCase):
             root = Path(temporary)
             script = root / "gen.bat"
             script.write_bytes((ROOT / "gen.bat").read_bytes())
-            (root / "distribution_metadata.py").write_bytes(
-                (ROOT / "distribution_metadata.py").read_bytes()
-            )
+            marker = root / "helper-invocations.txt"
             (root / "python.cmd").write_text(
                 "@echo off\r\n"
-                "if \"%~2\"==\"--classify-gen-invocation\" "
-                f'\"{sys.executable}\" %*\r\n'
-                "if errorlevel 1 exit /b %errorlevel%\r\n"
+                f'echo %*>>\"{marker}\"\r\n'
                 "exit /b 97\r\n",
                 encoding="utf-8",
             )
@@ -211,6 +208,31 @@ class EntryPointTests(unittest.TestCase):
                         "injected", (completed.stdout + completed.stderr).lower()
                     )
                     self.assertFalse((root / "build-output").exists())
+                    self.assertFalse(marker.exists())
+
+    def test_gen_dispatches_literal_helper_modes_from_nested_native_cmd(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            script = root / "gen.bat"
+            script.write_bytes((ROOT / "gen.bat").read_bytes())
+            marker = root / "helper-invocations.txt"
+            (root / "python.cmd").write_text(
+                "@echo off\r\n"
+                f'echo %*>>\"{marker}\"\r\n'
+                "exit /b 73\r\n",
+                encoding="utf-8",
+            )
+
+            build = subprocess.run(
+                ["cmd.exe", "/d", "/c", "cmd.exe", "/d", "/c", str(script)],
+                cwd=root, capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(build.returncode, 73, build.stdout + build.stderr)
+            self.assertEqual(
+                marker.read_text(encoding="utf-8").splitlines(),
+                ["distribution_metadata.py --build"],
+            )
+            self.assertFalse((root / "build-output").exists())
 
     def test_source_tree_does_not_import_or_define_removed_stacks(self):
         forbidden_imports = {

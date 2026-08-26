@@ -9,7 +9,8 @@
     {
       "import_root": "serial",
       "distribution": "pyserial",
-      "required_by": "makcu==2.3.1"
+      "required_by": "makcu==2.3.1",
+      "transitive_of": "makcu"
     },
     {
       "import_root": "pygame",
@@ -29,7 +30,8 @@
     {
       "import_root": "comtypes",
       "distribution": "comtypes",
-      "required_by": "dxcam==0.3.0"
+      "required_by": "dxcam==0.3.0",
+      "transitive_of": "dxcam"
     },
     {
       "import_root": "numpy",

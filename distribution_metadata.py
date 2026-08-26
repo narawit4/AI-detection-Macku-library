@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
-import os
 import re
 import shutil
+import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Iterable, Mapping
+from typing import Callable, Iterable, Mapping
 
 
 ROOT = Path(__file__).resolve().parent
@@ -18,6 +20,14 @@ _NAME_SEPARATOR = re.compile(r"[-_.]+")
 _PINNED_REQUIREMENT = re.compile(
     r"(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)==(?P<version>[^\s;]+)"
 )
+_MODEL_SHA256 = "6B9157D6419F9DBC40D2DCECCC33A3387078C86F1C5872EDA544B174FF48499C"
+_RELEASE_MATERIALS = ("LICENSE", "THIRD_PARTY_NOTICES.md", "licenses")
+_EXCLUDED_SOURCE_PARTS = {
+    ".git", ".superpowers", "__pycache__", "build-output", "dist", "tests"
+}
+_PROHIBITED_SOURCE_TOKENS = {
+    "training", "profile", "profiles", "overlay", "overlays", "tray", "ai_tracker"
+}
 
 
 @dataclass(frozen=True)
@@ -40,6 +50,65 @@ class RuntimeImportRecord:
     import_root: str
     distribution: str
     required_by: str
+    transitive_of: str | None = None
+
+
+@dataclass(frozen=True)
+class BuildPlan:
+    """The complete, reviewed command and release plan for one packaged build."""
+
+    root: Path
+    compile_targets: tuple[str, ...]
+    runtime_imports: tuple[str, ...]
+    nuitka_data_options: tuple[str, ...]
+    release_materials: tuple[str, ...]
+    requirements: tuple[PinnedRequirement, ...]
+    licensed_packages: tuple[LicenseRecord, ...]
+    runtime_inventory: tuple[RuntimeImportRecord, ...]
+    install_argv: tuple[str, ...]
+    compile_argv: tuple[str, ...]
+    test_argv: tuple[str, ...]
+    runtime_import_argv: tuple[str, ...]
+    nuitka_argv: tuple[str, ...]
+    output_dir: Path
+    build_log: Path
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "compile_targets": list(self.compile_targets),
+            "runtime_imports": list(self.runtime_imports),
+            "nuitka_data_options": list(self.nuitka_data_options),
+            "release_materials": list(self.release_materials),
+            "requirements": [
+                {"name": item.name, "version": item.version}
+                for item in self.requirements
+            ],
+            "licensed_packages": [
+                {"name": item.name, "version": item.version}
+                for item in self.licensed_packages
+            ],
+            "runtime_inventory": [
+                {
+                    "import_root": item.import_root,
+                    "distribution": item.distribution,
+                    "required_by": item.required_by,
+                    **(
+                        {"transitive_of": item.transitive_of}
+                        if item.transitive_of is not None else {}
+                    ),
+                }
+                for item in self.runtime_inventory
+            ],
+            "commands": {
+                "install": list(self.install_argv),
+                "compile": list(self.compile_argv),
+                "test": list(self.test_argv),
+                "runtime_import": list(self.runtime_import_argv),
+                "nuitka": list(self.nuitka_argv),
+            },
+            "output_dir": str(self.output_dir.relative_to(self.root)).replace("/", "\\"),
+            "build_log": str(self.build_log.relative_to(self.root)).replace("/", "\\"),
+        }
 
 
 def normalize_distribution_name(name: str) -> str:
@@ -180,6 +249,7 @@ def validate_runtime_inventory(
         import_root = item.get("import_root")
         distribution = item.get("distribution")
         required_by = item.get("required_by")
+        transitive_of = item.get("transitive_of")
         if not isinstance(import_root, str) or not re.fullmatch(
             r"[A-Za-z_][A-Za-z0-9_]*", import_root
         ):
@@ -190,10 +260,16 @@ def validate_runtime_inventory(
             raise ValueError(f"runtime import {import_root} has no distribution")
         if not isinstance(required_by, str) or not required_by.strip():
             raise ValueError(f"runtime import {import_root} has no required_by")
+        if transitive_of is not None and (
+            not isinstance(transitive_of, str)
+            or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", transitive_of)
+        ):
+            raise ValueError(f"runtime import {import_root} has invalid transitive_of")
         by_root[import_root] = RuntimeImportRecord(
             import_root,
             normalize_distribution_name(distribution),
             required_by,
+            transitive_of,
         )
 
     selected = []
@@ -221,101 +297,160 @@ def validate_runtime_inventory(
     return tuple(selected)
 
 
-def _environment_tokens(environ: Mapping[str, str], name: str) -> list[str]:
-    value = environ.get(name, "")
-    tokens = value.split()
-    if not tokens:
-        raise ValueError(f"missing packaging environment variable: {name}")
-    return tokens
+def discover_application_sources(root: Path) -> tuple[Path, ...]:
+    """Return live application sources, including nested packages, in stable order."""
+    sources = []
+    for path in root.rglob("*.py"):
+        relative = path.relative_to(root)
+        if _EXCLUDED_SOURCE_PARTS.intersection(relative.parts):
+            continue
+        if any(part.endswith((".build", ".dist")) for part in relative.parts):
+            continue
+        tokens = {
+            token
+            for part in (*relative.parts, path.stem)
+            for token in _NAME_SEPARATOR.split(part.casefold())
+        }
+        prohibited = tokens.intersection(_PROHIBITED_SOURCE_TOKENS)
+        if prohibited:
+            raise ValueError(
+                f"prohibited application source path {relative}: {sorted(prohibited)}"
+            )
+        sources.append(path)
+    if not sources:
+        raise ValueError("no application Python sources found")
+    return tuple(sorted(sources, key=lambda item: item.relative_to(root).as_posix()))
 
 
-def review_payload(
-    *, root: Path = ROOT, environ: Mapping[str, str] = os.environ
-) -> dict[str, object]:
+def _source_import_roots(root: Path, sources: Iterable[Path]) -> set[str]:
+    local_roots = {
+        path.relative_to(root).parts[0].removesuffix(".py") for path in sources
+    }
+    imported = set()
+    for path in sources:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported.update(alias.name.split(".", 1)[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported.add(node.module.split(".", 1)[0])
+    return imported.difference(sys.stdlib_module_names, local_roots)
+
+
+def _active_runtime_roots(inventory: object, direct_roots: set[str]) -> tuple[str, ...]:
+    if not isinstance(inventory, list):
+        raise ValueError("runtime inventory must be a list")
+    items_by_root = {}
+    for item in inventory:
+        if not isinstance(item, dict) or not isinstance(item.get("import_root"), str):
+            raise ValueError("runtime inventory item has no import root")
+        items_by_root[item["import_root"]] = item
+    unknown = sorted(direct_roots.difference(items_by_root))
+    if unknown:
+        raise ValueError(f"source imports have no runtime inventory mapping: {unknown}")
+
+    active = set(direct_roots)
+    changed = True
+    while changed:
+        changed = False
+        for import_root, item in items_by_root.items():
+            if item.get("transitive_of") in active and import_root not in active:
+                active.add(import_root)
+                changed = True
+    return tuple(
+        item["import_root"] for item in inventory if item["import_root"] in active
+    )
+
+
+def build_plan(root: Path = ROOT) -> BuildPlan:
+    """Validate inputs and construct the sole command plan used for packaging."""
+    root = root.resolve()
     requirements = parse_pinned_requirements(
         (root / "requirements.txt").read_text(encoding="utf-8")
     )
-    manifest_path = root / "licenses" / "manifest.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    records = validate_license_manifest(manifest, root, requirements)
-    compile_targets = _environment_tokens(
-        environ, "JITTER_PACKAGE_COMPILE_TARGETS"
+    manifest = json.loads(
+        (root / "licenses" / "manifest.json").read_text(encoding="utf-8")
     )
-    runtime_imports = _environment_tokens(environ, "JITTER_PACKAGE_RUNTIME_IMPORTS")
-    if "sound_service.py" in compile_targets and "pygame" not in runtime_imports:
-        runtime_imports.append("pygame")
-    inventory = validate_runtime_inventory(
-        manifest.get("runtime_inventory"),
-        requirements,
-        {record.name: record.version for record in records},
-        runtime_imports,
+    licensed_packages = validate_license_manifest(manifest, root, requirements)
+    sources = discover_application_sources(root)
+    direct_roots = _source_import_roots(root, sources)
+    active_roots = _active_runtime_roots(
+        manifest.get("runtime_inventory"), direct_roots
     )
-    return {
-        "compile_targets": compile_targets,
-        "runtime_imports": runtime_imports,
-        "nuitka_data_options": _environment_tokens(
-            environ, "JITTER_PACKAGE_NUITKA_DATA_OPTIONS"
-        ),
-        "release_materials": _environment_tokens(
-            environ, "JITTER_PACKAGE_RELEASE_MATERIALS"
-        ),
-        "requirements": [
-            {"name": requirement.name, "version": requirement.version}
-            for requirement in requirements
-        ],
-        "licensed_packages": [
-            {"name": record.name, "version": record.version} for record in records
-        ],
-        "runtime_inventory": [
-            {
-                "import_root": record.import_root,
-                "distribution": record.distribution,
-                "required_by": record.required_by,
-            }
-            for record in inventory
-        ],
-    }
+    runtime_inventory = validate_runtime_inventory(
+        manifest.get("runtime_inventory"), requirements,
+        {item.name: item.version for item in licensed_packages}, active_roots,
+    )
 
+    pinned_names = {item.name for item in requirements}
+    active_distributions = {item.distribution for item in runtime_inventory}
+    if active_distributions != pinned_names:
+        missing = sorted(active_distributions - pinned_names)
+        unused = sorted(pinned_names - active_distributions)
+        raise ValueError(
+            "runtime dependency inventory does not exactly match pins; "
+            f"missing pins={missing}, unused pins={unused}"
+        )
 
-def classify_gen_invocation(
-    command_line: str,
-    script_path: Path | str,
-) -> int:
-    if os.name != "nt":
-        raise RuntimeError("gen.bat invocation classification requires Windows")
-    import ctypes
-    from ctypes import wintypes
+    model_path = root / "models" / "all_games_320.onnx"
+    if not model_path.is_file():
+        raise ValueError(f"packaged model is missing: {model_path}")
+    model_hash = hashlib.sha256(model_path.read_bytes()).hexdigest().upper()
+    if model_hash != _MODEL_SHA256:
+        raise ValueError(f"packaged model hash mismatch: {model_path}")
 
-    argument_count = ctypes.c_int()
-    command_line_to_argv = ctypes.windll.shell32.CommandLineToArgvW
-    command_line_to_argv.argtypes = [
-        wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_int)
+    sound_source = root / "sound_service.py"
+    sound_assets = root / "sound"
+    if sound_source.is_file() != sound_assets.is_dir():
+        raise ValueError("sound source and sound assets must be packaged together")
+
+    compile_targets = tuple(path.relative_to(root).as_posix() for path in sources)
+    data_options = [
+        "--include-data-dir=models=models",
+        "--include-data-dir=licenses=licenses",
     ]
-    command_line_to_argv.restype = ctypes.POINTER(wintypes.LPWSTR)
-    pointer = command_line_to_argv(command_line, ctypes.byref(argument_count))
-    if not pointer:
-        return 2
-    try:
-        arguments = [pointer[index] for index in range(argument_count.value)]
-    finally:
-        ctypes.windll.kernel32.LocalFree(pointer)
+    if sound_source.is_file():
+        data_options.append("--include-data-dir=sound=sound")
 
-    expected_script = os.path.normcase(os.path.abspath(script_path))
-    script_index = None
-    for index, argument in enumerate(arguments):
-        if os.path.normcase(os.path.abspath(argument)) == expected_script:
-            script_index = index
-            break
-    if script_index is None:
-        return 2
-    batch_arguments = arguments[script_index + 1:]
-    if batch_arguments == []:
-        return 0
-    if batch_arguments == ["--help"]:
-        return 10
-    if batch_arguments == ["--review-json"]:
-        return 11
-    return 2
+    python = sys.executable
+    install_argv = (
+        python, "-m", "pip", "install", "-r", "requirements.txt",
+        "Nuitka", "ordered-set", "zstandard",
+    )
+    compile_argv = (python, "-m", "py_compile", *compile_targets)
+    test_argv = (python, "-m", "unittest", "discover", "-s", "tests", "-v")
+    runtime_import_argv = (
+        python, "-c", "import " + ", ".join(active_roots)
+    )
+    nuitka_argv = (
+        python, "-m", "nuitka", "--onefile", "--mingw64",
+        "--assume-yes-for-downloads", "--progress-bar=none",
+        "--windows-console-mode=disable", "--enable-plugin=tk-inter",
+        *data_options, "--output-filename=Jitter.exe",
+        "--output-dir=build-output", "main.py",
+    )
+    output_dir = root / "build-output"
+    return BuildPlan(
+        root=root,
+        compile_targets=compile_targets,
+        runtime_imports=active_roots,
+        nuitka_data_options=tuple(data_options),
+        release_materials=_RELEASE_MATERIALS,
+        requirements=requirements,
+        licensed_packages=licensed_packages,
+        runtime_inventory=runtime_inventory,
+        install_argv=install_argv,
+        compile_argv=compile_argv,
+        test_argv=test_argv,
+        runtime_import_argv=runtime_import_argv,
+        nuitka_argv=nuitka_argv,
+        output_dir=output_dir,
+        build_log=output_dir / "build.log",
+    )
+
+
+def review_payload(*, root: Path = ROOT) -> dict[str, object]:
+    return build_plan(root).to_payload()
 
 
 def copy_release_materials(
@@ -324,11 +459,7 @@ def copy_release_materials(
     root: Path = ROOT,
     materials: Iterable[str] | None = None,
 ) -> tuple[Path, ...]:
-    selected = tuple(
-        materials
-        if materials is not None
-        else _environment_tokens(os.environ, "JITTER_PACKAGE_RELEASE_MATERIALS")
-    )
+    selected = tuple(materials if materials is not None else _RELEASE_MATERIALS)
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     copied = []
@@ -345,23 +476,51 @@ def copy_release_materials(
     return tuple(copied)
 
 
+def execute_build_plan(
+    plan: BuildPlan,
+    *,
+    runner: Callable[..., object] = subprocess.run,
+    release_copier: Callable[..., tuple[Path, ...]] = copy_release_materials,
+) -> None:
+    """Execute exactly the command plan already exposed by review JSON."""
+    plan.output_dir.mkdir(parents=True, exist_ok=True)
+    for argv in (
+        plan.install_argv,
+        plan.compile_argv,
+        plan.test_argv,
+        plan.runtime_import_argv,
+    ):
+        runner(argv, cwd=plan.root, check=True)
+    with plan.build_log.open("w", encoding="utf-8") as log:
+        runner(
+            plan.nuitka_argv,
+            cwd=plan.root,
+            check=True,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+        )
+    release_copier(
+        plan.output_dir, root=plan.root, materials=plan.release_materials
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     action = parser.add_mutually_exclusive_group(required=True)
     action.add_argument("--review-json", action="store_true")
-    action.add_argument("--copy-release-materials", metavar="OUTPUT_DIR")
-    action.add_argument("--classify-gen-invocation", action="store_true")
+    action.add_argument("--describe-build", action="store_true")
+    action.add_argument("--build", action="store_true")
     args = parser.parse_args(argv)
-    if args.classify_gen_invocation:
-        return classify_gen_invocation(
-            os.environ.get("JITTER_GEN_COMMAND_LINE", ""),
-            os.environ.get("JITTER_GEN_SCRIPT", ""),
-        )
+    plan = build_plan()
     if args.review_json:
-        print(json.dumps(review_payload(), sort_keys=True))
+        print(json.dumps(plan.to_payload(), sort_keys=True))
+    elif args.describe_build:
+        print("Builds build-output\\Jitter.exe on explicit request.")
+        print("Normal development runs python main.py; no build is started.")
+        print(json.dumps(plan.to_payload(), sort_keys=True))
     else:
-        review_payload()
-        copy_release_materials(args.copy_release_materials)
+        execute_build_plan(plan)
+        print("Build complete: build-output\\Jitter.exe")
     return 0
 
 

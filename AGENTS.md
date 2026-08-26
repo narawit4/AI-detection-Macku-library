@@ -24,7 +24,8 @@ profiles, overlays, tray behavior, or other upstream features.
 - `ai_detection.py`: fixed-contract ONNX Runtime detector.
 - `ai_capture.py`: centered DXCam capture wrapper.
 - `ai_service.py`: generation-safe capture and inference worker.
-- `distribution_metadata.py`: validates and copies packaged release materials.
+- `distribution_metadata.py`: validates, reviews, and executes the canonical
+  packaging command and release-material plan.
 - `makcu_service.py`: Makcu connection, callbacks, movement, and cleanup.
 - `hotkeys.py`: Windows global-hotkey polling.
 - `settings.py`: independent schema-aware atomic configuration.

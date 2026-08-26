@@ -1,12 +1,18 @@
 import hashlib
 import json
+import shutil
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 from distribution_metadata import (
+    build_plan,
     copy_release_materials,
+    execute_build_plan,
     parse_pinned_requirements,
+    review_payload,
     validate_license_manifest,
     validate_runtime_inventory,
 )
@@ -148,6 +154,122 @@ class ReleaseMaterialTests(unittest.TestCase):
                 (output / "licenses" / "package" / "LICENSE").read_text(encoding="utf-8"),
                 "package license",
             )
+
+
+class BuildPlanTests(unittest.TestCase):
+    def test_review_serializes_the_exact_command_plan_executed_by_build_mode(self):
+        plan = build_plan(ROOT)
+        payload = review_payload(root=ROOT)
+        self.assertEqual(payload, plan.to_payload())
+
+        expected_data_options = {
+            "--include-data-dir=models=models",
+            "--include-data-dir=licenses=licenses",
+        }
+        if (ROOT / "sound_service.py").is_file() and (ROOT / "sound").is_dir():
+            expected_data_options.add("--include-data-dir=sound=sound")
+        self.assertEqual(set(plan.nuitka_data_options), expected_data_options)
+        for option in expected_data_options:
+            self.assertIn(option, plan.nuitka_argv)
+        self.assertEqual(
+            set(plan.compile_targets),
+            {
+                "main.py", "ui.py", "motion.py", "ai_targeting.py",
+                "ai_detection.py", "ai_capture.py", "ai_service.py",
+                "makcu_service.py", "hotkeys.py", "settings.py",
+                "liquid_widgets.py", "distribution_metadata.py",
+                *({"sound_service.py"} if (ROOT / "sound_service.py").is_file() else set()),
+            },
+        )
+        self.assertEqual(
+            tuple(payload["commands"]["nuitka"]), plan.nuitka_argv
+        )
+        self.assertEqual(
+            plan.compile_argv[-len(plan.compile_targets):], plan.compile_targets
+        )
+        self.assertEqual(
+            plan.runtime_import_argv[-1],
+            "import " + ", ".join(plan.runtime_imports),
+        )
+        self.assertEqual(
+            tuple(payload["commands"]["compile"]), plan.compile_argv
+        )
+        self.assertEqual(
+            tuple(payload["commands"]["runtime_import"]),
+            plan.runtime_import_argv,
+        )
+
+        calls = []
+        copies = []
+
+        def runner(argv, **kwargs):
+            calls.append(tuple(argv))
+            return SimpleNamespace(returncode=0)
+
+        def release_copier(output_dir, *, root, materials):
+            copies.append((Path(output_dir), root, tuple(materials)))
+            return ()
+
+        with tempfile.TemporaryDirectory() as temporary:
+            executable_plan = replace(
+                plan,
+                output_dir=Path(temporary),
+                build_log=Path(temporary) / "build.log",
+            )
+            execute_build_plan(
+                executable_plan,
+                runner=runner,
+                release_copier=release_copier,
+            )
+
+        self.assertEqual(
+            calls,
+            [
+                executable_plan.install_argv,
+                executable_plan.compile_argv,
+                executable_plan.test_argv,
+                executable_plan.runtime_import_argv,
+                executable_plan.nuitka_argv,
+            ],
+        )
+        self.assertEqual(
+            copies,
+            [(executable_plan.output_dir, executable_plan.root,
+              executable_plan.release_materials)],
+        )
+
+    def test_new_third_party_source_import_requires_pin_license_and_root_mapping(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            shutil.copytree(ROOT / "licenses", root / "licenses")
+            shutil.copy2(ROOT / "LICENSE", root / "LICENSE")
+            shutil.copy2(
+                ROOT / "THIRD_PARTY_NOTICES.md", root / "THIRD_PARTY_NOTICES.md"
+            )
+            (root / "requirements.txt").write_text(
+                "makcu==2.3.1\npyserial==3.5\n"
+                "onnxruntime-directml==1.24.4\ndxcam==0.3.0\n"
+                "comtypes==1.4.16\nnumpy==2.5.2\n",
+                encoding="utf-8",
+            )
+            (root / "main.py").write_text(
+                "import makcu\nimport onnxruntime\nimport dxcam\nimport numpy\n",
+                encoding="utf-8",
+            )
+            (root / "models").mkdir()
+            shutil.copy2(
+                ROOT / "models" / "all_games_320.onnx",
+                root / "models" / "all_games_320.onnx",
+            )
+
+            build_plan(root)
+            (root / "feature").mkdir()
+            (root / "feature" / "adapter.py").write_text(
+                "import mystery_sdk\n", encoding="utf-8"
+            )
+
+            with self.assertRaisesRegex(ValueError, "mystery_sdk"):
+                build_plan(root)
 
 
 if __name__ == "__main__":
