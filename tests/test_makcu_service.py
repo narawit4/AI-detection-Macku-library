@@ -5,6 +5,7 @@ from unittest import mock
 
 from makcu import MouseButton
 
+from ai_targeting import AimSettings, TargetSnapshot
 from makcu_service import BUTTON_NAMES, MakcuService, ServiceEvent
 from motion import MotionSettings
 
@@ -46,6 +47,31 @@ class RecordingEngine:
     def step(self, _settings, _dt, _elapsed):
         self.calls.append((_settings, _dt, _elapsed))
         return 0, -1
+
+
+class FakeAimEngine:
+    def __init__(self):
+        self.calls = []
+        self.polled_again = threading.Event()
+
+    def step(self, snapshot, settings, now):
+        self.calls.append((snapshot, settings, now))
+        if len(self.calls) > 1:
+            self.polled_again.set()
+            return 0, 0
+        return 3, 0
+
+
+class BlockingAimEngine:
+    def __init__(self):
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def step(self, _snapshot, _settings, _now):
+        self.entered.set()
+        if not self.release.wait(1.0):
+            raise TimeoutError("test did not release blocked AI engine")
+        return 3, 0
 
 
 class StopAfterFirstWait:
@@ -158,18 +184,242 @@ class MakcuConnectionTests(unittest.TestCase):
 
 
 class MakcuMovementTests(unittest.TestCase):
-    def connected_service(self, *, use_default_engine=False):
-        controller = FakeController()
+    def connected_service(
+        self, *, controller=None, use_default_engine=False, **service_kwargs
+    ):
+        controller = controller or FakeController()
         events = []
         kwargs = {}
         if not use_default_engine:
             kwargs["engine_factory"] = RecordingEngine
+        kwargs.update(service_kwargs)
         service = MakcuService(
             events.append, controller_factory=lambda **_kwargs: controller, **kwargs
         )
         generation = service._begin_connection()
         service._connect_worker(generation)
+        self.addCleanup(service.close)
         return service, controller, events
+
+    def test_ai_motion_uses_controller_and_consumes_latest_snapshot_once(self):
+        engine = FakeAimEngine()
+        service, controller, _events = self.connected_service(
+            aim_engine_factory=lambda: engine
+        )
+        snapshot = TargetSnapshot(1, time.perf_counter(), "head", 170, 160)
+
+        self.assertTrue(service.start_ai_motion(lambda: snapshot, AimSettings))
+        self.assertTrue(engine.polled_again.wait(1.0))
+        service.stop_motion("manual")
+        service.join_motion(1.0)
+
+        self.assertEqual(controller.moves, [(3, 0)])
+        self.assertIs(engine.calls[0][0], snapshot)
+        self.assertEqual(engine.calls[0][1], AimSettings())
+
+    def test_ai_stop_return_barrier_prevents_late_move(self):
+        engine = BlockingAimEngine()
+        target = TargetSnapshot(1, time.perf_counter(), "head", 170, 160)
+        service, controller, _events = self.connected_service(
+            aim_engine_factory=lambda: engine
+        )
+        self.addCleanup(engine.release.set)
+        self.assertTrue(service.start_ai_motion(lambda: target, AimSettings))
+        self.assertTrue(engine.entered.wait(1.0))
+
+        service.stop_motion("manual")
+        engine.release.set()
+        service.join_motion(1.0)
+
+        self.assertEqual(controller.moves, [])
+
+    def test_ai_motion_rejects_disconnected_service_and_invalid_duration(self):
+        disconnected = MakcuService(lambda _event: None)
+        self.addCleanup(disconnected.close)
+        self.assertFalse(
+            disconnected.start_ai_motion(lambda: None, AimSettings)
+        )
+
+        service, _controller, _events = self.connected_service()
+        for invalid_duration in (object(), "not-a-duration"):
+            with self.subTest(duration=invalid_duration):
+                self.assertFalse(
+                    service.start_ai_motion(
+                        lambda: None, AimSettings, invalid_duration
+                    )
+                )
+
+    def test_ai_motion_is_mutually_exclusive_with_jitter_motion(self):
+        ai_engine = BlockingAimEngine()
+        jitter_engines = []
+        service, _controller, _events = self.connected_service(
+            engine_factory=lambda: jitter_engines.append(RecordingEngine()),
+            aim_engine_factory=lambda: ai_engine,
+        )
+        target = TargetSnapshot(1, time.perf_counter(), "head", 170, 160)
+        self.addCleanup(ai_engine.release.set)
+
+        self.assertTrue(service.start_ai_motion(lambda: target, AimSettings))
+        self.assertTrue(ai_engine.entered.wait(1.0))
+        active_thread = service._motion_thread
+        self.assertTrue(service.start_motion(lambda: MotionSettings()))
+        self.assertTrue(service.start_ai_motion(lambda: target, AimSettings))
+
+        self.assertIs(service._motion_thread, active_thread)
+        self.assertEqual(jitter_engines, [])
+        service.stop_motion("manual")
+        ai_engine.release.set()
+        service.join_motion(1.0)
+
+    def test_ai_duration_completion_emits_motion_stopped(self):
+        service, controller, events = self.connected_service()
+
+        self.assertTrue(
+            service.start_ai_motion(lambda: None, AimSettings, duration_s=0)
+        )
+        service.join_motion(1.0)
+
+        self.assertFalse(service.motion_active)
+        self.assertEqual(controller.moves, [])
+        self.assertEqual(
+            events[-1], ServiceEvent("motion_stopped", "duration_complete")
+        )
+
+    def test_ai_snapshot_and_settings_provider_exceptions_emit_motion_error(self):
+        def snapshot_failure():
+            raise ValueError("snapshot failed")
+
+        service, _controller, events = self.connected_service()
+        self.assertTrue(service.start_ai_motion(snapshot_failure, AimSettings))
+        service.join_motion(1.0)
+        self.assertEqual(
+            events[-1], ServiceEvent("motion_error", "ValueError: snapshot failed")
+        )
+
+        def settings_failure():
+            raise LookupError("settings failed")
+
+        service, _controller, events = self.connected_service()
+        self.assertTrue(service.start_ai_motion(lambda: None, settings_failure))
+        service.join_motion(1.0)
+        self.assertEqual(
+            events[-1], ServiceEvent("motion_error", "LookupError: settings failed")
+        )
+
+    def test_ai_disconnect_cancels_before_move_and_emits_disconnected(self):
+        engine = BlockingAimEngine()
+        target = TargetSnapshot(1, time.perf_counter(), "head", 170, 160)
+        service, controller, events = self.connected_service(
+            aim_engine_factory=lambda: engine
+        )
+        self.addCleanup(engine.release.set)
+        self.assertTrue(service.start_ai_motion(lambda: target, AimSettings))
+        self.assertTrue(engine.entered.wait(1.0))
+
+        disconnect_returned = threading.Event()
+
+        def disconnect():
+            service._connection_changed(service.connection_generation, False)
+            disconnect_returned.set()
+
+        thread = threading.Thread(target=disconnect)
+        thread.start()
+        try:
+            self.assertTrue(service._motion_stop.wait(1.0))
+            engine.release.set()
+            self.assertTrue(disconnect_returned.wait(1.0))
+            service.join_motion(1.0)
+        finally:
+            engine.release.set()
+            thread.join(1.0)
+
+        self.assertEqual(controller.moves, [])
+        self.assertFalse(service.connected)
+        self.assertEqual(events[-1], ServiceEvent("disconnected"))
+
+    def test_ai_controller_exception_emits_motion_error(self):
+        class FailingController(FakeController):
+            def move(self, _x, _y):
+                raise RuntimeError("AI move failed")
+
+        engine = FakeAimEngine()
+        service, _controller, events = self.connected_service(
+            controller=FailingController(), aim_engine_factory=lambda: engine
+        )
+        snapshot = TargetSnapshot(1, time.perf_counter(), "head", 170, 160)
+
+        self.assertTrue(service.start_ai_motion(lambda: snapshot, AimSettings))
+        service.join_motion(1.0)
+
+        self.assertFalse(service.motion_active)
+        self.assertEqual(
+            events[-1], ServiceEvent("motion_error", "RuntimeError: AI move failed")
+        )
+
+    def test_ai_manual_stop_emits_motion_stopped_reason(self):
+        engine = BlockingAimEngine()
+        target = TargetSnapshot(1, time.perf_counter(), "head", 170, 160)
+        service, controller, events = self.connected_service(
+            aim_engine_factory=lambda: engine
+        )
+        self.addCleanup(engine.release.set)
+        self.assertTrue(service.start_ai_motion(lambda: target, AimSettings))
+        self.assertTrue(engine.entered.wait(1.0))
+
+        service.stop_motion("ai_disabled")
+        engine.release.set()
+        service.join_motion(1.0)
+
+        self.assertEqual(controller.moves, [])
+        self.assertEqual(
+            events[-1], ServiceEvent("motion_stopped", "ai_disabled")
+        )
+
+    def test_close_during_ai_motion_cancels_before_disconnect(self):
+        engine = BlockingAimEngine()
+        target = TargetSnapshot(1, time.perf_counter(), "head", 170, 160)
+        service, controller, _events = self.connected_service(
+            aim_engine_factory=lambda: engine
+        )
+        self.addCleanup(engine.release.set)
+        self.assertTrue(service.start_ai_motion(lambda: target, AimSettings))
+        self.assertTrue(engine.entered.wait(1.0))
+
+        service.close()
+        engine.release.set()
+        service.join_motion(1.0)
+
+        self.assertEqual(controller.moves, [])
+        self.assertFalse(service.connected)
+        self.assertTrue(wait_until(lambda: controller.disconnected))
+
+    def test_ai_worker_polls_at_240_hz(self):
+        engine = FakeAimEngine()
+        service, _controller, _events = self.connected_service(
+            aim_engine_factory=lambda: engine
+        )
+        stop_event = StopAfterFirstWait()
+        connection_generation = service.connection_generation
+        with service._lock:
+            service._motion_generation += 1
+            motion_generation = service._motion_generation
+            service._motion_stop_reasons[motion_generation] = None
+            service._motion_active = True
+            service._motion_thread = threading.current_thread()
+        snapshot = TargetSnapshot(1, 100.0, "head", 170, 160)
+
+        with mock.patch("makcu_service.time.perf_counter", return_value=100.0):
+            service._motion_worker(
+                motion_generation,
+                connection_generation,
+                stop_event,
+                AimSettings,
+                None,
+                "ai",
+                lambda: snapshot,
+            )
+
+        self.assertEqual(stop_event.timeouts, [1 / 240])
 
     def test_paired_pulse_worker_sends_vertical_reports_and_stop_prevents_next_half(self):
         service, controller, _events = self.connected_service(use_default_engine=True)

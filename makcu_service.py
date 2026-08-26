@@ -12,6 +12,7 @@ import time
 from typing import Any, Callable
 
 from makcu import MouseButton, create_controller
+from ai_targeting import AimMovementEngine, AimSettings, TargetSnapshot
 from motion import PairedPulseEngine
 
 
@@ -46,10 +47,12 @@ class MakcuService:
         event_sink: Callable[[ServiceEvent], None],
         controller_factory: Callable[..., Any] = create_controller,
         engine_factory: Callable[[], Any] = PairedPulseEngine,
+        aim_engine_factory: Callable[[], Any] = AimMovementEngine,
     ) -> None:
         self._event_sink = event_sink
         self._controller_factory = controller_factory
         self._engine_factory = engine_factory
+        self._aim_engine_factory = aim_engine_factory
         self._lock = threading.RLock()
         self._generation = 0
         self._controller: Any | None = None
@@ -147,6 +150,28 @@ class MakcuService:
         duration_s: float | None = None,
     ) -> bool:
         """Start one interruptible movement worker for the active controller."""
+        return self._start_motion_job(
+            "jitter", settings_provider, None, duration_s
+        )
+
+    def start_ai_motion(
+        self,
+        snapshot_provider: Callable[[], TargetSnapshot | None],
+        settings_provider: Callable[[], AimSettings],
+        duration_s: float | None = None,
+    ) -> bool:
+        """Start AI target movement through the active controller."""
+        return self._start_motion_job(
+            "ai", settings_provider, snapshot_provider, duration_s
+        )
+
+    def _start_motion_job(
+        self,
+        mode: str,
+        settings_provider: Callable[[], Any],
+        snapshot_provider: Callable[[], Any] | None,
+        duration_s: float | None,
+    ) -> bool:
         with self._lock:
             if self._closed or not self._connected or self._controller is None:
                 return False
@@ -172,6 +197,8 @@ class MakcuService:
                     stop_event,
                     settings_provider,
                     duration,
+                    mode,
+                    snapshot_provider,
                 ),
                 name=f"MakcuMotion-{motion_generation}",
                 daemon=True,
@@ -234,6 +261,8 @@ class MakcuService:
         stop_event: threading.Event,
         settings_provider: Callable[[], Any],
         duration_s: float | None,
+        mode: str = "jitter",
+        snapshot_provider: Callable[[], Any] | None = None,
     ) -> None:
         engine: Any | None = None
         reason: str | None = None
@@ -242,7 +271,10 @@ class MakcuService:
         previous_tick = started
         try:
             try:
-                engine = self._engine_factory()
+                engine_factory = (
+                    self._aim_engine_factory if mode == "ai" else self._engine_factory
+                )
+                engine = engine_factory()
             except Exception as exc:
                 error_payload = f"{type(exc).__name__}: {exc}"
             while error_payload is None:
@@ -270,11 +302,18 @@ class MakcuService:
                         break
                     controller = self._controller
                 try:
-                    settings = settings_provider()
                     tick_started = time.perf_counter()
-                    dt = max(0.0, min(tick_started - previous_tick, 0.1))
-                    previous_tick = tick_started
-                    report_x, report_y = engine.step(settings, dt, elapsed)
+                    if mode == "ai":
+                        if snapshot_provider is None:
+                            raise RuntimeError("AI snapshot provider is unavailable")
+                        report_x, report_y = engine.step(
+                            snapshot_provider(), settings_provider(), tick_started
+                        )
+                    else:
+                        settings = settings_provider()
+                        dt = max(0.0, min(tick_started - previous_tick, 0.1))
+                        previous_tick = tick_started
+                        report_x, report_y = engine.step(settings, dt, elapsed)
                 except Exception as exc:
                     error_payload = f"{type(exc).__name__}: {exc}"
                     break
@@ -302,14 +341,17 @@ class MakcuService:
                         except Exception as exc:
                             error_payload = f"{type(exc).__name__}: {exc}"
                             break
-                try:
-                    settings_rate = float(settings.pulse_rate_hz)
-                    interval = 1.0 / (
-                        max(10.0, min(60.0, settings_rate)) * 2.0
-                    )
-                except Exception as exc:
-                    error_payload = f"{type(exc).__name__}: {exc}"
-                    break
+                if mode == "ai":
+                    interval = 1.0 / 240.0
+                else:
+                    try:
+                        settings_rate = float(settings.pulse_rate_hz)
+                        interval = 1.0 / (
+                            max(10.0, min(60.0, settings_rate)) * 2.0
+                        )
+                    except Exception as exc:
+                        error_payload = f"{type(exc).__name__}: {exc}"
+                        break
                 stop_event.wait(max(0.0, interval - (time.perf_counter() - tick_started)))
         finally:
             with self._lock:
