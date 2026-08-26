@@ -136,3 +136,66 @@ def select_target(
         candidate[1] - origin[0], candidate[2] - origin[1]
     ))
     return TargetSnapshot(sequence, captured_at, *selected)
+
+
+class AimMovementEngine:
+    """Deterministic, stateful conversion of target snapshots into mouse deltas."""
+
+    CENTER = 160.0
+    DEAD_ZONE = 1.5
+    MAX_AGE_S = 0.150
+    MAX_ACCELERATION = 6.0
+
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        self._last_sequence = None
+        self._previous_x = self._previous_y = 0.0
+        self._fraction_x = self._fraction_y = 0.0
+
+    def step(
+        self,
+        snapshot: TargetSnapshot | None,
+        settings: AimSettings,
+        now: float,
+    ) -> tuple[int, int]:
+        if snapshot is None:
+            self.reset()
+            return 0, 0
+        if snapshot.sequence == self._last_sequence:
+            return 0, 0
+        self._last_sequence = snapshot.sequence
+        age = max(0.0, now - snapshot.captured_at)
+        if age > self.MAX_AGE_S:
+            self.reset()
+            return 0, 0
+
+        error_x = snapshot.aim_x - self.CENTER
+        error_y = snapshot.aim_y - self.CENTER
+        if math.hypot(error_x, error_y) <= self.DEAD_ZONE:
+            self._previous_x = self._previous_y = 0.0
+            self._fraction_x = self._fraction_y = 0.0
+            return 0, 0
+
+        factor = 1.0 - settings.smoothing
+        desired_x = error_x * settings.aim_strength
+        desired_y = error_y * settings.aim_strength
+        smoothed_x = self._previous_x + (desired_x - self._previous_x) * factor
+        smoothed_y = self._previous_y + (desired_y - self._previous_y) * factor
+        smoothed_x = max(self._previous_x - self.MAX_ACCELERATION,
+                         min(self._previous_x + self.MAX_ACCELERATION, smoothed_x))
+        smoothed_y = max(self._previous_y - self.MAX_ACCELERATION,
+                         min(self._previous_y + self.MAX_ACCELERATION, smoothed_y))
+        step = float(settings.max_step)
+        clamped_x = max(-step, min(step, smoothed_x))
+        clamped_y = max(-step, min(step, smoothed_y))
+        self._previous_x, self._previous_y = clamped_x, clamped_y
+
+        total_x = clamped_x + self._fraction_x
+        total_y = clamped_y + self._fraction_y
+        report_x = math.trunc(total_x)
+        report_y = math.trunc(total_y)
+        self._fraction_x = total_x - report_x
+        self._fraction_y = total_y - report_y
+        return report_x, report_y

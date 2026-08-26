@@ -6,6 +6,7 @@ from ai_targeting import (
     AimSettings,
     Detection,
     TargetSnapshot,
+    AimMovementEngine,
     aim_settings_from_mapping,
     aim_settings_to_mapping,
     select_target,
@@ -106,6 +107,85 @@ class TargetSelectionTests(unittest.TestCase):
 
     def test_empty_detections_return_none(self):
         self.assertIsNone(select_target((), AimSettings(), sequence=1, captured_at=1.0))
+
+
+class AimMovementEngineTests(unittest.TestCase):
+    def test_consumes_each_snapshot_only_once(self):
+        engine = AimMovementEngine()
+        target = TargetSnapshot(1, 10.0, "head", 200.0, 160.0)
+        first = engine.step(target, AimSettings(smoothing=0.0), 10.01)
+        second = engine.step(target, AimSettings(smoothing=0.0), 10.02)
+        self.assertNotEqual(first, (0, 0))
+        self.assertEqual(second, (0, 0))
+
+    def test_stale_target_never_moves(self):
+        engine = AimMovementEngine()
+        target = TargetSnapshot(1, 10.0, "head", 200.0, 160.0)
+        self.assertEqual(engine.step(target, AimSettings(), 10.151), (0, 0))
+
+    def test_excess_is_clamped_and_not_queued(self):
+        engine = AimMovementEngine()
+        settings = AimSettings(aim_strength=2.0, smoothing=0.0, max_step=5)
+        first = engine.step(
+            TargetSnapshot(1, 1.0, "head", 320.0, 160.0), settings, 1.0
+        )
+        second = engine.step(
+            TargetSnapshot(2, 1.01, "head", 160.0, 160.0), settings, 1.01
+        )
+        self.assertEqual(first, (5, 0))
+        self.assertEqual(second, (0, 0))
+
+    def test_dead_zone_produces_no_movement_and_resets_state(self):
+        engine = AimMovementEngine()
+        self.assertEqual(engine.step(TargetSnapshot(1, 1, "head", 166, 160), AimSettings(aim_strength=1, smoothing=0), 1), (6, 0))
+        self.assertEqual(engine.step(TargetSnapshot(2, 1.01, "head", 161, 160), AimSettings(smoothing=0), 1.01), (0, 0))
+        self.assertEqual(engine.step(TargetSnapshot(3, 1.02, "head", 164, 160), AimSettings(aim_strength=1, smoothing=0), 1.02), (4, 0))
+
+    def test_strength_scales_error(self):
+        engine = AimMovementEngine()
+        self.assertEqual(engine.step(TargetSnapshot(1, 1, "head", 170, 160), AimSettings(aim_strength=0.5, smoothing=0), 1), (5, 0))
+
+    def test_smoothing_interpolates_from_previous_axis(self):
+        engine = AimMovementEngine()
+        settings = AimSettings(aim_strength=1, smoothing=0.5, max_step=127)
+        self.assertEqual(engine.step(TargetSnapshot(1, 1, "head", 170, 160), settings, 1), (5, 0))
+        self.assertEqual(engine.step(TargetSnapshot(2, 1.01, "head", 170, 160), settings, 1.01), (7, 0))
+
+    def test_acceleration_is_limited_per_axis(self):
+        engine = AimMovementEngine()
+        settings = AimSettings(aim_strength=1, smoothing=0, max_step=127)
+        self.assertEqual(engine.step(TargetSnapshot(1, 1, "head", 200, 220), settings, 1), (6, 6))
+        self.assertEqual(engine.step(TargetSnapshot(2, 1.01, "head", 300, 100), settings, 1.01), (12, 0))
+
+    def test_negative_fractional_accumulation_is_symmetric(self):
+        engine = AimMovementEngine()
+        settings = AimSettings(aim_strength=0.15, smoothing=0, max_step=127)
+        target = lambda seq: TargetSnapshot(seq, 1 + seq / 100, "head", 150, 160)
+        self.assertEqual([engine.step(target(i), settings, 1 + i / 100) for i in range(1, 6)], [(-1, 0), (-2, 0), (-1, 0), (-2, 0), (-1, 0)])
+
+    def test_reset_discards_motion_state(self):
+        engine = AimMovementEngine()
+        settings = AimSettings(aim_strength=1, smoothing=0.5, max_step=127)
+        engine.step(TargetSnapshot(1, 1, "head", 200, 160), settings, 1)
+        engine.reset()
+        self.assertEqual(engine.step(TargetSnapshot(2, 1.01, "head", 200, 160), settings, 1.01), (6, 0))
+
+    def test_future_timestamp_is_not_stale(self):
+        engine = AimMovementEngine()
+        self.assertEqual(engine.step(TargetSnapshot(1, 20, "head", 200, 160), AimSettings(smoothing=0), 10), (6, 0))
+
+    def test_max_step_127_is_honored(self):
+        engine = AimMovementEngine()
+        settings = AimSettings(aim_strength=2, smoothing=0, max_step=127)
+        reports = [engine.step(TargetSnapshot(i, 1 + i / 100, "head", 320, 320), settings, 1 + i / 100) for i in range(1, 40)]
+        self.assertEqual(reports[-1], (127, 127))
+
+    def test_none_target_resets_state(self):
+        engine = AimMovementEngine()
+        settings = AimSettings(aim_strength=1, smoothing=0.5, max_step=127)
+        engine.step(TargetSnapshot(1, 1, "head", 200, 160), settings, 1)
+        self.assertEqual(engine.step(None, settings, 1.01), (0, 0))
+        self.assertEqual(engine.step(TargetSnapshot(2, 1.02, "head", 200, 160), settings, 1.02), (6, 0))
 
 
 if __name__ == "__main__":
