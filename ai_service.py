@@ -83,46 +83,88 @@ class AiService:
             self._provider = None
 
         self._emit_current(AiEvent("loading"), generation, stop_event)
-        threading.Thread(
-            target=self._worker,
-            args=(generation, stop_event, settings_provider),
-            name=f"AiInference-{generation}",
-            daemon=True,
-        ).start()
+        start_error = None
+        failure_generation = None
+        with self._lock:
+            if not self._is_current_locked(generation, stop_event):
+                return generation
+            try:
+                worker = threading.Thread(
+                    target=self._worker,
+                    args=(generation, stop_event, settings_provider),
+                    name=f"AiInference-{generation}",
+                    daemon=True,
+                )
+                worker.start()
+            except Exception as error:
+                stop_event.set()
+                self._generation += 1
+                failure_generation = self._generation
+                self._running = False
+                self._latest = None
+                self._status = "error"
+                self._provider = None
+                self._stop_event = None
+                start_error = error
+        if start_error is not None:
+            LOGGER.error(
+                "AI inference worker could not start",
+                exc_info=(
+                    type(start_error),
+                    start_error,
+                    start_error.__traceback__,
+                ),
+            )
+            self._emit_status_current(
+                AiEvent(
+                    "error",
+                    f"{type(start_error).__name__}: AI service failed",
+                ),
+                failure_generation,
+                "error",
+            )
+            return None
         return generation
 
     def stop(self, reason: str = "manual") -> None:
         stop_event = self._stop_event
         if stop_event is not None:
             stop_event.set()
+        stopped_generation = None
         with self._lock:
-            if self._closed or (not self._running and self._status == "stopped"):
-                return
-            self._generation += 1
-            stopped_generation = self._generation
-            self._running = False
-            self._latest = None
-            self._status = "stopped"
-            self._provider = None
-            self._stop_event = None
-        self._emit_stopped_current(
-            AiEvent("stopped", reason), stopped_generation
-        )
+            if not self._closed and (
+                self._running or self._status != "stopped"
+            ):
+                self._generation += 1
+                stopped_generation = self._generation
+                self._running = False
+                self._latest = None
+                self._status = "stopped"
+                self._provider = None
+                self._stop_event = None
+        if stopped_generation is not None:
+            self._emit_stopped_current(
+                AiEvent("stopped", reason), stopped_generation
+            )
+        else:
+            self._cross_event_barrier()
 
     def close(self) -> None:
         stop_event = self._stop_event
         if stop_event is not None:
             stop_event.set()
         with self._lock:
-            if self._closed:
-                return
-            self._closed = True
-            self._generation += 1
-            self._running = False
-            self._latest = None
-            self._status = "stopped"
-            self._provider = None
-            self._stop_event = None
+            if not self._closed:
+                self._closed = True
+                self._generation += 1
+                self._running = False
+                self._latest = None
+                self._status = "stopped"
+                self._provider = None
+                self._stop_event = None
+        self._cross_event_barrier()
+
+    def _cross_event_barrier(self) -> None:
         with self._event_lock:
             pass
 
@@ -159,6 +201,23 @@ class AiService:
             if current:
                 self._emit(event)
 
+    def _emit_status_current(
+        self,
+        event: AiEvent,
+        generation: int,
+        status: str,
+    ) -> None:
+        with self._event_lock:
+            with self._lock:
+                current = (
+                    not self._closed
+                    and not self._running
+                    and self._generation == generation
+                    and self._status == status
+                )
+            if current:
+                self._emit(event)
+
     def _emit(self, event: AiEvent) -> None:
         try:
             self._event_sink(event)
@@ -173,6 +232,8 @@ class AiService:
     ) -> None:
         capture = None
         try:
+            if not self._is_current(generation, stop_event):
+                return
             model_path = self._model_path or model_resource_path()
             detector = self._detector_factory(model_path)
             if not self._is_current(generation, stop_event):

@@ -1,6 +1,7 @@
 import threading
 import time
 import unittest
+from unittest import mock
 
 from ai_service import AiEvent, AiService
 from ai_targeting import AimSettings, Detection
@@ -107,7 +108,147 @@ class FakeClock:
         return self._last
 
 
+class ObservedRLock:
+    def __init__(self):
+        self._lock = threading.RLock()
+        self._guard = threading.Lock()
+        self._attempts = 0
+
+    def __enter__(self):
+        with self._guard:
+            self._attempts += 1
+        self._lock.acquire()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self._lock.release()
+
+    @property
+    def attempts(self):
+        with self._guard:
+            return self._attempts
+
+    def reset_attempts(self):
+        with self._guard:
+            self._attempts = 0
+
+
 class AiServiceTests(unittest.TestCase):
+    def test_reentrant_loading_stop_or_close_does_not_launch_worker(self):
+        for action in ("stop", "close"):
+            with self.subTest(action=action):
+                detector_calls = []
+                thread_instances = []
+
+                class InlineThread:
+                    def __init__(self, *, target, args, name, daemon):
+                        self.target = target
+                        self.args = args
+                        thread_instances.append(self)
+
+                    def start(self):
+                        self.target(*self.args)
+
+                service = None
+
+                def sink(event):
+                    if event.kind == "loading":
+                        if action == "stop":
+                            service.stop("reentrant")
+                        else:
+                            service.close()
+
+                service = AiService(
+                    sink,
+                    detector_factory=lambda _path: detector_calls.append(True),
+                    capture_factory=FakeCapture,
+                )
+                with mock.patch("ai_service.threading.Thread", InlineThread):
+                    service.start(AimSettings)
+
+                self.assertEqual(thread_instances, [])
+                self.assertEqual(detector_calls, [])
+                self.assertFalse(service.running)
+                self.assertEqual(service.status, "stopped")
+                service.close()
+
+    def test_cancelled_worker_checks_before_model_or_detector_construction(self):
+        real_thread = threading.Thread
+        worker_finished = threading.Event()
+        model_calls = []
+        detector_calls = []
+
+        class CancelBeforeRunThread:
+            def __init__(self, *, target, args, name, daemon):
+                self.target = target
+                self.args = args
+                self.name = name
+                self.daemon = daemon
+
+            def start(self):
+                self.args[1].set()
+
+                def run():
+                    try:
+                        self.target(*self.args)
+                    finally:
+                        worker_finished.set()
+
+                real_thread(target=run, name=self.name, daemon=self.daemon).start()
+
+        service = AiService(
+            lambda _event: None,
+            detector_factory=lambda _path: detector_calls.append(True),
+            capture_factory=FakeCapture,
+        )
+        self.addCleanup(service.close)
+        with (
+            mock.patch("ai_service.threading.Thread", CancelBeforeRunThread),
+            mock.patch(
+                "ai_service.model_resource_path",
+                side_effect=lambda: model_calls.append(True),
+            ),
+        ):
+            service.start(AimSettings)
+
+        self.assertTrue(worker_finished.wait(1.0))
+        self.assertEqual(model_calls, [])
+        self.assertEqual(detector_calls, [])
+
+    def test_thread_start_failure_rolls_back_and_emits_safe_error(self):
+        events = []
+
+        class FailingStartThread:
+            def __init__(self, **_kwargs):
+                pass
+
+            def start(self):
+                raise RuntimeError("sensitive scheduler diagnostic")
+
+        service = AiService(
+            events.append,
+            detector_factory=lambda _path: self.fail("worker must not run"),
+            capture_factory=FakeCapture,
+        )
+        self.addCleanup(service.close)
+        with (
+            mock.patch("ai_service.threading.Thread", FailingStartThread),
+            self.assertLogs("ai_service", level="ERROR") as logs,
+        ):
+            generation = service.start(AimSettings)
+
+        self.assertIsNone(generation)
+        self.assertFalse(service.running)
+        self.assertEqual(service.status, "error")
+        self.assertIsNone(service.provider)
+        self.assertIsNone(service.latest_snapshot())
+        self.assertEqual(
+            [event for event in events if event.kind == "error"],
+            [AiEvent("error", "RuntimeError: AI service failed")],
+        )
+        self.assertNotIn("sensitive scheduler diagnostic", events[-1].payload)
+        self.assertIn("sensitive scheduler diagnostic", "\n".join(logs.output))
+
     def test_ready_worker_publishes_only_latest_snapshot(self):
         events = []
         service = AiService(
@@ -517,6 +658,82 @@ class AiServiceTests(unittest.TestCase):
             AiEvent("fps", 2 / 1.3),
             AiEvent("stopped", "manual"),
         ])
+
+    def test_all_concurrent_stop_and_close_callers_cross_event_barrier(self):
+        fps_entered = threading.Event()
+        fps_delivered = threading.Event()
+        release_fps = threading.Event()
+        events = []
+
+        def sink(event):
+            if event.kind == "fps":
+                fps_entered.set()
+                release_fps.wait(1.0)
+            events.append(event)
+            if event.kind == "fps":
+                fps_delivered.set()
+
+        service = AiService(
+            sink,
+            detector_factory=lambda _path: FakeDetector(),
+            capture_factory=lambda: FakeCapture([10, 20]),
+            clock=FakeClock([0.0, 0.1, 0.2, 1.2, 1.3]),
+        )
+        observed_lock = ObservedRLock()
+        service._event_lock = observed_lock
+        self.addCleanup(release_fps.set)
+        self.addCleanup(service.close)
+        service.start(AimSettings)
+        self.assertTrue(fps_entered.wait(1.0))
+        observed_lock.reset_attempts()
+
+        calls = [
+            lambda: service.stop("owner"),
+            lambda: service.stop("duplicate"),
+            service.close,
+            service.close,
+        ]
+        entered = [threading.Event() for _call in calls]
+        returned = [threading.Event() for _call in calls]
+
+        def invoke(call, entry, result):
+            entry.set()
+            call()
+            result.set()
+
+        owner = threading.Thread(
+            target=invoke,
+            args=(calls[0], entered[0], returned[0]),
+            daemon=True,
+        )
+        owner.start()
+        self.assertTrue(wait_until(lambda: not service.running))
+
+        others = [
+            threading.Thread(
+                target=invoke,
+                args=(calls[index], entered[index], returned[index]),
+                daemon=True,
+            )
+            for index in range(1, len(calls))
+        ]
+        for caller in others:
+            caller.start()
+        self.assertTrue(all(event.wait(1.0) for event in entered))
+        self.assertTrue(wait_until(
+            lambda: observed_lock.attempts == len(calls)
+            or any(event.is_set() for event in returned)
+        ))
+        self.assertFalse(any(event.is_set() for event in returned))
+
+        release_fps.set()
+
+        self.assertTrue(all(event.wait(1.0) for event in returned))
+        self.assertTrue(fps_delivered.wait(1.0))
+        self.assertEqual(
+            len([event for event in events if event.kind == "stopped"]),
+            0,
+        )
 
     def test_old_generation_cannot_overwrite_new_snapshot(self):
         old_detector = BlockingDetector()
