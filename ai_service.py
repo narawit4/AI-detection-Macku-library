@@ -132,6 +132,9 @@ class AiService:
             stop_event.set()
         stopped_generation = None
         with self._lock:
+            current_stop_event = self._stop_event
+            if current_stop_event is not None:
+                current_stop_event.set()
             if not self._closed and (
                 self._running or self._status != "stopped"
             ):
@@ -154,6 +157,9 @@ class AiService:
         if stop_event is not None:
             stop_event.set()
         with self._lock:
+            current_stop_event = self._stop_event
+            if current_stop_event is not None:
+                current_stop_event.set()
             if not self._closed:
                 self._closed = True
                 self._generation += 1
@@ -172,12 +178,7 @@ class AiService:
         if stop_event.is_set():
             return False
         with self._lock:
-            return (
-                not self._closed
-                and self._running
-                and self._generation == generation
-                and self._stop_event is stop_event
-            )
+            return self._is_current_locked(generation, stop_event)
 
     def _emit_current(
         self,

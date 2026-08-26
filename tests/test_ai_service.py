@@ -132,6 +132,42 @@ class ObservedRLock:
         with self._guard:
             self._attempts = 0
 
+    def acquire(self):
+        with self._guard:
+            self._attempts += 1
+        return self._lock.acquire()
+
+    def release(self):
+        self._lock.release()
+
+
+class SelectiveGateLock:
+    def __init__(self, gated_thread_name):
+        self._lock = threading.RLock()
+        self._guard = threading.Lock()
+        self._gated_thread_name = gated_thread_name
+        self._gate_used = False
+        self.gate_entered = threading.Event()
+        self.release_gate = threading.Event()
+
+    def __enter__(self):
+        should_gate = False
+        with self._guard:
+            if (
+                threading.current_thread().name == self._gated_thread_name
+                and not self._gate_used
+            ):
+                self._gate_used = True
+                should_gate = True
+        if should_gate:
+            self.gate_entered.set()
+            self.release_gate.wait(1.0)
+        self._lock.acquire()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self._lock.release()
+
 
 class AiServiceTests(unittest.TestCase):
     def test_reentrant_loading_stop_or_close_does_not_launch_worker(self):
@@ -178,23 +214,18 @@ class AiServiceTests(unittest.TestCase):
         model_calls = []
         detector_calls = []
 
-        class CancelBeforeRunThread:
+        class CapturedThread:
+            instance = None
+
             def __init__(self, *, target, args, name, daemon):
                 self.target = target
                 self.args = args
                 self.name = name
                 self.daemon = daemon
+                CapturedThread.instance = self
 
             def start(self):
-                self.args[1].set()
-
-                def run():
-                    try:
-                        self.target(*self.args)
-                    finally:
-                        worker_finished.set()
-
-                real_thread(target=run, name=self.name, daemon=self.daemon).start()
+                pass
 
         service = AiService(
             lambda _event: None,
@@ -202,16 +233,37 @@ class AiServiceTests(unittest.TestCase):
             capture_factory=FakeCapture,
         )
         self.addCleanup(service.close)
-        with (
-            mock.patch("ai_service.threading.Thread", CancelBeforeRunThread),
-            mock.patch(
-                "ai_service.model_resource_path",
-                side_effect=lambda: model_calls.append(True),
-            ),
+        with mock.patch(
+            "ai_service.model_resource_path",
+            side_effect=lambda: model_calls.append(True),
         ):
-            service.start(AimSettings)
+            with mock.patch("ai_service.threading.Thread", CapturedThread):
+                service.start(AimSettings)
 
-        self.assertTrue(worker_finished.wait(1.0))
+            worker = CapturedThread.instance
+            gated_lock = ObservedRLock()
+            service._lock = gated_lock
+            gated_lock.acquire()
+            gated_lock.reset_attempts()
+
+            def run():
+                try:
+                    worker.target(*worker.args)
+                finally:
+                    worker_finished.set()
+
+            try:
+                real_thread(
+                    target=run,
+                    name=worker.name,
+                    daemon=worker.daemon,
+                ).start()
+                self.assertTrue(wait_until(lambda: gated_lock.attempts >= 1))
+                worker.args[1].set()
+            finally:
+                gated_lock.release()
+            self.assertTrue(worker_finished.wait(1.0))
+
         self.assertEqual(model_calls, [])
         self.assertEqual(detector_calls, [])
 
@@ -248,6 +300,49 @@ class AiServiceTests(unittest.TestCase):
         )
         self.assertNotIn("sensitive scheduler diagnostic", events[-1].payload)
         self.assertIn("sensitive scheduler diagnostic", "\n".join(logs.output))
+
+    def test_concurrent_start_stop_or_close_signals_new_stop_event(self):
+        for action in ("stop", "close"):
+            with self.subTest(action=action):
+                detector = BlockingDetector()
+                capture = CountingCapture()
+                caller_returned = threading.Event()
+                caller_name = f"AI-{action}-caller"
+                gated_lock = SelectiveGateLock(caller_name)
+                service = AiService(
+                    lambda _event: None,
+                    detector_factory=lambda _path: detector,
+                    capture_factory=lambda: capture,
+                )
+                service._lock = gated_lock
+
+                def invoke_lifecycle():
+                    if action == "stop":
+                        service.stop("concurrent")
+                    else:
+                        service.close()
+                    caller_returned.set()
+
+                caller = threading.Thread(
+                    target=invoke_lifecycle,
+                    name=caller_name,
+                    daemon=True,
+                )
+                caller.start()
+                try:
+                    self.assertTrue(gated_lock.gate_entered.wait(1.0))
+                    service.start(AimSettings)
+                    self.assertTrue(detector.entered.wait(1.0))
+                    current_stop_event = service._stop_event
+
+                    gated_lock.release_gate.set()
+
+                    self.assertTrue(caller_returned.wait(1.0))
+                    self.assertTrue(current_stop_event.is_set())
+                finally:
+                    gated_lock.release_gate.set()
+                    detector.release.set()
+                    service.close()
 
     def test_ready_worker_publishes_only_latest_snapshot(self):
         events = []
