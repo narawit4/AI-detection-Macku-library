@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import ctypes
+import hashlib
+import json
 import logging
 from pathlib import Path
-from typing import Any
-
-from settings import ConfigStore, runtime_base_dir
-from ui import JitterApp
-
+import sys
+from typing import Any, Callable, TextIO
 
 MUTEX_NAME = r"Local\Jitter_Makcu_Controller_Mutex"
 ERROR_ALREADY_EXISTS = 183
+AI_RUNTIME_SELF_CHECK_ARGUMENT = "--ai-runtime-self-check"
+AI_MODEL_SHA256 = "6B9157D6419F9DBC40D2DCECCC33A3387078C86F1C5872EDA544B174FF48499C"
+REQUIRED_AI_PROVIDER = "DmlExecutionProvider"
 
 _mutex_handle: Any | None = None
 
@@ -23,6 +25,71 @@ class MutexCreationError(RuntimeError):
     def __init__(self, error_code: int) -> None:
         self.error_code = int(error_code)
         super().__init__(f"CreateMutexW failed with Windows error {self.error_code}")
+
+
+def runtime_base_dir() -> Path:
+    """Resolve the normal UI data directory without importing it for self-checks."""
+    from settings import runtime_base_dir as resolve_runtime_base_dir
+
+    return resolve_runtime_base_dir()
+
+
+def ConfigStore(*args: Any, **kwargs: Any) -> Any:
+    """Construct the normal configuration store lazily."""
+    from settings import ConfigStore as ConfigStoreType
+
+    return ConfigStoreType(*args, **kwargs)
+
+
+def JitterApp(*args: Any, **kwargs: Any) -> Any:
+    """Construct the Tk application lazily so self-checks never import Tk."""
+    from ui import JitterApp as JitterAppType
+
+    return JitterAppType(*args, **kwargs)
+
+
+def run_ai_runtime_self_check(
+    *,
+    model_path: Path | str | None = None,
+    detector_factory: Callable[[Path], Any] | None = None,
+    output: TextIO | None = None,
+) -> int:
+    """Validate the bundled model contract and require DirectML, reporting JSON."""
+    from ai_detection import OnnxDetector, model_resource_path
+
+    model = Path(model_path) if model_path is not None else model_resource_path()
+    model = model.resolve()
+    payload: dict[str, object] = {
+        "status": "error",
+        "required_provider": REQUIRED_AI_PROVIDER,
+        "provider": None,
+        "model_path": str(model),
+        "model_sha256": None,
+        "expected_model_sha256": AI_MODEL_SHA256,
+    }
+    result = 1
+    try:
+        model_hash = hashlib.sha256(model.read_bytes()).hexdigest().upper()
+        payload["model_sha256"] = model_hash
+        if model_hash != AI_MODEL_SHA256:
+            raise RuntimeError("AI model hash mismatch")
+        factory = detector_factory or OnnxDetector
+        detector = factory(model)
+        provider = detector.provider
+        payload["provider"] = provider
+        if provider != REQUIRED_AI_PROVIDER:
+            raise RuntimeError(
+                f"required provider {REQUIRED_AI_PROVIDER} is unavailable"
+            )
+        payload["status"] = "ok"
+        result = 0
+    except Exception as error:
+        payload["error"] = f"{type(error).__name__}: {error}"
+
+    stream = sys.stdout if output is None else output
+    if stream is not None:
+        print(json.dumps(payload, sort_keys=True), file=stream)
+    return result
 
 
 def ensure_single_instance(kernel32: Any | None = None) -> Any | None:
@@ -110,5 +177,20 @@ def main() -> None:
         logging.info("Jitter stopped")
 
 
-if __name__ == "__main__":
+def entrypoint(argv: list[str] | None = None) -> int:
+    """Dispatch the exact non-GUI self-check or start the ordinary UI."""
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments == [AI_RUNTIME_SELF_CHECK_ARGUMENT]:
+        return run_ai_runtime_self_check()
+    if arguments:
+        print(
+            f"Invalid arguments. Use exactly {AI_RUNTIME_SELF_CHECK_ARGUMENT} or no arguments.",
+            file=sys.stderr,
+        )
+        return 2
     main()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(entrypoint())

@@ -144,6 +144,20 @@ creates `build-output\Jitter.exe`; Nuitka output is recorded in
 or linking the matching complete source and all release licensing materials
 described above.
 
+The canonical Nuitka command loads `nuitka-package.config.yml` so the pinned
+ONNX Runtime DirectML `onnxruntime/capi/DirectML.dll` is bundled explicitly.
+After Nuitka finishes, the build runs this exact non-GUI check before copying
+release materials:
+
+```powershell
+.\build-output\Jitter.exe --ai-runtime-self-check
+```
+
+It prints JSON containing the model path, SHA-256, and active provider, and it
+fails unless the approved model contract and hash pass with
+`DmlExecutionProvider`. The source-mode equivalent is
+`python .\main.py --ai-runtime-self-check`.
+
 `gen.bat` intentionally has no argument interface and never reads or forwards
 batch arguments. Do not append arguments to it: `cmd.exe` parses quotes,
 metacharacters, pipes, and redirects before a batch file can validate them, so

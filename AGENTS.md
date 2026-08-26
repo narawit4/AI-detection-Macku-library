@@ -26,6 +26,7 @@ profiles, overlays, tray behavior, or other upstream features.
 - `ai_service.py`: generation-safe capture and inference worker.
 - `distribution_metadata.py`: validates, reviews, and executes the canonical
   packaging command and release-material plan.
+- `nuitka-package.config.yml`: explicitly bundles ONNX Runtime's DirectML DLL.
 - `makcu_service.py`: Makcu connection, callbacks, movement, and cleanup.
 - `hotkeys.py`: Windows global-hotkey polling.
 - `settings.py`: independent schema-aware atomic configuration.
@@ -130,6 +131,9 @@ with the supported Windows Python installation.
 - A binary release must include `LICENSE`, `THIRD_PARTY_NOTICES.md`, and the
   complete `licenses/` directory beside the executable. Follow
   `licenses/README.md`; Jitter source alone does not satisfy every dependency.
+- The canonical Nuitka plan must load `nuitka-package.config.yml`, then run
+  `build-output\Jitter.exe --ai-runtime-self-check` successfully with
+  `DmlExecutionProvider` before copying release materials or reporting success.
 - Do not add alternate AI models, training, profiles, overlays, tray, Pillow,
   Pystray, Torch, Ultralytics, OpenCV, or other unapproved ML dependencies
   without an explicit new design decision.
@@ -142,6 +146,7 @@ After implementation changes, run:
 python -m py_compile main.py ui.py motion.py ai_targeting.py ai_detection.py ai_capture.py ai_service.py makcu_service.py hotkeys.py settings.py sound_service.py liquid_widgets.py distribution_metadata.py
 python -m unittest discover -s tests -v
 python -c "import makcu, serial, onnxruntime, dxcam, comtypes, numpy"
+python .\main.py --ai-runtime-self-check
 python .\distribution_metadata.py --review-json
 ```
 

@@ -1,11 +1,13 @@
 import hashlib
+import importlib.util
 import io
 import json
 import shutil
+import subprocess
 import tempfile
 import unittest
 from dataclasses import replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 
 from distribution_metadata import (
@@ -159,10 +161,87 @@ class ReleaseMaterialTests(unittest.TestCase):
 
 
 class BuildPlanTests(unittest.TestCase):
+    def test_user_package_config_targets_exact_installed_directml_dll(self):
+        from nuitka.Tracing import general
+        from nuitka.utils.FileOperations import listDllFilesFromDirectory
+        from nuitka.utils.Yaml import PackageConfigYaml
+
+        config_path = ROOT / "nuitka-package.config.yml"
+        parsed = PackageConfigYaml(
+            logger=general,
+            name=str(config_path),
+            file_data=config_path.read_bytes(),
+            assume_yes_for_downloads=False,
+            check_checksums=False,
+        )
+        dll_config = parsed.data["ai_detection"]["dlls"]
+        self.assertEqual(len(dll_config), 1)
+        rule = dll_config[0]
+        source = rule["from_filenames"]
+        self.assertEqual(source["relative_to"], "onnxruntime.capi")
+        self.assertEqual(source["relative_path"], ".")
+        self.assertEqual(source["prefixes"], ["DirectML"])
+        self.assertEqual(source["suffixes"], ["dll"])
+        self.assertEqual(rule["dest_path"], "onnxruntime/capi")
+        self.assertEqual(rule["when"], "win32")
+
+        capi_spec = importlib.util.find_spec(source["relative_to"])
+        self.assertIsNotNone(capi_spec)
+        self.assertIsNotNone(capi_spec.submodule_search_locations)
+        capi_dir = Path(next(iter(capi_spec.submodule_search_locations)))
+        matches = [
+            Path(path)
+            for prefix in source["prefixes"]
+            for path, _name in listDllFilesFromDirectory(
+                str(capi_dir / source["relative_path"]),
+                prefix=prefix,
+                suffixes=tuple(source["suffixes"]),
+            )
+        ]
+        installed_dll = capi_dir / "DirectML.dll"
+        self.assertEqual(matches, [installed_dll])
+        self.assertEqual(
+            hashlib.sha256(installed_dll.read_bytes()).hexdigest().upper(),
+            "B73972115320E906A49602F2027A3266622881B0D325BA685E0F165A9482A8D7",
+        )
+        self.assertEqual(
+            PurePosixPath(rule["dest_path"]) / installed_dll.name,
+            PurePosixPath("onnxruntime/capi/DirectML.dll"),
+        )
+
     def test_review_serializes_the_exact_command_plan_executed_by_build_mode(self):
         plan = build_plan(ROOT)
         payload = review_payload(root=ROOT)
         self.assertEqual(payload, plan.to_payload())
+
+        expected_package_configuration = {
+            "path": "nuitka-package.config.yml",
+            "config_sha256":
+                "3B41E39B66EBB8E28BD728933F03C4B5B8DA21C3C87C1433742D368D07140452",
+            "module": "ai_detection",
+            "source": "onnxruntime/capi/DirectML.dll",
+            "destination": "onnxruntime/capi/DirectML.dll",
+            "sha256":
+                "B73972115320E906A49602F2027A3266622881B0D325BA685E0F165A9482A8D7",
+        }
+        self.assertEqual(
+            payload["nuitka_package_configuration"],
+            expected_package_configuration,
+        )
+        package_option = (
+            "--user-package-configuration-file=nuitka-package.config.yml"
+        )
+        self.assertIn(package_option, plan.nuitka_argv)
+        self.assertIn("--windows-console-mode=attach", plan.nuitka_argv)
+        self.assertNotIn("--windows-console-mode=disable", plan.nuitka_argv)
+        self.assertEqual(
+            tuple(payload["commands"]["packaged_self_check"]),
+            plan.packaged_self_check_argv,
+        )
+        self.assertEqual(
+            plan.packaged_self_check_argv[-1],
+            "--ai-runtime-self-check",
+        )
 
         expected_data_options = {
             "--include-data-dir=models=models",
@@ -201,15 +280,16 @@ class BuildPlanTests(unittest.TestCase):
             plan.runtime_import_argv,
         )
 
-        calls = []
-        copies = []
+        events = []
 
         def runner(argv, **kwargs):
-            calls.append(tuple(argv))
+            events.append(("run", tuple(argv)))
             return SimpleNamespace(returncode=0)
 
         def release_copier(output_dir, *, root, materials):
-            copies.append((Path(output_dir), root, tuple(materials)))
+            events.append(
+                ("copy", (Path(output_dir), root, tuple(materials)))
+            )
             return ()
 
         with tempfile.TemporaryDirectory() as temporary:
@@ -225,20 +305,48 @@ class BuildPlanTests(unittest.TestCase):
             )
 
         self.assertEqual(
-            calls,
+            events,
             [
-                executable_plan.install_argv,
-                executable_plan.compile_argv,
-                executable_plan.test_argv,
-                executable_plan.runtime_import_argv,
-                executable_plan.nuitka_argv,
+                ("run", executable_plan.install_argv),
+                ("run", executable_plan.compile_argv),
+                ("run", executable_plan.test_argv),
+                ("run", executable_plan.runtime_import_argv),
+                ("run", executable_plan.nuitka_argv),
+                ("run", executable_plan.packaged_self_check_argv),
+                (
+                    "copy",
+                    (
+                        executable_plan.output_dir,
+                        executable_plan.root,
+                        executable_plan.release_materials,
+                    ),
+                ),
             ],
         )
-        self.assertEqual(
-            copies,
-            [(executable_plan.output_dir, executable_plan.root,
-              executable_plan.release_materials)],
-        )
+
+    def test_failed_packaged_self_check_prevents_release_copying(self):
+        plan = build_plan(ROOT)
+        copied = []
+
+        def runner(argv, **_kwargs):
+            if tuple(argv) == plan.packaged_self_check_argv:
+                raise subprocess.CalledProcessError(1, argv)
+            return SimpleNamespace(returncode=0)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            executable_plan = replace(
+                plan,
+                output_dir=Path(temporary),
+                build_log=Path(temporary) / "build.log",
+            )
+            with self.assertRaises(subprocess.CalledProcessError):
+                execute_build_plan(
+                    executable_plan,
+                    runner=runner,
+                    release_copier=lambda *_args, **_kwargs: copied.append(True),
+                )
+
+        self.assertEqual(copied, [])
 
     def test_new_third_party_source_import_requires_pin_license_and_root_mapping(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -247,6 +355,10 @@ class BuildPlanTests(unittest.TestCase):
             shutil.copy2(ROOT / "LICENSE", root / "LICENSE")
             shutil.copy2(
                 ROOT / "THIRD_PARTY_NOTICES.md", root / "THIRD_PARTY_NOTICES.md"
+            )
+            shutil.copy2(
+                ROOT / "nuitka-package.config.yml",
+                root / "nuitka-package.config.yml",
             )
             (root / "requirements.txt").write_text(
                 "makcu==2.3.1\npyserial==3.5\n"
@@ -271,6 +383,31 @@ class BuildPlanTests(unittest.TestCase):
             )
 
             with self.assertRaisesRegex(ValueError, "mystery_sdk"):
+                build_plan(root)
+
+    def test_package_configuration_drift_stops_plan_review(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            shutil.copytree(ROOT / "licenses", root / "licenses")
+            shutil.copytree(ROOT / "models", root / "models")
+            for name in (
+                "LICENSE",
+                "THIRD_PARTY_NOTICES.md",
+                "requirements.txt",
+                "main.py",
+                "nuitka-package.config.yml",
+            ):
+                shutil.copy2(ROOT / name, root / name)
+
+            config_path = root / "nuitka-package.config.yml"
+            config_path.write_text(
+                config_path.read_text(encoding="utf-8").replace(
+                    "DirectML", "NotDirectML"
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "package configuration"):
                 build_plan(root)
 
 

@@ -20,6 +20,14 @@ _PINNED_REQUIREMENT = re.compile(
     r"(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)==(?P<version>[^\s;]+)"
 )
 _MODEL_SHA256 = "6B9157D6419F9DBC40D2DCECCC33A3387078C86F1C5872EDA544B174FF48499C"
+_DIRECTML_DLL_SHA256 = (
+    "B73972115320E906A49602F2027A3266622881B0D325BA685E0F165A9482A8D7"
+)
+_NUITKA_PACKAGE_CONFIG = "nuitka-package.config.yml"
+_NUITKA_PACKAGE_CONFIG_SHA256 = (
+    "3B41E39B66EBB8E28BD728933F03C4B5B8DA21C3C87C1433742D368D07140452"
+)
+_AI_RUNTIME_SELF_CHECK_ARGUMENT = "--ai-runtime-self-check"
 _RELEASE_MATERIALS = ("LICENSE", "THIRD_PARTY_NOTICES.md", "licenses")
 _EXCLUDED_SOURCE_PARTS = {
     ".git", ".superpowers", "__pycache__", "build-output", "dist", "tests"
@@ -53,6 +61,26 @@ class RuntimeImportRecord:
 
 
 @dataclass(frozen=True)
+class NuitkaPackageConfiguration:
+    path: str
+    config_sha256: str
+    module: str
+    source: str
+    destination: str
+    sha256: str
+
+    def to_payload(self) -> dict[str, str]:
+        return {
+            "path": self.path,
+            "config_sha256": self.config_sha256,
+            "module": self.module,
+            "source": self.source,
+            "destination": self.destination,
+            "sha256": self.sha256,
+        }
+
+
+@dataclass(frozen=True)
 class BuildPlan:
     """The complete, reviewed command and release plan for one packaged build."""
 
@@ -64,11 +92,13 @@ class BuildPlan:
     requirements: tuple[PinnedRequirement, ...]
     licensed_packages: tuple[LicenseRecord, ...]
     runtime_inventory: tuple[RuntimeImportRecord, ...]
+    nuitka_package_configuration: NuitkaPackageConfiguration
     install_argv: tuple[str, ...]
     compile_argv: tuple[str, ...]
     test_argv: tuple[str, ...]
     runtime_import_argv: tuple[str, ...]
     nuitka_argv: tuple[str, ...]
+    packaged_self_check_argv: tuple[str, ...]
     output_dir: Path
     build_log: Path
 
@@ -98,12 +128,16 @@ class BuildPlan:
                 }
                 for item in self.runtime_inventory
             ],
+            "nuitka_package_configuration": (
+                self.nuitka_package_configuration.to_payload()
+            ),
             "commands": {
                 "install": list(self.install_argv),
                 "compile": list(self.compile_argv),
                 "test": list(self.test_argv),
                 "runtime_import": list(self.runtime_import_argv),
                 "nuitka": list(self.nuitka_argv),
+                "packaged_self_check": list(self.packaged_self_check_argv),
             },
             "output_dir": str(self.output_dir.relative_to(self.root)).replace("/", "\\"),
             "build_log": str(self.build_log.relative_to(self.root)).replace("/", "\\"),
@@ -146,6 +180,35 @@ def _artifact_path(root: Path, relative: object) -> Path:
     if resolved != resolved_root and resolved_root not in resolved.parents:
         raise ValueError(f"artifact path escapes the source tree: {relative}")
     return resolved
+
+
+def _validate_nuitka_package_configuration(
+    root: Path,
+) -> NuitkaPackageConfiguration:
+    config_path = root / _NUITKA_PACKAGE_CONFIG
+    if not config_path.is_file():
+        raise ValueError(
+            f"Nuitka package configuration is missing: {config_path}"
+        )
+    try:
+        normalized_bytes = config_path.read_text(encoding="utf-8").encode("utf-8")
+    except (OSError, UnicodeError) as error:
+        raise ValueError(
+            f"Nuitka package configuration is unreadable: {config_path}"
+        ) from error
+    actual_hash = hashlib.sha256(normalized_bytes).hexdigest().upper()
+    if actual_hash != _NUITKA_PACKAGE_CONFIG_SHA256:
+        raise ValueError(
+            f"Nuitka package configuration hash mismatch: {config_path}"
+        )
+    return NuitkaPackageConfiguration(
+        path=_NUITKA_PACKAGE_CONFIG,
+        config_sha256=_NUITKA_PACKAGE_CONFIG_SHA256,
+        module="ai_detection",
+        source="onnxruntime/capi/DirectML.dll",
+        destination="onnxruntime/capi/DirectML.dll",
+        sha256=_DIRECTML_DLL_SHA256,
+    )
 
 
 def _verify_artifact(root: Path, artifact: object, *, label: str) -> Path:
@@ -364,6 +427,7 @@ def _active_runtime_roots(inventory: object, direct_roots: set[str]) -> tuple[st
 def build_plan(root: Path = ROOT) -> BuildPlan:
     """Validate inputs and construct the sole command plan used for packaging."""
     root = root.resolve()
+    nuitka_package_configuration = _validate_nuitka_package_configuration(root)
     requirements = parse_pinned_requirements(
         (root / "requirements.txt").read_text(encoding="utf-8")
     )
@@ -421,14 +485,23 @@ def build_plan(root: Path = ROOT) -> BuildPlan:
     runtime_import_argv = (
         python, "-c", "import " + ", ".join(active_roots)
     )
+    package_config_option = (
+        "--user-package-configuration-file="
+        + nuitka_package_configuration.path
+    )
     nuitka_argv = (
         python, "-m", "nuitka", "--onefile", "--mingw64",
         "--assume-yes-for-downloads", "--progress-bar=none",
-        "--windows-console-mode=disable", "--enable-plugin=tk-inter",
+        "--windows-console-mode=attach", "--enable-plugin=tk-inter",
+        package_config_option,
         *data_options, "--output-filename=Jitter.exe",
         "--output-dir=build-output", "main.py",
     )
     output_dir = root / "build-output"
+    packaged_self_check_argv = (
+        str(output_dir / "Jitter.exe"),
+        _AI_RUNTIME_SELF_CHECK_ARGUMENT,
+    )
     return BuildPlan(
         root=root,
         compile_targets=compile_targets,
@@ -438,11 +511,13 @@ def build_plan(root: Path = ROOT) -> BuildPlan:
         requirements=requirements,
         licensed_packages=licensed_packages,
         runtime_inventory=runtime_inventory,
+        nuitka_package_configuration=nuitka_package_configuration,
         install_argv=install_argv,
         compile_argv=compile_argv,
         test_argv=test_argv,
         runtime_import_argv=runtime_import_argv,
         nuitka_argv=nuitka_argv,
+        packaged_self_check_argv=packaged_self_check_argv,
         output_dir=output_dir,
         build_log=output_dir / "build.log",
     )
@@ -498,6 +573,7 @@ def execute_build_plan(
             stdout=log,
             stderr=subprocess.STDOUT,
         )
+    runner(plan.packaged_self_check_argv, cwd=plan.root, check=True)
     release_copier(
         plan.output_dir, root=plan.root, materials=plan.release_materials
     )
