@@ -6,6 +6,7 @@ from unittest import mock
 from makcu import MouseButton
 
 from ai_targeting import AimSettings, TargetSnapshot
+from combined_motion import MotionSources
 from makcu_service import BUTTON_NAMES, MakcuService, ServiceEvent
 from motion import MotionSettings
 
@@ -66,6 +67,22 @@ class FakeAimEngine:
             self.polled_again.set()
             return 0, 0
         return 3, 0
+
+
+class RecordingCombinedEngine:
+    def __init__(self, sources, report=(3, -2)):
+        self.sources = sources
+        self.report = report
+        self.calls = []
+        self.worker_threads = set()
+
+    def step(self, motion, target, aim, *, dt, elapsed, now):
+        self.calls.append((motion, target, aim, dt, elapsed, now))
+        self.worker_threads.add(threading.current_thread())
+        return self.report
+
+    def poll_interval(self, _motion):
+        return 0.001
 
 
 class BlockingAimEngine:
@@ -546,6 +563,89 @@ class MakcuMovementTests(unittest.TestCase):
         service._connect_worker(generation)
         self.addCleanup(service.close)
         return service, controller, events
+
+    def test_combined_source_uses_one_worker_and_one_controller_report(self):
+        engines = []
+        service, controller, _events = self.connected_service(
+            combined_engine_factory=lambda sources: engines.append(
+                RecordingCombinedEngine(sources)
+            ) or engines[-1]
+        )
+        source = service.start_composite_motion_source(
+            MotionSources(True, True),
+            MotionSettings,
+            lambda: TargetSnapshot(1, time.perf_counter(), "head", 170, 160),
+            AimSettings,
+            duration_s=0.02,
+        )
+        self.assertIsInstance(source, int)
+        service.join_motion(1.0)
+
+        self.assertEqual(len(engines), 1)
+        self.assertEqual(engines[0].sources, MotionSources(True, True))
+        self.assertEqual(len(engines[0].worker_threads), 1)
+        self.assertTrue(controller.moves)
+        self.assertTrue(all(move == (3, -2) for move in controller.moves))
+
+    def test_composite_rejects_empty_sources_without_reserving_generation(self):
+        service, _controller, _events = self.connected_service()
+        before = service.motion_generation
+
+        self.assertIsNone(service.start_composite_motion_source(
+            MotionSources(), MotionSettings, lambda: None, AimSettings
+        ))
+
+        self.assertEqual(service.motion_generation, before)
+
+    def test_legacy_motion_starts_delegate_with_fixed_sources(self):
+        for mode, expected_sources in (
+            ("jitter", MotionSources(True, False)),
+            ("ai", MotionSources(False, True)),
+        ):
+            with self.subTest(mode=mode):
+                engines = []
+                service, _controller, _events = self.connected_service(
+                    combined_engine_factory=lambda sources: engines.append(
+                        RecordingCombinedEngine(sources)
+                    ) or engines[-1]
+                )
+                if mode == "jitter":
+                    source = service.start_motion_source(
+                        MotionSettings,
+                        duration_s=0,
+                    )
+                else:
+                    source = service.start_ai_motion_source(
+                        lambda: None,
+                        AimSettings,
+                        duration_s=0,
+                    )
+                service.join_motion(1.0)
+
+                self.assertIsInstance(source, int)
+                self.assertEqual(len(engines), 1)
+                self.assertEqual(engines[0].sources, expected_sources)
+
+    def test_composite_zero_delta_is_not_sent_to_controller(self):
+        engines = []
+        service, controller, _events = self.connected_service(
+            combined_engine_factory=lambda sources: engines.append(
+                RecordingCombinedEngine(sources, report=(0, 0))
+            ) or engines[-1]
+        )
+
+        source = service.start_composite_motion_source(
+            MotionSources(True, True),
+            MotionSettings,
+            lambda: None,
+            AimSettings,
+            duration_s=0.01,
+        )
+        self.assertIsInstance(source, int)
+        service.join_motion(1.0)
+
+        self.assertTrue(engines[0].calls)
+        self.assertEqual(controller.moves, [])
 
     def test_ai_motion_uses_controller_and_consumes_latest_snapshot_once(self):
         engine = FakeAimEngine()
@@ -1444,10 +1544,11 @@ class MakcuMovementTests(unittest.TestCase):
                 motion_generation,
                 connection_generation,
                 stop_event,
+                MotionSources(False, True),
+                MotionSettings,
+                lambda: snapshot,
                 AimSettings,
                 None,
-                "ai",
-                lambda: snapshot,
             )
 
         self.assertEqual(stop_event.timeouts, [1 / 240])
@@ -1482,7 +1583,10 @@ class MakcuMovementTests(unittest.TestCase):
                 motion_generation,
                 connection_generation,
                 stop_event,
+                MotionSources(True, False),
                 lambda: MotionSettings(2, 120, "Instant"),
+                lambda: None,
+                AimSettings,
                 None,
             )
         self.assertEqual(stop_event.timeouts, [1 / 240])

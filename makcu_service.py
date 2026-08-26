@@ -15,7 +15,8 @@ from typing import Any, Callable
 
 from makcu import MouseButton, create_controller
 from ai_targeting import AimMovementEngine, AimSettings, TargetSnapshot
-from motion import PairedPulseEngine
+from combined_motion import CombinedMotionEngine, MotionSources
+from motion import MotionSettings, PairedPulseEngine
 
 
 _MISSING = object()
@@ -56,11 +57,19 @@ class MakcuService:
         controller_factory: Callable[..., Any] = create_controller,
         engine_factory: Callable[[], Any] = PairedPulseEngine,
         aim_engine_factory: Callable[[], Any] = AimMovementEngine,
+        combined_engine_factory: Callable[[MotionSources], Any] | None = None,
     ) -> None:
         self._event_sink = event_sink
         self._controller_factory = controller_factory
         self._engine_factory = engine_factory
         self._aim_engine_factory = aim_engine_factory
+        self._combined_engine_factory = combined_engine_factory or (
+            lambda sources: CombinedMotionEngine(
+                sources,
+                jitter_engine_factory=engine_factory,
+                aim_engine_factory=aim_engine_factory,
+            )
+        )
         self._lock = threading.RLock()
         self._generation = 0
         self._controller: Any | None = None
@@ -109,6 +118,11 @@ class MakcuService:
     def motion_active(self) -> bool:
         with self._lock:
             return self._motion_active
+
+    @property
+    def motion_generation(self) -> int:
+        with self._lock:
+            return self._motion_generation
 
     def _emit(self, event: ServiceEvent) -> None:
         # A UI event sink normally just queues work for Tk's thread.  Keep a
@@ -427,12 +441,16 @@ class MakcuService:
 
     def start_motion_source(
         self,
-        settings_provider: Callable[[], Any],
+        settings_provider: Callable[[], MotionSettings],
         duration_s: float | None = None,
     ) -> int | None:
         """Start motion and return its reserved source generation, if accepted."""
-        return self._start_motion_job(
-            "jitter", settings_provider, None, duration_s
+        return self.start_composite_motion_source(
+            MotionSources(True, False),
+            settings_provider,
+            lambda: None,
+            AimSettings,
+            duration_s,
         )
 
     def start_ai_motion(
@@ -458,15 +476,39 @@ class MakcuService:
         duration_s: float | None = None,
     ) -> int | None:
         """Start AI motion and return its source generation, if accepted."""
+        return self.start_composite_motion_source(
+            MotionSources(False, True),
+            MotionSettings,
+            snapshot_provider,
+            settings_provider,
+            duration_s,
+        )
+
+    def start_composite_motion_source(
+        self,
+        sources: MotionSources,
+        motion_settings_provider: Callable[[], MotionSettings],
+        target_provider: Callable[[], TargetSnapshot | None],
+        aim_settings_provider: Callable[[], AimSettings],
+        duration_s: float | None = None,
+    ) -> int | None:
+        """Start selected motion sources through one controller worker."""
+        if not isinstance(sources, MotionSources) or not sources.any:
+            return None
         return self._start_motion_job(
-            "ai", settings_provider, snapshot_provider, duration_s
+            sources,
+            motion_settings_provider,
+            target_provider,
+            aim_settings_provider,
+            duration_s,
         )
 
     def _start_motion_job(
         self,
-        mode: str,
-        settings_provider: Callable[[], Any],
-        snapshot_provider: Callable[[], Any] | None,
+        sources: MotionSources,
+        motion_settings_provider: Callable[[], MotionSettings],
+        target_provider: Callable[[], TargetSnapshot | None],
+        aim_settings_provider: Callable[[], AimSettings],
         duration_s: float | None,
     ) -> int | None:
         start_cancel_epoch: int | None = None
@@ -519,10 +561,11 @@ class MakcuService:
                             motion_generation,
                             connection_generation,
                             stop_event,
-                            settings_provider,
+                            sources,
+                            motion_settings_provider,
+                            target_provider,
+                            aim_settings_provider,
                             duration,
-                            mode,
-                            snapshot_provider,
                             expected_controller,
                         ),
                         name=f"MakcuMotion-{motion_generation}",
@@ -619,10 +662,11 @@ class MakcuService:
         motion_generation: int,
         connection_generation: int,
         stop_event: threading.Event,
-        settings_provider: Callable[[], Any],
+        sources: MotionSources,
+        motion_settings_provider: Callable[[], MotionSettings],
+        target_provider: Callable[[], TargetSnapshot | None],
+        aim_settings_provider: Callable[[], AimSettings],
         duration_s: float | None,
-        mode: str = "jitter",
-        snapshot_provider: Callable[[], Any] | None = None,
         expected_controller: Any | None = None,
     ) -> None:
         engine: Any | None = None
@@ -635,10 +679,7 @@ class MakcuService:
                 expected_controller = self._controller
         try:
             try:
-                engine_factory = (
-                    self._aim_engine_factory if mode == "ai" else self._engine_factory
-                )
-                engine = engine_factory()
+                engine = self._combined_engine_factory(sources)
             except Exception as exc:
                 error_payload = f"{type(exc).__name__}: {exc}"
             while error_payload is None:
@@ -666,18 +707,19 @@ class MakcuService:
                         break
                     controller = self._controller
                 try:
+                    motion_settings = motion_settings_provider()
                     tick_started = time.perf_counter()
-                    if mode == "ai":
-                        if snapshot_provider is None:
-                            raise RuntimeError("AI snapshot provider is unavailable")
-                        report_x, report_y = engine.step(
-                            snapshot_provider(), settings_provider(), tick_started
-                        )
-                    else:
-                        settings = settings_provider()
-                        dt = max(0.0, min(tick_started - previous_tick, 0.1))
-                        previous_tick = tick_started
-                        report_x, report_y = engine.step(settings, dt, elapsed)
+                    dt = max(0.0, min(tick_started - previous_tick, 0.1))
+                    previous_tick = tick_started
+                    report_x, report_y = engine.step(
+                        motion_settings,
+                        target_provider(),
+                        aim_settings_provider(),
+                        dt=dt,
+                        elapsed=elapsed,
+                        now=tick_started,
+                    )
+                    interval = engine.poll_interval(motion_settings)
                 except Exception as exc:
                     error_payload = f"{type(exc).__name__}: {exc}"
                     break
@@ -719,17 +761,6 @@ class MakcuService:
                         except Exception as exc:
                             error_payload = f"{type(exc).__name__}: {exc}"
                             break
-                if mode == "ai":
-                    interval = 1.0 / 240.0
-                else:
-                    try:
-                        settings_rate = float(settings.pulse_rate_hz)
-                        interval = 1.0 / (
-                            max(20.0, min(120.0, settings_rate)) * 2.0
-                        )
-                    except Exception as exc:
-                        error_payload = f"{type(exc).__name__}: {exc}"
-                        break
                 stop_event.wait(max(0.0, interval - (time.perf_counter() - tick_started)))
         finally:
             terminal_event: ServiceEvent | None = None
