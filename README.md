@@ -122,17 +122,31 @@ component's notice, corresponding-source, or relinking requirements.
 ## Explicit packaging
 
 Packaging is opt-in. Normal development never builds an executable. When a
-Windows one-file executable is specifically needed, run:
+Windows one-file executable is specifically needed, run the no-argument
+compatibility entry and type the exact confirmation word `BUILD`:
 
 ```powershell
-gen.bat
+.\gen.bat
 ```
 
-The script installs Nuitka and its build helpers, runs the checks above, and
+For exact argument-bearing help, review, or deliberate non-interactive build
+automation, invoke the standard-library Python launcher directly:
+
+```powershell
+python .\distribution_metadata.py --help
+python .\distribution_metadata.py --review-json
+python .\distribution_metadata.py --build
+```
+
+The build installs Nuitka and its build helpers, runs the checks above, and
 creates `build-output\Jitter.exe`; Nuitka output is recorded in
-`build-output\build.log`. Use `gen.bat --help` to inspect this behavior without
-installing dependencies or starting a build. Publishing that executable also
-requires publishing or linking the matching complete source and all release
-licensing materials described above. `gen.bat --review-json` exposes the
-validated compile targets, imports, data options, and release materials without
-installing dependencies or starting a build.
+`build-output\build.log`. Publishing that executable also requires publishing
+or linking the matching complete source and all release licensing materials
+described above.
+
+`gen.bat` intentionally has no argument interface and never reads or forwards
+batch arguments. Do not append arguments to it: `cmd.exe` parses quotes,
+metacharacters, pipes, and redirects before a batch file can validate them, so
+shell text such as `>file` is owned by the calling shell. Pass constructed or
+untrusted argument vectors directly to Python without a shell; invalid, empty,
+or extra launcher arguments are then rejected before any build plan executes.

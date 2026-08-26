@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import ast
 import hashlib
 import json
@@ -12,7 +11,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Callable, Iterable, Mapping
+from typing import Callable, Iterable, Mapping, TextIO
 
 
 ROOT = Path(__file__).resolve().parent
@@ -504,19 +503,65 @@ def execute_build_plan(
     )
 
 
+def confirm_build(
+    *,
+    input_fn: Callable[[str], str] = input,
+    output: TextIO = sys.stdout,
+    plan_factory: Callable[[], BuildPlan] = build_plan,
+    executor: Callable[[BuildPlan], None] = execute_build_plan,
+) -> int:
+    """Execute a build only after an exact, interactive confirmation."""
+    print(
+        "This explicitly installs packaging tools and builds "
+        "build-output\\Jitter.exe.",
+        file=output,
+    )
+    print("Type BUILD to continue: ", end="", file=output, flush=True)
+    try:
+        response = input_fn("")
+    except (EOFError, KeyboardInterrupt):
+        response = None
+        print(file=output)
+    if response != "BUILD":
+        print("Build cancelled.", file=output)
+        return 2
+
+    plan = plan_factory()
+    executor(plan)
+    print("Build complete: build-output\\Jitter.exe", file=output)
+    return 0
+
+
+_HELP = """\
+Usage: python distribution_metadata.py MODE
+
+Validate, review, or explicitly execute Jitter's canonical packaging plan.
+
+Modes (choose exactly one):
+  --help         Show this help without starting a build.
+  --review-json  Print the validated command and release plan as JSON.
+  --build        Build build-output\\Jitter.exe without an extra prompt.
+
+For the confirmed compatibility entry, run .\\gen.bat with no arguments.
+"""
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    action = parser.add_mutually_exclusive_group(required=True)
-    action.add_argument("--review-json", action="store_true")
-    action.add_argument("--describe-build", action="store_true")
-    action.add_argument("--build", action="store_true")
-    args = parser.parse_args(argv)
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments == ["--help"]:
+        print(_HELP, end="")
+        return 0
+    if arguments == ["--confirm-build"]:
+        return confirm_build()
+    if arguments not in (["--review-json"], ["--build"]):
+        print(
+            "Invalid arguments. Use exactly --help, --review-json, or --build.",
+            file=sys.stderr,
+        )
+        return 2
+
     plan = build_plan()
-    if args.review_json:
-        print(json.dumps(plan.to_payload(), sort_keys=True))
-    elif args.describe_build:
-        print("Builds build-output\\Jitter.exe on explicit request.")
-        print("Normal development runs python main.py; no build is started.")
+    if arguments == ["--review-json"]:
         print(json.dumps(plan.to_payload(), sort_keys=True))
     else:
         execute_build_plan(plan)

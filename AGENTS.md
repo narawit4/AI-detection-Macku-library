@@ -121,7 +121,12 @@ with the supported Windows Python installation.
 - Do not edit `build-output/`, `dist/`, `*.build/`, `*.dist/`, `__pycache__/`, or
   `app.log` as source.
 - Do not run Nuitka after ordinary feature changes. Package only when the user
-  explicitly requests it or asks to run `gen.bat`.
+  explicitly requests it or asks to run `.\gen.bat` or
+  `python .\distribution_metadata.py --build`.
+- Keep `.\gen.bat` a no-argument, exact-confirmation wrapper. Never expand or
+  forward batch arguments; use the Python launcher for help, review, build
+  automation, and any constructed argument vector because `cmd.exe` parses
+  metacharacters and redirects before batch code runs.
 - A binary release must include `LICENSE`, `THIRD_PARTY_NOTICES.md`, and the
   complete `licenses/` directory beside the executable. Follow
   `licenses/README.md`; Jitter source alone does not satisfy every dependency.
@@ -137,12 +142,13 @@ After implementation changes, run:
 python -m py_compile main.py ui.py motion.py ai_targeting.py ai_detection.py ai_capture.py ai_service.py makcu_service.py hotkeys.py settings.py sound_service.py liquid_widgets.py distribution_metadata.py
 python -m unittest discover -s tests -v
 python -c "import makcu, serial, onnxruntime, dxcam, comtypes, numpy"
-gen.bat --review-json
+python .\distribution_metadata.py --review-json
 ```
 
 Hardware-dependent changes additionally require a connected Makcu device to
 verify connection, Trigger/Modifier buttons, movement, reconnect, Test Run,
 global hotkey, STOP, and shutdown.
 
-For an explicitly requested packaged build, run `gen.bat` and verify
+For an explicitly requested confirmed packaged build, run `.\gen.bat` and
+type `BUILD`, then verify
 `build-output\Jitter.exe` separately.

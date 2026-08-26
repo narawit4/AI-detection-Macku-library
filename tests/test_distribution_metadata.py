@@ -1,4 +1,5 @@
 import hashlib
+import io
 import json
 import shutil
 import tempfile
@@ -9,6 +10,7 @@ from types import SimpleNamespace
 
 from distribution_metadata import (
     build_plan,
+    confirm_build,
     copy_release_materials,
     execute_build_plan,
     parse_pinned_requirements,
@@ -270,6 +272,42 @@ class BuildPlanTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "mystery_sdk"):
                 build_plan(root)
+
+
+class BuildConfirmationTests(unittest.TestCase):
+    def test_eof_and_non_exact_confirmation_do_not_create_or_execute_a_plan(self):
+        for response in (EOFError(), KeyboardInterrupt(), "", "build", "BUILD "):
+            with self.subTest(response=response):
+                calls = []
+
+                def read_confirmation(_prompt):
+                    if isinstance(response, BaseException):
+                        raise response
+                    return response
+
+                result = confirm_build(
+                    input_fn=read_confirmation,
+                    output=io.StringIO(),
+                    plan_factory=lambda: calls.append("plan"),
+                    executor=lambda plan: calls.append(plan),
+                )
+
+                self.assertEqual(result, 2)
+                self.assertEqual(calls, [])
+
+    def test_exact_confirmation_executes_the_stubbed_plan(self):
+        plan = object()
+        executed = []
+
+        result = confirm_build(
+            input_fn=lambda _prompt: "BUILD",
+            output=io.StringIO(),
+            plan_factory=lambda: plan,
+            executor=executed.append,
+        )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(executed, [plan])
 
 
 if __name__ == "__main__":
