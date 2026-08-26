@@ -12,18 +12,21 @@ are held.
 
 This repository is independent from EverFall Jitter. Do not import its source
 or read its configuration. The approved AI Aim scope is a clean-room
-implementation using only the fixed bundled model; do not add training,
-profiles, overlays, tray behavior, or other upstream features.
+implementation using only the fixed bundled model, independent motion sources,
+and the constrained overlay described below; do not add training, profiles,
+tray behavior, or other upstream features.
 
 ## Planned repository layout
 
 - `main.py`: process entry point, single-instance mutex, and shutdown.
 - `ui.py`: one-page Tkinter Focused Dashboard.
 - `motion.py`: settings, validation, presets, and pure motion engine.
+- `combined_motion.py`: pure composition of selected Jitter and AI Aim deltas.
 - `ai_targeting.py`: immutable AI settings, target selection, and movement.
 - `ai_detection.py`: fixed-contract ONNX Runtime detector.
 - `ai_capture.py`: centered DXCam capture wrapper.
 - `ai_service.py`: generation-safe capture and inference worker.
+- `overlay.py`: centered, click-through, capture-excluded red detection view.
 - `distribution_metadata.py`: validates, reviews, and executes the canonical
   packaging command and release-material plan.
 - `nuitka-package.config.yml`: explicitly bundles ONNX Runtime's DirectML DLL.
@@ -59,6 +62,7 @@ with the supported Windows Python installation.
 - Device callbacks and workers must marshal UI work through a queue or
   `after(0, ...)`.
 - Keep the motion engine pure and independent of Tkinter and Makcu.
+- Keep combined-motion composition pure and independent of Tkinter and Makcu.
 - Share immutable motion snapshots with the mover under a short lock.
 - Use daemon workers and explicit stop events/generation identifiers for
   connection, movement, Test Run, and hotkey polling.
@@ -73,13 +77,19 @@ with the supported Windows Python installation.
 - The interface is one fixed-size English page using the approved Focused
   Dashboard layout.
 - Keep the red STOP button visible when Advanced Settings expands.
-- Jitter starts Disabled on every launch.
-- Enable arms the mover; actual movement requires Trigger plus the configured
-  Modifier, if any.
+- Jitter and AI Aim are independent selected sources; both start unselected.
+  Master and the global hotkey arm the selected sources, while actual movement
+  requires Trigger plus the configured Modifier, if any.
 - AI Aim uses only the fixed centered 320-by-320 capture and bundled model,
   prefers heads over players, and shares the same Trigger/Modifier gate.
-- `Test 3s` uses the production motion engine, bypasses Trigger temporarily,
-  requires Makcu, and remains interruptible by STOP or disconnect.
+- Combined movement sums current source deltas; Jitter continues when AI Aim
+  has no target.
+- The optional overlay starts off and is independent of source selection. It
+  is a centered 320-by-320 red detection view that must be click-through and
+  excluded from capture.
+- `Test 3s` uses the production engine for the sources selected at test start,
+  bypasses Trigger temporarily, requires Makcu, and remains immediately
+  interruptible by STOP or disconnect.
 - The configurable global hotkey defaults to `-` and toggles once per press.
 - Makcu connection uses the supported `makcu` library with automatic
   reconnection and button monitoring.
@@ -109,10 +119,12 @@ with the supported Windows Python installation.
 - Validate loaded values and preserve safe defaults for malformed data.
 - Never overwrite a config with a newer unsupported schema; run with safe
   in-memory defaults and leave that file untouched.
+- Schema 4 persists validated settings only; do not persist motion-source
+  selection, Master state, overlay visibility, AI targets, snapshots, FPS,
+  provider, or runtime status.
 - Write configuration through a temporary file, flush and `fsync`, keep a
   backup, and replace atomically.
 - Do not persist held-button or Moving state.
-- Do not persist AI targets, snapshots, FPS, provider, or runtime status.
 
 ## Development workflow
 
@@ -134,7 +146,7 @@ with the supported Windows Python installation.
 - The canonical Nuitka plan must load `nuitka-package.config.yml`, then run
   `build-output\Jitter.exe --ai-runtime-self-check` successfully with
   `DmlExecutionProvider` before copying release materials or reporting success.
-- Do not add alternate AI models, training, profiles, overlays, tray, Pillow,
+- Do not add alternate AI models, training, profiles, tray, Pillow,
   Pystray, Torch, Ultralytics, OpenCV, or other unapproved ML dependencies
   without an explicit new design decision.
 
@@ -143,7 +155,7 @@ with the supported Windows Python installation.
 After implementation changes, run:
 
 ```powershell
-python -m py_compile main.py ui.py motion.py ai_targeting.py ai_detection.py ai_capture.py ai_service.py makcu_service.py hotkeys.py settings.py sound_service.py liquid_widgets.py distribution_metadata.py
+python -m py_compile main.py ui.py motion.py combined_motion.py ai_targeting.py ai_detection.py ai_capture.py ai_service.py overlay.py makcu_service.py hotkeys.py settings.py sound_service.py liquid_widgets.py distribution_metadata.py
 python -m unittest discover -s tests -v
 python -c "import makcu, serial, onnxruntime, dxcam, comtypes, numpy"
 python .\main.py --ai-runtime-self-check
@@ -151,8 +163,9 @@ python .\distribution_metadata.py --review-json
 ```
 
 Hardware-dependent changes additionally require a connected Makcu device to
-verify connection, Trigger/Modifier buttons, movement, reconnect, Test Run,
-global hotkey, STOP, and shutdown.
+verify connection, Trigger/Modifier buttons, each Jitter/AI Aim source
+combination, combined movement, reconnect, Test Run, global hotkey, STOP,
+shutdown, and the optional click-through capture-excluded overlay.
 
 For an explicitly requested confirmed packaged build, run `.\gen.bat` and
 type `BUILD`, then verify

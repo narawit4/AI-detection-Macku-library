@@ -33,7 +33,7 @@ _EXCLUDED_SOURCE_PARTS = {
     ".git", ".superpowers", "__pycache__", "build-output", "dist", "tests"
 }
 _PROHIBITED_SOURCE_TOKENS = {
-    "training", "profile", "profiles", "overlay", "overlays", "tray", "ai_tracker"
+    "training", "profile", "profiles", "tray", "ai_tracker"
 }
 
 

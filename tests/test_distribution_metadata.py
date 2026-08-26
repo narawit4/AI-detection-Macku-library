@@ -254,10 +254,11 @@ class BuildPlanTests(unittest.TestCase):
         self.assertEqual(
             set(plan.compile_targets),
             {
-                "main.py", "ui.py", "motion.py", "ai_targeting.py",
-                "ai_detection.py", "ai_capture.py", "ai_service.py",
-                "makcu_service.py", "hotkeys.py", "settings.py",
-                "liquid_widgets.py", "distribution_metadata.py",
+                "main.py", "ui.py", "motion.py", "combined_motion.py",
+                "ai_targeting.py", "ai_detection.py", "ai_capture.py",
+                "ai_service.py", "overlay.py", "makcu_service.py",
+                "hotkeys.py", "settings.py", "liquid_widgets.py",
+                "distribution_metadata.py",
                 *({"sound_service.py"} if (ROOT / "sound_service.py").is_file() else set()),
             },
         )

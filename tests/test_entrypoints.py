@@ -317,8 +317,9 @@ class EntryPointTests(unittest.TestCase):
         self.assertEqual(reviewed.returncode, 0, reviewed.stdout + reviewed.stderr)
         payload = json.loads(reviewed.stdout)
         expected_compile_targets = {
-            "main.py", "ui.py", "motion.py", "ai_targeting.py", "ai_detection.py",
-            "ai_capture.py", "ai_service.py", "makcu_service.py", "hotkeys.py",
+            "main.py", "ui.py", "motion.py", "combined_motion.py",
+            "ai_targeting.py", "ai_detection.py", "ai_capture.py",
+            "ai_service.py", "overlay.py", "makcu_service.py", "hotkeys.py",
             "settings.py", "liquid_widgets.py", "distribution_metadata.py",
         }
         expected_runtime_imports = {
@@ -514,8 +515,7 @@ class EntryPointTests(unittest.TestCase):
         self.assertTrue(imported_roots.isdisjoint(forbidden_imports), imported_roots & forbidden_imports)
 
         prohibited_features = {
-            "training", "profile", "profiles", "overlay", "overlays", "tray",
-            "ai_tracker",
+            "training", "profile", "profiles", "tray", "ai_tracker",
         }
         source_tokens = {
             token
