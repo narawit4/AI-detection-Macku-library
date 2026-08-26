@@ -67,10 +67,12 @@ class MakcuService:
         self._connected = False
         self._closed = False
         self._connection_transition = 0
-        self._connection_tail_done = threading.Event()
-        self._connection_tail_done.set()
+        self._connection_thread: threading.Thread | None = None
+        self._connection_request_generation: int | None = None
+        self._retained_controllers: list[Any] = []
         self._setup_disconnected: set[int] = set()
         self._disconnect_notified: set[int] = set()
+        self._move_barrier = threading.Lock()
         self._motion_cancel_lock = threading.Lock()
         self._motion_dispatch_done = threading.Event()
         self._motion_dispatch_done.set()
@@ -180,39 +182,175 @@ class MakcuService:
                 return None
         return self.reconnect()
 
-    def _start_connection_worker(
-        self,
-        generation: int,
-        old_controller: Any | None = None,
-    ) -> None:
-        finished = threading.Event()
+    def _retain_controller_locked(self, controller: Any | None) -> None:
+        if controller is None:
+            return
+        if all(controller is not retained for retained in self._retained_controllers):
+            self._retained_controllers.append(controller)
+
+    def _retain_controller(self, controller: Any) -> None:
         with self._lock:
-            predecessor = self._connection_tail_done
-            self._connection_tail_done = finished
+            self._retain_controller_locked(controller)
+
+    def _reserve_connection_worker_locked(self) -> threading.Thread | None:
+        if self._connection_thread is not None:
+            return None
         thread = threading.Thread(
-            target=self._queued_connect_worker,
-            args=(generation, old_controller, predecessor, finished),
-            name=f"MakcuConnect-{generation}",
+            target=self._connection_lifecycle_worker,
+            name=f"MakcuConnect-{self._generation}",
             daemon=True,
         )
+        self._connection_thread = thread
+        return thread
+
+    def _retire_connection_worker_locked(self) -> None:
+        if self._connection_thread is threading.current_thread():
+            self._connection_thread = None
+
+    def _mark_connection_unavailable_locked(
+        self,
+        generation: int,
+    ) -> bool:
+        if generation != self._generation or self._closed:
+            return False
+        self._controller = None
+        self._connected = False
+        already_notified = generation in self._disconnect_notified
+        self._disconnect_notified.add(generation)
+        if already_notified:
+            return False
+        return self._reserve_event_locked(
+            ServiceEvent("disconnected", _CONNECTION_FAILURE_MESSAGE),
+            lambda: (
+                generation == self._generation
+                and not self._closed
+                and self._controller is None
+                and not self._connected
+            ),
+        )
+
+    def _launch_connection_worker(self, thread: threading.Thread | None) -> None:
+        if thread is None:
+            return
         try:
             thread.start()
         except Exception:
-            finished.set()
-            raise
+            LOGGER.exception("Makcu connection worker could not start")
+            should_dispatch = False
+            with self._lock:
+                if self._connection_thread is thread:
+                    generation = self._connection_request_generation
+                    self._connection_request_generation = None
+                    if generation is not None:
+                        should_dispatch = self._mark_connection_unavailable_locked(
+                            generation
+                        )
+                    self._connection_thread = None
+            if should_dispatch:
+                self._drain_event_dispatch()
 
-    def _queued_connect_worker(
-        self,
-        generation: int,
-        old_controller: Any | None,
-        predecessor: threading.Event,
-        finished: threading.Event,
-    ) -> None:
-        predecessor.wait()
+    def _connection_lifecycle_worker(self) -> None:
+        """Serialize movement, teardown, and the latest requested factory."""
         try:
-            self._connect_worker(generation, old_controller)
-        finally:
-            finished.set()
+            while True:
+                # Reconnect invalidates state and signals cancellation before
+                # this worker starts.  Crossing the same barrier as move()
+                # proves that no call still owns the retiring controller.
+                with self._move_barrier:
+                    pass
+
+                with self._lock:
+                    retained = (
+                        self._retained_controllers[0]
+                        if self._retained_controllers
+                        else None
+                    )
+                    generation = self._connection_request_generation
+                    closed = self._closed
+
+                if retained is not None:
+                    if not self._disconnect_controller(retained):
+                        should_dispatch = False
+                        with self._lock:
+                            generation = self._connection_request_generation
+                            self._connection_request_generation = None
+                            if generation is not None:
+                                should_dispatch = (
+                                    self._mark_connection_unavailable_locked(
+                                        generation
+                                    )
+                                )
+                            self._retire_connection_worker_locked()
+                        if should_dispatch:
+                            self._drain_event_dispatch()
+                        return
+                    with self._lock:
+                        self._retained_controllers = [
+                            controller
+                            for controller in self._retained_controllers
+                            if controller is not retained
+                        ]
+                    continue
+
+                if closed or generation is None:
+                    with self._lock:
+                        # A reconnect that won the lock first leaves a new
+                        # request here, so loop instead of dropping it while
+                        # this sole lifecycle worker retires.
+                        if (
+                            not self._closed
+                            and self._connection_request_generation is not None
+                        ):
+                            continue
+                        self._retire_connection_worker_locked()
+                    return
+
+                cleanup_proven = self._connect_worker(generation)
+                should_dispatch = False
+                with self._lock:
+                    current_request = self._connection_request_generation
+                    if not cleanup_proven:
+                        self._connection_request_generation = None
+                        if current_request is not None:
+                            should_dispatch = (
+                                self._mark_connection_unavailable_locked(
+                                    current_request
+                                )
+                            )
+                        self._retire_connection_worker_locked()
+                        should_return = True
+                    elif self._retained_controllers:
+                        should_return = False
+                    elif current_request != generation:
+                        should_return = False
+                    else:
+                        self._connection_request_generation = None
+                        self._retire_connection_worker_locked()
+                        should_return = True
+                if should_dispatch:
+                    self._drain_event_dispatch()
+                if should_return:
+                    return
+        except Exception:
+            LOGGER.exception("Makcu connection lifecycle worker failed")
+            should_dispatch = False
+            with self._lock:
+                generation = self._connection_request_generation
+                self._connection_request_generation = None
+                if generation is not None:
+                    should_dispatch = self._mark_connection_unavailable_locked(
+                        generation
+                    )
+                self._retire_connection_worker_locked()
+            if should_dispatch:
+                self._drain_event_dispatch()
+
+    def join_connection(self, timeout: float | None = None) -> None:
+        """Bounded lifecycle/testing helper; do not call this from Tk."""
+        with self._lock:
+            thread = self._connection_thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout)
 
     def _start_health_worker(self, generation: int, controller: Any) -> None:
         with self._lock:
@@ -264,21 +402,14 @@ class MakcuService:
                 if self._health_thread is threading.current_thread():
                     self._health_thread = None
 
-    def _start_disconnect_worker(self, controller: Any) -> None:
-        thread = threading.Thread(
-            target=self._disconnect_controller,
-            args=(controller,),
-            name="MakcuDisconnect",
-            daemon=True,
-        )
-        thread.start()
-
     @staticmethod
-    def _disconnect_controller(controller: Any) -> None:
+    def _disconnect_controller(controller: Any) -> bool:
         try:
             controller.disconnect()
         except Exception:
             LOGGER.exception("Makcu controller disconnect failed")
+            return False
+        return True
 
     def start_motion(
         self,
@@ -410,10 +541,23 @@ class MakcuService:
         """Signal cancellation immediately, then serialize the stop return."""
         reason = str(reason or "manual")
 
+        self._signal_motion_cancellation(reason)
+
+        # Crossing this barrier guarantees that an in-flight move has
+        # returned.  The state lock remains available to reconnect/close while
+        # a device call is hung, which keeps Tk lifecycle actions nonblocking.
+        with self._move_barrier:
+            with self._lock:
+                self._invalidate_motion_locked(reason)
+
+    def _signal_motion_cancellation(self, reason: str) -> None:
+        """Wake the current motion generation without waiting for move()."""
+        reason = str(reason or "manual")
+
         # This first signal deliberately takes no lock.  A controller move can
-        # hold ``_lock`` for an arbitrary duration, but STOP must still wake
-        # every waiter immediately.  Revalidation below handles an event that
-        # became stale because a new generation started concurrently.
+        # take an arbitrary duration, but lifecycle actions must wake every
+        # waiter immediately.  Revalidation handles an event that became stale
+        # because a new generation started concurrently.
         self._motion_stop.set()
         with self._motion_cancel_lock:
             generation = self._motion_generation
@@ -424,23 +568,18 @@ class MakcuService:
             ):
                 self._motion_stop_reasons[generation] = reason
 
-        # This is the same lock used for the final stop check plus move call.
-        # Crossing it guarantees that no report can begin after this method
-        # returns.  Re-signal and re-record in case start_motion installed a
-        # new generation between the lock-free snapshot and this barrier.
-        with self._lock:
-            # Invalidate every non-owner start already waiting for terminal
-            # dispatch, even when the previous worker has released its slot.
-            # Python integers are unbounded, so this monotonic epoch cannot
-            # wrap around to make an obsolete waiter current again.
-            self._motion_start_cancel_epoch += 1
-            if not self._motion_active:
-                return
-            with self._motion_cancel_lock:
-                generation = self._motion_generation
-                self._motion_stop.set()
-                if self._motion_stop_reasons.get(generation) is None:
-                    self._motion_stop_reasons[generation] = reason
+    def _invalidate_motion_locked(self, reason: str) -> None:
+        """Invalidate starts and re-signal the generation under state lock."""
+        # Python integers are unbounded, so this monotonic epoch cannot wrap
+        # around to make an obsolete start waiter current again.
+        self._motion_start_cancel_epoch += 1
+        if not self._motion_active:
+            return
+        with self._motion_cancel_lock:
+            generation = self._motion_generation
+            self._motion_stop.set()
+            if self._motion_stop_reasons.get(generation) is None:
+                self._motion_stop_reasons[generation] = reason
 
     def join_motion(self, timeout: float | None = None) -> None:
         """Bounded lifecycle/testing helper; do not call this from the Tk thread."""
@@ -528,27 +667,31 @@ class MakcuService:
                     # Serialize the stop check with the move call: once
                     # stop_motion() returns, this worker cannot send another
                     # report for this generation.
-                    with self._lock:
-                        if (
-                            duration_s is not None
-                            and max(0.0, time.perf_counter() - started) >= duration_s
-                        ):
-                            reason = "duration_complete"
-                            break
-                        if (
-                            stop_event.is_set()
-                            or motion_generation != self._motion_generation
-                            or connection_generation != self._generation
-                            or self._closed
-                            or not self._connected
-                            or controller is not self._controller
-                        ):
-                            with self._motion_cancel_lock:
-                                reason = (
-                                    self._motion_stop_reasons.get(motion_generation)
-                                    or "disconnected"
-                                )
-                            break
+                    with self._move_barrier:
+                        with self._lock:
+                            if (
+                                duration_s is not None
+                                and max(0.0, time.perf_counter() - started)
+                                >= duration_s
+                            ):
+                                reason = "duration_complete"
+                                break
+                            if (
+                                stop_event.is_set()
+                                or motion_generation != self._motion_generation
+                                or connection_generation != self._generation
+                                or self._closed
+                                or not self._connected
+                                or controller is not self._controller
+                            ):
+                                with self._motion_cancel_lock:
+                                    reason = (
+                                        self._motion_stop_reasons.get(
+                                            motion_generation
+                                        )
+                                        or "disconnected"
+                                    )
+                                break
                         try:
                             controller.move(report_x, report_y)
                         except Exception as exc:
@@ -632,11 +775,21 @@ class MakcuService:
         self,
         generation: int,
         old_controller: Any | None = None,
-    ) -> None:
-        if old_controller is not None:
-            self._disconnect_controller(old_controller)
+    ) -> bool:
+        if old_controller is not None and not self._disconnect_controller(
+            old_controller
+        ):
+            self._retain_controller(old_controller)
+            should_dispatch = False
+            with self._lock:
+                should_dispatch = self._mark_connection_unavailable_locked(
+                    generation
+                )
+            if should_dispatch:
+                self._drain_event_dispatch()
+            return False
         if self._setup_must_abort(generation):
-            return
+            return True
         try:
             controller = self._controller_factory(debug=False, auto_reconnect=True)
         except Exception:
@@ -662,7 +815,7 @@ class MakcuService:
                     )
             if should_dispatch:
                 self._drain_event_dispatch()
-            return
+            return True
 
         try:
             controller.on_connection_change(
@@ -702,12 +855,16 @@ class MakcuService:
                         )
             if should_dispatch:
                 self._drain_event_dispatch()
-            self._disconnect_controller(controller)
-            return
+            cleanup_proven = self._disconnect_controller(controller)
+            if not cleanup_proven:
+                self._retain_controller(controller)
+            return cleanup_proven
 
         if self._setup_must_abort(generation):
-            self._disconnect_controller(controller)
-            return
+            cleanup_proven = self._disconnect_controller(controller)
+            if not cleanup_proven:
+                self._retain_controller(controller)
+            return cleanup_proven
 
         diagnostics: list[str] = []
         for method_name in ("get_device_info", "get_firmware_version"):
@@ -746,10 +903,13 @@ class MakcuService:
             self._drain_event_dispatch()
 
         if not can_install:
-            self._disconnect_controller(controller)
+            cleanup_proven = self._disconnect_controller(controller)
+            if not cleanup_proven:
+                self._retain_controller(controller)
+            return cleanup_proven
         else:
             self._start_health_worker(generation, controller)
-        return
+        return True
 
     def _connection_changed(self, generation: int, connected: bool) -> None:
         connected = bool(connected)
@@ -865,29 +1025,40 @@ class MakcuService:
             self._drain_event_dispatch()
 
     def reconnect(self) -> int | None:
-        """Invalidate the current generation, clean it up, and reconnect."""
-        self.stop_motion(reason="disconnected")
+        """Invalidate immediately; serialize cleanup and replacement off-thread."""
+        reason = "disconnected"
+        self._signal_motion_cancellation(reason)
         with self._lock:
             if self._closed:
                 return None
-            old_controller = self._controller
+            self._invalidate_motion_locked(reason)
+            self._retain_controller_locked(self._controller)
             generation, should_dispatch = self._begin_connection_locked()
-            self._start_connection_worker(generation, old_controller)
+            self._connection_request_generation = generation
+            thread = self._reserve_connection_worker_locked()
+        self._launch_connection_worker(thread)
         if should_dispatch:
             self._drain_event_dispatch()
         return generation
 
     def close(self) -> None:
         """Invalidate all callbacks and asynchronously disconnect the device."""
-        self.stop_motion(reason="disconnected")
+        reason = "disconnected"
+        self._signal_motion_cancellation(reason)
         with self._lock:
             if self._closed:
                 return
+            self._invalidate_motion_locked(reason)
             self._closed = True
             self._health_stop.set()
             self._generation += 1
-            controller = self._controller
+            self._retain_controller_locked(self._controller)
             self._controller = None
             self._connected = False
-        if controller is not None:
-            self._start_disconnect_worker(controller)
+            self._connection_request_generation = None
+            thread = (
+                self._reserve_connection_worker_locked()
+                if self._retained_controllers
+                else None
+            )
+        self._launch_connection_worker(thread)

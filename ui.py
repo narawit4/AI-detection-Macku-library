@@ -2264,7 +2264,13 @@ class JitterApp(tk.Tk):
         if not self._runtime_started:
             self._runtime_started = True
             self.hotkey_watcher.start()
-        self.emergency_stop("Reconnect requested")
+        # MakcuService.reconnect() signals its motion generation immediately
+        # and crosses the blocking move barrier on its daemon lifecycle
+        # worker.  Keep Tk responsible only for local/AI invalidation here.
+        self.emergency_stop(
+            "Reconnect requested",
+            stop_device_motion=False,
+        )
         try:
             self.service.reconnect()
             self.footer_var.set("Connecting to Makcu...")
@@ -2306,6 +2312,8 @@ class JitterApp(tk.Tk):
     def _stop_motion_runtime(
         self,
         reason: str,
+        *,
+        stop_device_motion: bool = True,
     ) -> None:
         self._deferred_motion_action = None
         retiring_source = self._expected_motion_generation
@@ -2313,7 +2321,8 @@ class JitterApp(tk.Tk):
         if retiring_source is not None:
             self._retiring_motion_generation = retiring_source
         try:
-            self.service.stop_motion(reason)
+            if stop_device_motion:
+                self.service.stop_motion(reason)
         finally:
             self._motion_event_epoch += 1
 
@@ -2496,7 +2505,12 @@ class JitterApp(tk.Tk):
                 self._ai_provider = None
                 self._ai_runtime_active = False
 
-    def emergency_stop(self, reason: str = "Stopped") -> None:
+    def emergency_stop(
+        self,
+        reason: str = "Stopped",
+        *,
+        stop_device_motion: bool = True,
+    ) -> None:
         stop_reason = str(reason or "Stopped")
         self.enabled = False
         self._normal_motion_started = False
@@ -2515,7 +2529,10 @@ class JitterApp(tk.Tk):
         except Exception:
             pass
         try:
-            self._stop_motion_runtime(stop_reason)
+            self._stop_motion_runtime(
+                stop_reason,
+                stop_device_motion=stop_device_motion,
+            )
         except Exception:
             pass
         self._advance_hotkey_epoch()

@@ -69,10 +69,9 @@ class StubService:
         self.reconnects += 1
         if self.reconnect_hook is not None:
             self.reconnect_hook()
-        # Match MakcuService.reconnect(): cancellation happens immediately,
-        # then the connection generation is invalidated.  Consequently the
-        # retiring motion worker need not publish a terminal event.
-        self.stop_motion("disconnected")
+        # Match MakcuService.reconnect(): it signals cancellation internally
+        # without crossing the public stop_motion() return barrier on Tk's
+        # thread, then invalidates the retiring connection generation.
         self.connected = False
         self.motion_active = False
         self.active_motion_generation = None
@@ -3567,7 +3566,17 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.assertEqual(self.app.hotkey_watcher.started, 1)
         self.assertEqual(self.service.started, 0)
         self.assertEqual(self.service.reconnects, 1)
-        self.assertIn("Reconnect requested", self.service.stop_reasons)
+        self.assertNotIn("Reconnect requested", self.service.stop_reasons)
+
+    def test_reconnect_does_not_call_the_synchronous_service_stop_barrier(self):
+        stop_barrier_called = threading.Event()
+        self.service.stop_hook = lambda _reason: stop_barrier_called.set()
+
+        self.app.reconnect()
+
+        self.assertFalse(stop_barrier_called.is_set())
+        self.assertEqual(self.service.reconnects, 1)
+        self.assertEqual(self.app.runtime_state_var.get(), "DISABLED")
 
     def test_reconnect_stops_normal_jitter_and_ai_motion_before_delegating(self):
         for mode in ("jitter", "ai_aim"):
@@ -3603,7 +3612,7 @@ class JitterRuntimeTests(JitterLayoutTests):
                     [(False, False, False, None, None, True)],
                 )
                 self.assertEqual(app.runtime_state_var.get(), "DISABLED")
-                self.assertIn("Reconnect requested", self.service.stop_reasons)
+                self.assertNotIn("Reconnect requested", self.service.stop_reasons)
                 if mode == "ai_aim":
                     self.assertIn("Reconnect requested", self.ai.stop_calls)
 

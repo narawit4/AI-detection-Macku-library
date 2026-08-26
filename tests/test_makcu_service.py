@@ -1468,86 +1468,29 @@ class MakcuMovementTests(unittest.TestCase):
 
 
 class MakcuConnectionLifecycleTests(unittest.TestCase):
-    def test_connect_cleans_controller_installed_during_lifecycle_race(self):
-        class OneShotExitHookLock:
-            def __init__(self, inner, hook):
-                self._inner = inner
-                self._hook = hook
-                self._fired = False
+    def test_reconnect_returns_while_move_is_blocked_then_releases_port_first(self):
+        order = []
 
-            def __enter__(self):
-                self._inner.acquire()
-                return self
+        class BlockingMoveController(FakeController):
+            def __init__(self):
+                super().__init__()
+                self.move_entered = threading.Event()
+                self.release_move = threading.Event()
 
-            def __exit__(self, _exc_type, _exc, _traceback):
-                self._inner.release()
-                if not self._fired:
-                    self._fired = True
-                    self._hook()
+            def move(self, x, y):
+                order.append("move_entered")
+                self.move_entered.set()
+                if not self.release_move.wait(2.0):
+                    raise TimeoutError("test did not release blocked move")
+                order.append("move_returned")
+                super().move(x, y)
 
-        old = FakeController()
+            def disconnect(self):
+                order.append("old_disconnected")
+                super().disconnect()
+
+        old = BlockingMoveController()
         fresh = FakeController()
-        service = MakcuService(
-            lambda _event: None,
-            controller_factory=lambda **_kwargs: fresh,
-        )
-        self.addCleanup(service.close)
-
-        def install_racing_controller():
-            service._controller = old
-            service._connected = True
-
-        service._lock = OneShotExitHookLock(
-            service._lock,
-            install_racing_controller,
-        )
-
-        service.connect()
-
-        self.assertTrue(wait_until(lambda: service.controller is fresh))
-        self.assertTrue(old.disconnected)
-
-    def test_recovery_during_disconnect_stop_rearms_the_next_loss(self):
-        controller = FakeController()
-        events = []
-        service = MakcuService(
-            events.append,
-            controller_factory=lambda **_kwargs: controller,
-        )
-        self.addCleanup(service.close)
-        service._connect_worker(service._begin_connection())
-        stop_entered = threading.Event()
-        release_stop = threading.Event()
-
-        def blocking_stop(_reason="manual", **_kwargs):
-            stop_entered.set()
-            if not release_stop.wait(1.0):
-                raise TimeoutError("test did not release disconnect stop")
-
-        service.stop_motion = blocking_stop
-        with service._lock:
-            service._motion_active = True
-        first_loss = threading.Thread(
-            target=lambda: controller.connection_callback(False)
-        )
-
-        first_loss.start()
-        self.assertTrue(stop_entered.wait(1.0))
-        controller.connection_callback(True)
-        release_stop.set()
-        first_loss.join(1.0)
-        controller.connection_callback(False)
-
-        self.assertFalse(first_loss.is_alive())
-        self.assertEqual(
-            [event.kind for event in events],
-            ["connecting", "connected", "reconnected", "disconnected"],
-        )
-
-    def test_concurrent_reconnects_queue_teardown_in_generation_order(self):
-        old = FakeController()
-        replacements = []
-        replacement_factory_entered = threading.Event()
         factory_calls = 0
 
         def factory(**_kwargs):
@@ -1555,86 +1498,214 @@ class MakcuConnectionLifecycleTests(unittest.TestCase):
             factory_calls += 1
             if factory_calls == 1:
                 return old
-            fresh = FakeController()
-            replacements.append(fresh)
-            replacement_factory_entered.set()
+            order.append("replacement_factory")
             return fresh
 
-        service = MakcuService(lambda _event: None, controller_factory=factory)
+        service = MakcuService(
+            lambda _event: None,
+            controller_factory=factory,
+            engine_factory=RecordingEngine,
+        )
+        self.addCleanup(old.release_move.set)
         self.addCleanup(service.close)
         service._connect_worker(service._begin_connection())
+        self.assertTrue(service.start_motion(lambda: MotionSettings()))
+        self.assertTrue(old.move_entered.wait(1.0))
 
-        original_start = service._start_connection_worker
-        first_enqueue_entered = threading.Event()
-        release_first_enqueue = threading.Event()
-        enqueue_calls = 0
+        reconnect_returned = threading.Event()
+        reconnect_thread = threading.Thread(
+            target=lambda: (service.reconnect(), reconnect_returned.set())
+        )
+        reconnect_thread.start()
+        try:
+            self.assertTrue(reconnect_returned.wait(1.0))
+            self.assertFalse(service.connected)
+            old.release_move.set()
+            self.assertTrue(wait_until(lambda: service.controller is fresh))
+            service.join_connection(1.0)
+        finally:
+            old.release_move.set()
+            reconnect_thread.join(1.0)
+            service.join_motion(1.0)
 
-        def gated_start(generation, old_controller=None):
-            nonlocal enqueue_calls
-            enqueue_calls += 1
-            if enqueue_calls == 1:
-                first_enqueue_entered.set()
-                if not release_first_enqueue.wait(1.0):
-                    raise TimeoutError("test did not release first reconnect")
-            return original_start(generation, old_controller)
+        self.assertEqual(factory_calls, 2)
+        self.assertLess(order.index("move_returned"), order.index("old_disconnected"))
+        self.assertLess(
+            order.index("old_disconnected"), order.index("replacement_factory")
+        )
 
-        service._start_connection_worker = gated_start
-        self.addCleanup(release_first_enqueue.set)
-        reconnect_results = []
-        first = threading.Thread(target=lambda: reconnect_results.append(
-            service.reconnect()
-        ))
-        second = threading.Thread(target=lambda: reconnect_results.append(
-            service.reconnect()
-        ))
+    def test_recovery_during_disconnect_stop_rearms_the_next_loss(self):
+        class BlockingMoveController(FakeController):
+            def __init__(self):
+                super().__init__()
+                self.move_entered = threading.Event()
+                self.release_move = threading.Event()
 
-        first.start()
-        self.assertTrue(first_enqueue_entered.wait(1.0))
-        second.start()
-        factory_started_before_first_enqueue = replacement_factory_entered.wait(0.05)
-        release_first_enqueue.set()
-        first.join(1.0)
-        second.join(1.0)
-        with service._lock:
-            connection_tail_done = service._connection_tail_done
+            def move(self, x, y):
+                self.move_entered.set()
+                if not self.release_move.wait(2.0):
+                    raise TimeoutError("test did not release blocked move")
+                super().move(x, y)
 
-        self.assertFalse(first.is_alive())
-        self.assertFalse(second.is_alive())
-        self.assertTrue(connection_tail_done.wait(1.0))
-        self.assertTrue(wait_until(
-            lambda: bool(replacements) and service.controller is replacements[-1]
-        ))
-        self.assertTrue(old.disconnected)
-        self.assertIn(factory_calls, (2, 3))
-        self.assertTrue(all(
-            controller.disconnected for controller in replacements[:-1]
-        ))
-        self.assertEqual(service.connection_generation, max(reconnect_results))
-        self.assertFalse(factory_started_before_first_enqueue)
-
-    def test_old_disconnect_failure_is_logged_and_replacement_still_connects(self):
-        private_detail = "password=PORT-SECRET at C:\\private\\disconnect.py:23"
-
-        class DisconnectFailureController(FakeController):
-            def disconnect(self):
-                raise RuntimeError(private_detail)
-
-        old = DisconnectFailureController()
-        fresh = FakeController()
-        controllers = iter((old, fresh))
+        controller = BlockingMoveController()
         events = []
         service = MakcuService(
             events.append,
-            controller_factory=lambda **_kwargs: next(controllers),
+            controller_factory=lambda **_kwargs: controller,
+            engine_factory=RecordingEngine,
         )
+        self.addCleanup(controller.release_move.set)
+        self.addCleanup(service.close)
+        service._connect_worker(service._begin_connection())
+        self.assertTrue(service.start_motion(lambda: MotionSettings()))
+        self.assertTrue(controller.move_entered.wait(1.0))
+        first_loss = threading.Thread(
+            target=lambda: controller.connection_callback(False)
+        )
+
+        first_loss.start()
+        self.assertTrue(service._motion_stop.wait(1.0))
+        controller.connection_callback(True)
+        controller.release_move.set()
+        first_loss.join(1.0)
+        controller.connection_callback(False)
+        service.join_motion(1.0)
+
+        self.assertFalse(first_loss.is_alive())
+        self.assertEqual(
+            [
+                event.kind
+                for event in events
+                if event.kind
+                in {"connecting", "connected", "reconnected", "disconnected"}
+            ],
+            ["connecting", "connected", "reconnected", "disconnected"],
+        )
+
+    def test_repeated_reconnects_use_latest_generation_after_one_teardown(self):
+        class BlockingDisconnectController(FakeController):
+            def __init__(self):
+                super().__init__()
+                self.disconnect_entered = threading.Event()
+                self.release_disconnect = threading.Event()
+                self.disconnect_calls = 0
+
+            def disconnect(self):
+                self.disconnect_calls += 1
+                self.disconnect_entered.set()
+                if not self.release_disconnect.wait(2.0):
+                    raise TimeoutError("test did not release old controller")
+                super().disconnect()
+
+        old = BlockingDisconnectController()
+        fresh = FakeController()
+        factory_calls = 0
+
+        def factory(**_kwargs):
+            nonlocal factory_calls
+            factory_calls += 1
+            if factory_calls == 1:
+                return old
+            return fresh
+
+        events = []
+        service = MakcuService(events.append, controller_factory=factory)
+        self.addCleanup(old.release_disconnect.set)
+        self.addCleanup(service.close)
+        service._connect_worker(service._begin_connection())
+        events.clear()
+
+        first_generation = service.reconnect()
+        self.assertTrue(old.disconnect_entered.wait(1.0))
+        second_generation = service.reconnect()
+        latest_generation = service.reconnect()
+        requested_worker_names = {
+            f"MakcuConnect-{generation}"
+            for generation in (
+                first_generation,
+                second_generation,
+                latest_generation,
+            )
+        }
+        self.assertEqual(
+            len([
+                thread
+                for thread in threading.enumerate()
+                if thread.name in requested_worker_names and thread.is_alive()
+            ]),
+            1,
+        )
+        old.release_disconnect.set()
+
+        self.assertTrue(wait_until(lambda: service.controller is fresh))
+        service.join_connection(1.0)
+        self.assertEqual(
+            [first_generation, second_generation, latest_generation],
+            sorted({first_generation, second_generation, latest_generation}),
+        )
+        self.assertEqual(service.connection_generation, latest_generation)
+        self.assertEqual(old.disconnect_calls, 1)
+        self.assertEqual(factory_calls, 2)
+        self.assertEqual(
+            [event.kind for event in events],
+            ["connecting", "connecting", "connecting", "connected"],
+        )
+
+    def test_old_disconnect_failure_suppresses_factory_until_explicit_retry(self):
+        private_detail = "password=PORT-SECRET at C:\\private\\disconnect.py:23"
+
+        class DisconnectFailureController(FakeController):
+            def __init__(self):
+                super().__init__()
+                self.disconnect_entered = threading.Event()
+                self.release_disconnect = threading.Event()
+                self.disconnect_calls = 0
+
+            def disconnect(self):
+                self.disconnect_calls += 1
+                self.disconnect_entered.set()
+                if not self.release_disconnect.wait(2.0):
+                    raise TimeoutError("test did not release old controller")
+                if self.disconnect_calls == 1:
+                    raise RuntimeError(private_detail)
+                super().disconnect()
+
+        old = DisconnectFailureController()
+        fresh = FakeController()
+        events = []
+        factory_calls = 0
+
+        def factory(**_kwargs):
+            nonlocal factory_calls
+            factory_calls += 1
+            return old if factory_calls == 1 else fresh
+
+        service = MakcuService(
+            events.append,
+            controller_factory=factory,
+        )
+        self.addCleanup(old.release_disconnect.set)
         self.addCleanup(service.close)
         service._connect_worker(service._begin_connection())
 
         with self.assertLogs("makcu_service", level="ERROR") as captured:
             service.reconnect()
-            self.assertTrue(wait_until(lambda: service.controller is fresh))
+            self.assertTrue(old.disconnect_entered.wait(1.0))
+            failed_generation = service.reconnect()
+            old.release_disconnect.set()
+            service.join_connection(1.0)
 
-        self.assertTrue(service.connected)
+        self.assertFalse(service.connected)
+        self.assertIsNone(service.controller)
+        self.assertEqual(service.connection_generation, failed_generation)
+        self.assertEqual(factory_calls, 1)
+        self.assertEqual(
+            events[-1],
+            ServiceEvent(
+                "disconnected",
+                "Makcu unavailable; check USB and reconnect",
+            ),
+        )
         self.assertFalse(any(
             "PORT-SECRET" in str(event.payload) or "C:\\private" in str(event.payload)
             for event in events
@@ -1642,95 +1713,50 @@ class MakcuConnectionLifecycleTests(unittest.TestCase):
         self.assertIn(private_detail, "\n".join(captured.output))
         self.assertTrue(any(record.exc_info is not None for record in captured.records))
 
-    def test_repeated_reconnect_cannot_bypass_pending_old_controller_cleanup(self):
-        class BlockingDisconnectController(FakeController):
-            def __init__(self):
-                super().__init__()
-                self.disconnect_started = threading.Event()
-                self.release_disconnect = threading.Event()
-
-            def disconnect(self):
-                self.disconnect_started.set()
-                if not self.release_disconnect.wait(1.0):
-                    raise TimeoutError("test did not release old controller")
-                super().disconnect()
-
-        old = BlockingDisconnectController()
-        fresh = FakeController()
-        replacement_factory_entered = threading.Event()
-        factory_calls = 0
-
-        def factory(**_kwargs):
-            nonlocal factory_calls
-            factory_calls += 1
-            if factory_calls == 1:
-                return old
-            replacement_factory_entered.set()
-            return fresh
-
-        service = MakcuService(lambda _event: None, controller_factory=factory)
-        self.addCleanup(service.close)
-        self.addCleanup(old.release_disconnect.set)
-        service._connect_worker(service._begin_connection())
-
         service.reconnect()
-        self.assertTrue(old.disconnect_started.wait(1.0))
-        latest_generation = service.reconnect()
-        factory_started_while_disconnect_blocked = replacement_factory_entered.wait(
-            0.05
-        )
-        old.release_disconnect.set()
-
-        self.assertTrue(replacement_factory_entered.wait(1.0))
         self.assertTrue(wait_until(lambda: service.controller is fresh))
-        self.assertEqual(service.connection_generation, latest_generation)
+        service.join_connection(1.0)
+        self.assertEqual(old.disconnect_calls, 2)
         self.assertEqual(factory_calls, 2)
-        self.assertFalse(factory_started_while_disconnect_blocked)
+        self.assertTrue(service.connected)
 
-    def test_reconnect_releases_old_port_before_calling_replacement_factory(self):
+    def test_close_cancels_reconnects_waiting_behind_blocked_teardown(self):
         class BlockingDisconnectController(FakeController):
             def __init__(self):
                 super().__init__()
                 self.disconnect_started = threading.Event()
                 self.release_disconnect = threading.Event()
-                self.disconnect_finished = threading.Event()
 
             def disconnect(self):
                 self.disconnect_started.set()
                 if not self.release_disconnect.wait(1.0):
                     raise TimeoutError("test did not release old controller")
                 super().disconnect()
-                self.disconnect_finished.set()
 
         old = BlockingDisconnectController()
-        fresh = FakeController()
-        replacement_factory_entered = threading.Event()
         factory_calls = 0
 
         def factory(**_kwargs):
             nonlocal factory_calls
             factory_calls += 1
-            if factory_calls == 1:
-                return old
-            replacement_factory_entered.set()
-            return fresh
+            return old if factory_calls == 1 else FakeController()
 
         service = MakcuService(lambda _event: None, controller_factory=factory)
-        self.addCleanup(service.close)
         self.addCleanup(old.release_disconnect.set)
         service._connect_worker(service._begin_connection())
 
         service.reconnect()
         self.assertTrue(old.disconnect_started.wait(1.0))
-        factory_started_while_disconnect_blocked = replacement_factory_entered.wait(
-            0.05
-        )
+        service.reconnect()
+        service.reconnect()
+        service.close()
         old.release_disconnect.set()
+        service.join_connection(1.0)
 
-        self.assertTrue(old.disconnect_finished.wait(1.0))
-        self.assertTrue(replacement_factory_entered.wait(1.0))
-        self.assertTrue(wait_until(lambda: service.controller is fresh))
-        self.assertFalse(factory_started_while_disconnect_blocked)
+        self.assertTrue(old.disconnected)
+        self.assertEqual(factory_calls, 1)
+        self.assertFalse(service.connected)
+        self.assertIsNone(service.controller)
 
     def test_close_wakes_health_monitor_without_waiting_for_poll_interval(self):
         controller = FakeController()
