@@ -160,6 +160,7 @@ class FakeWindow:
         self.calls = calls
         self.failures = failures or {}
         self.destroyed = False
+        self.visible = False
 
     def _fail(self, operation):
         error = self.failures.get(operation)
@@ -168,6 +169,7 @@ class FakeWindow:
 
     def withdraw(self):
         self.calls.append("withdraw")
+        self.visible = False
         self._fail("withdraw")
 
     def overrideredirect(self, value):
@@ -194,12 +196,16 @@ class FakeWindow:
 
     def deiconify(self):
         self.calls.append("deiconify")
+        self.visible = True
+        self._fail("deiconify")
 
     def lift(self):
         self.calls.append("lift")
+        self._fail("lift")
 
     def destroy(self):
         self.destroyed = True
+        self.visible = False
         self.calls.append("destroy")
         self._fail("destroy")
 
@@ -321,6 +327,37 @@ class DetectionOverlayTests(unittest.TestCase):
         self.assertFalse(overlay.visible)
         self.assertEqual(adapter.handles, [])
         self.assertNotIn("deiconify", calls)
+
+    def test_deiconify_failure_destroys_window_and_detaches_ownership(self):
+        overlay, window, _canvases, _adapter, calls = self.make_overlay(
+            window_failures={"deiconify": RuntimeError("deiconify failed")}
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "deiconify failed"):
+            overlay.show()
+
+        self.assertTrue(window.destroyed)
+        self.assertFalse(window.visible)
+        self.assertFalse(overlay.visible)
+        overlay.close()
+        overlay.close()
+        self.assertEqual(calls.count("destroy"), 1)
+
+    def test_lift_failure_destroys_visible_window_and_detaches_ownership(self):
+        overlay, window, _canvases, _adapter, calls = self.make_overlay(
+            window_failures={"lift": RuntimeError("lift failed")}
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "lift failed"):
+            overlay.show()
+
+        self.assertTrue(window.destroyed)
+        self.assertFalse(window.visible)
+        self.assertFalse(overlay.visible)
+        self.assertLess(calls.index("deiconify"), calls.index("lift"))
+        overlay.close()
+        overlay.close()
+        self.assertEqual(calls.count("destroy"), 1)
 
     def test_render_replaces_boxes_with_red_selected_width(self):
         overlay, _window, canvases, _adapter, _calls = self.make_overlay()

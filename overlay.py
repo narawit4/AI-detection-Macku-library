@@ -180,8 +180,20 @@ class DetectionOverlay:
                 raise
             self._window = window
             self._canvas = canvas
-        self._window.deiconify()
-        self._window.lift()
+        window = self._window
+        try:
+            window.deiconify()
+            window.lift()
+        except Exception:
+            self._window = None
+            self._canvas = None
+            self._visible = False
+            try:
+                window.withdraw()
+            except Exception:
+                LOGGER.exception("Overlay activation withdraw failed")
+            self._destroy_safely(window, "Overlay activation cleanup failed")
+            raise
         self._visible = True
 
     def render(
