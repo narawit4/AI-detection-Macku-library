@@ -7,6 +7,7 @@ main thread.
 """
 
 from dataclasses import dataclass, field
+import logging
 import math
 import threading
 import time
@@ -18,6 +19,8 @@ from motion import PairedPulseEngine
 
 
 _MISSING = object()
+_CONNECTION_FAILURE_MESSAGE = "Makcu unavailable; check USB and reconnect"
+LOGGER = logging.getLogger(__name__)
 
 
 BUTTON_NAMES = {
@@ -63,6 +66,9 @@ class MakcuService:
         self._controller: Any | None = None
         self._connected = False
         self._closed = False
+        self._connection_transition = 0
+        self._connection_tail_done = threading.Event()
+        self._connection_tail_done.set()
         self._setup_disconnected: set[int] = set()
         self._disconnect_notified: set[int] = set()
         self._motion_cancel_lock = threading.Lock()
@@ -77,6 +83,8 @@ class MakcuService:
         self._motion_stop = threading.Event()
         self._motion_thread: threading.Thread | None = None
         self._health_thread: threading.Thread | None = None
+        self._health_stop = threading.Event()
+        self._health_stop.set()
         self._motion_active = False
         self._motion_stop_reasons: dict[int, str | None] = {}
 
@@ -108,18 +116,24 @@ class MakcuService:
         except Exception:
             pass
 
+    def _begin_connection_locked(self) -> tuple[int, bool]:
+        self._health_stop.set()
+        self._health_stop = threading.Event()
+        self._generation += 1
+        generation = self._generation
+        self._controller = None
+        self._connected = False
+        self._setup_disconnected.discard(generation)
+        self._disconnect_notified.discard(generation)
+        should_dispatch = self._reserve_event_locked(
+            ServiceEvent("connecting"),
+            lambda: generation == self._generation and not self._closed,
+        )
+        return generation, should_dispatch
+
     def _begin_connection(self) -> int:
         with self._lock:
-            self._generation += 1
-            generation = self._generation
-            self._controller = None
-            self._connected = False
-            self._setup_disconnected.discard(generation)
-            self._disconnect_notified.discard(generation)
-            should_dispatch = self._reserve_event_locked(
-                ServiceEvent("connecting"),
-                lambda: generation == self._generation and not self._closed,
-            )
+            generation, should_dispatch = self._begin_connection_locked()
         if should_dispatch:
             self._drain_event_dispatch()
         return generation
@@ -164,49 +178,91 @@ class MakcuService:
         with self._lock:
             if self._closed:
                 return None
-        with self._lock:
-            has_active_controller = self._controller is not None
-        if has_active_controller:
-            return self.reconnect()
-        generation = self._begin_connection()
-        self._start_connection_worker(generation)
-        return generation
+        return self.reconnect()
 
-    def _start_connection_worker(self, generation: int) -> None:
+    def _start_connection_worker(
+        self,
+        generation: int,
+        old_controller: Any | None = None,
+    ) -> None:
+        finished = threading.Event()
+        with self._lock:
+            predecessor = self._connection_tail_done
+            self._connection_tail_done = finished
         thread = threading.Thread(
-            target=self._connect_worker,
-            args=(generation,),
+            target=self._queued_connect_worker,
+            args=(generation, old_controller, predecessor, finished),
             name=f"MakcuConnect-{generation}",
             daemon=True,
         )
-        thread.start()
+        try:
+            thread.start()
+        except Exception:
+            finished.set()
+            raise
+
+    def _queued_connect_worker(
+        self,
+        generation: int,
+        old_controller: Any | None,
+        predecessor: threading.Event,
+        finished: threading.Event,
+    ) -> None:
+        predecessor.wait()
+        try:
+            self._connect_worker(generation, old_controller)
+        finally:
+            finished.set()
 
     def _start_health_worker(self, generation: int, controller: Any) -> None:
-        thread = threading.Thread(
-            target=self._health_worker,
-            args=(generation, controller),
-            name=f"MakcuHealth-{generation}",
-            daemon=True,
-        )
         with self._lock:
+            if (
+                self._closed
+                or generation != self._generation
+                or controller is not self._controller
+            ):
+                return
+            stop_event = self._health_stop
+            thread = threading.Thread(
+                target=self._health_worker,
+                args=(generation, controller, stop_event),
+                name=f"MakcuHealth-{generation}",
+                daemon=True,
+            )
             self._health_thread = thread
         thread.start()
 
-    def _health_worker(self, generation: int, controller: Any) -> None:
-        while True:
-            time.sleep(0.1)
-            with self._lock:
-                if (self._closed or generation != self._generation
+    def _health_worker(
+        self,
+        generation: int,
+        controller: Any,
+        stop_event: threading.Event,
+    ) -> None:
+        health_error_active = False
+        try:
+            while not stop_event.wait(0.1):
+                with self._lock:
+                    if (
+                        self._closed
+                        or generation != self._generation
                         or controller is not self._controller
-                        or not self._connected):
-                    return
-            try:
-                connected = bool(controller.is_connected())
-            except Exception:
-                connected = False
-            if not connected:
-                self._connection_changed(generation, False)
-                return
+                        or stop_event is not self._health_stop
+                    ):
+                        return
+                try:
+                    connected = bool(controller.is_connected())
+                except Exception:
+                    if not health_error_active:
+                        LOGGER.exception("Makcu connection health check failed")
+                    health_error_active = True
+                    connected = False
+                else:
+                    health_error_active = False
+                self._connection_changed(generation, connected)
+        finally:
+            with self._lock:
+                if self._health_thread is threading.current_thread():
+                    self._health_thread = None
 
     def _start_disconnect_worker(self, controller: Any) -> None:
         thread = threading.Thread(
@@ -222,7 +278,7 @@ class MakcuService:
         try:
             controller.disconnect()
         except Exception:
-            pass
+            LOGGER.exception("Makcu controller disconnect failed")
 
     def start_motion(
         self,
@@ -572,20 +628,30 @@ class MakcuService:
                 or generation in self._setup_disconnected
             )
 
-    def _connect_worker(self, generation: int) -> None:
+    def _connect_worker(
+        self,
+        generation: int,
+        old_controller: Any | None = None,
+    ) -> None:
+        if old_controller is not None:
+            self._disconnect_controller(old_controller)
+        if self._setup_must_abort(generation):
+            return
         try:
             controller = self._controller_factory(debug=False, auto_reconnect=True)
-        except Exception as exc:
+        except Exception:
+            LOGGER.exception("Makcu controller factory failed")
             should_dispatch = False
             with self._lock:
                 current = generation == self._generation and not self._closed
                 if current:
                     self._controller = None
                     self._connected = False
+                    self._disconnect_notified.add(generation)
                     should_dispatch = self._reserve_event_locked(
                         ServiceEvent(
                             "disconnected",
-                            f"{type(exc).__name__}: {exc}",
+                            _CONNECTION_FAILURE_MESSAGE,
                         ),
                         lambda: (
                             generation == self._generation
@@ -608,30 +674,35 @@ class MakcuService:
                     g, button, pressed
                 )
             )
-        except Exception as exc:
+        except Exception:
+            LOGGER.exception("Makcu controller setup failed")
             # Setup failures are equivalent to a failed connection, but the
             # exact newly-created controller must still be cleaned up.
-            self._disconnect_controller(controller)
             should_dispatch = False
             with self._lock:
                 current = generation == self._generation and not self._closed
                 if current:
+                    already_notified = generation in self._disconnect_notified
+                    self._setup_disconnected.add(generation)
+                    self._disconnect_notified.add(generation)
                     self._controller = None
                     self._connected = False
-                    should_dispatch = self._reserve_event_locked(
-                        ServiceEvent(
-                            "disconnected",
-                            f"{type(exc).__name__}: {exc}",
-                        ),
-                        lambda: (
-                            generation == self._generation
-                            and not self._closed
-                            and self._controller is None
-                            and not self._connected
-                        ),
-                    )
+                    if not already_notified:
+                        should_dispatch = self._reserve_event_locked(
+                            ServiceEvent(
+                                "disconnected",
+                                _CONNECTION_FAILURE_MESSAGE,
+                            ),
+                            lambda: (
+                                generation == self._generation
+                                and not self._closed
+                                and self._controller is None
+                                and not self._connected
+                            ),
+                        )
             if should_dispatch:
                 self._drain_event_dispatch()
+            self._disconnect_controller(controller)
             return
 
         if self._setup_must_abort(generation):
@@ -685,7 +756,7 @@ class MakcuService:
         event: ServiceEvent | None = None
         stop_for_disconnect = False
         should_dispatch = False
-        controller_present = False
+        disconnect_transition: int | None = None
         with self._lock:
             if generation != self._generation or self._closed:
                 return
@@ -707,6 +778,8 @@ class MakcuService:
             elif connected:
                 if not self._connected:
                     self._connected = True
+                    self._connection_transition += 1
+                    self._disconnect_notified.discard(generation)
                     event = ServiceEvent("reconnected")
                     should_dispatch = self._reserve_event_locked(
                         event,
@@ -717,18 +790,25 @@ class MakcuService:
                         ),
                     )
             else:
-                controller_present = True
                 was_connected = self._connected
                 self._connected = False
                 stop_for_disconnect = was_connected and self._motion_active
+                if was_connected:
+                    self._connection_transition += 1
+                    disconnect_transition = self._connection_transition
+                    self._disconnect_notified.add(generation)
         if stop_for_disconnect:
             self.stop_motion(reason="disconnected")
-        if not connected and controller_present:
+        if disconnect_transition is not None:
             with self._lock:
-                if generation != self._generation or self._closed:
-                    return
-                if was_connected and generation not in self._disconnect_notified:
-                    self._disconnect_notified.add(generation)
+                still_current_loss = (
+                    generation == self._generation
+                    and not self._closed
+                    and not self._connected
+                    and disconnect_transition == self._connection_transition
+                    and generation in self._disconnect_notified
+                )
+                if still_current_loss:
                     event = ServiceEvent("disconnected")
                     should_dispatch = self._reserve_event_locked(
                         event,
@@ -791,10 +871,10 @@ class MakcuService:
             if self._closed:
                 return None
             old_controller = self._controller
-        generation = self._begin_connection()
-        if old_controller is not None:
-            self._start_disconnect_worker(old_controller)
-        self._start_connection_worker(generation)
+            generation, should_dispatch = self._begin_connection_locked()
+            self._start_connection_worker(generation, old_controller)
+        if should_dispatch:
+            self._drain_event_dispatch()
         return generation
 
     def close(self) -> None:
@@ -804,6 +884,7 @@ class MakcuService:
             if self._closed:
                 return
             self._closed = True
+            self._health_stop.set()
             self._generation += 1
             controller = self._controller
             self._controller = None
