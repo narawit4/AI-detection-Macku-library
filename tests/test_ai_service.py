@@ -169,17 +169,18 @@ class SelectiveGateLock:
         self._lock.release()
 
 
-class WorkerReleaseGateLock:
-    """Pause a worker after a selected lock release for interleaving tests."""
+class PublicationObserverLock:
+    """Expose the first publication release after a checked worker frame."""
 
-    def __init__(self, worker_name, release_number):
+    def __init__(self, worker_name):
         self._lock = threading.RLock()
         self._guard = threading.Lock()
         self._worker_name = worker_name
-        self._release_number = release_number
-        self._worker_releases = 0
-        self.gate_entered = threading.Event()
-        self.release_gate = threading.Event()
+        self._phase = "awaiting_currentness_check"
+        self.currentness_check_released = threading.Event()
+        self.allow_publication = threading.Event()
+        self.first_publication_released = threading.Event()
+        self.release_observation = threading.Event()
 
     def __enter__(self):
         self._lock.acquire()
@@ -187,14 +188,21 @@ class WorkerReleaseGateLock:
 
     def __exit__(self, exc_type, exc_value, traceback):
         self._lock.release()
-        should_gate = False
+        event = None
+        release = None
         with self._guard:
             if threading.current_thread().name == self._worker_name:
-                self._worker_releases += 1
-                should_gate = self._worker_releases == self._release_number
-        if should_gate:
-            self.gate_entered.set()
-            self.release_gate.wait(1.0)
+                if self._phase == "awaiting_currentness_check":
+                    self._phase = "awaiting_first_publication"
+                    event = self.currentness_check_released
+                    release = self.allow_publication
+                elif self._phase == "awaiting_first_publication":
+                    self._phase = "observing"
+                    event = self.first_publication_released
+                    release = self.release_observation
+        if event is not None:
+            event.set()
+            release.wait(1.0)
 
 
 class AiServiceTests(unittest.TestCase):
@@ -425,15 +433,16 @@ class AiServiceTests(unittest.TestCase):
         generation = service.start(AimSettings)
         self.assertTrue(detector.entered.wait(1.0))
 
-        gate_lock = WorkerReleaseGateLock(
-            f"AiInference-{generation}", release_number=2
-        )
+        gate_lock = PublicationObserverLock(f"AiInference-{generation}")
         service._lock = gate_lock
-        self.addCleanup(gate_lock.release_gate.set)
+        self.addCleanup(gate_lock.release_observation.set)
+        self.addCleanup(gate_lock.allow_publication.set)
         self.addCleanup(detector.release.set)
         detector.release.set()
 
-        self.assertTrue(gate_lock.gate_entered.wait(1.0))
+        self.assertTrue(gate_lock.currentness_check_released.wait(1.0))
+        gate_lock.allow_publication.set()
+        self.assertTrue(gate_lock.first_publication_released.wait(1.0))
         target = service.latest_snapshot()
         frame = service.latest_detection_snapshot()
         self.assertIsNotNone(target)
