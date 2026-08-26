@@ -3166,44 +3166,75 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.assertEqual(app._motion_mode, "test_ai_loading")
         self.assertIn("Test Run is active", app.footer_var.get())
 
-    def test_runtime_waits_on_loading_screen_until_first_connection(self):
+    def test_runtime_keeps_dashboard_and_stop_mounted_while_connecting(self):
         self.app.start_runtime()
+        self.app.handle_service_event(ServiceEvent("connecting"))
         self.app.update_idletasks()
 
-        self.assertEqual(self.app.loading_frame.winfo_manager(), "pack")
-        self.assertEqual(self.app.shell.winfo_manager(), "")
-
-        self.app.handle_service_event(ServiceEvent("connected", "Makcu on COM3"))
-        self.app.update_idletasks()
-
-        self.assertEqual(self.app.loading_frame.winfo_manager(), "")
         self.assertEqual(self.app.shell.winfo_manager(), "pack")
+        self.assertEqual(self.app.stop_button.winfo_manager(), "grid")
+        self.assertEqual(self.app.connection_state_var.get(), "Connecting")
+        self.assertEqual(self.app.device_status_var.get(), "Connecting to Makcu...")
 
-    def test_failed_initial_detection_retries_automatically(self):
+    def test_startup_connects_once_without_scheduling_ui_reconnect(self):
+        self.app._cancel_after("_ui_pump_after_id")
+        scheduled = []
+        self.app.after = lambda delay, callback: scheduled.append(
+            (delay, callback)
+        ) or f"scheduled-{len(scheduled)}"
+
         self.app.start_runtime()
+
+        self.assertEqual(self.service.started, 1)
+        self.assertEqual(self.service.reconnects, 0)
+        self.assertEqual(scheduled, [])
+
+    def test_disconnect_does_not_schedule_ui_reconnect(self):
+        self.app.start_runtime()
+        self.app._cancel_after("_ui_pump_after_id")
+        scheduled = []
+        self.app.after = lambda delay, callback: scheduled.append(
+            (delay, callback)
+        ) or f"scheduled-{len(scheduled)}"
+
         self.app.handle_service_event(ServiceEvent("disconnected", "Not found"))
 
-        self.assertIsNotNone(self.app._initial_retry_after_id)
-        self.app._cancel_after("_initial_retry_after_id")
-        self.app._retry_initial_connection()
+        for _delay, callback in tuple(scheduled):
+            callback()
 
-        self.assertEqual(self.service.reconnects, 1)
-        self.assertEqual(self.app.loading_frame.winfo_manager(), "pack")
+        self.assertEqual(scheduled, [])
+        self.assertEqual(self.service.reconnects, 0)
 
-    def test_disconnect_returns_to_loading_until_device_reconnects(self):
+    def test_disconnect_keeps_selected_page_and_runtime_layout_mounted(self):
         self.app.start_runtime()
         self.app.handle_service_event(ServiceEvent("connected", "Makcu on COM3"))
+        self.app.select_page(2)
+        self.app.update_idletasks()
+        expected_geometry = self.app.geometry()
+
         self.app.handle_service_event(ServiceEvent("disconnected", "Device lost"))
+        self.app.update_idletasks()
 
-        self.assertEqual(self.app.shell.winfo_manager(), "")
-        self.assertEqual(self.app.loading_frame.winfo_manager(), "pack")
-        self.assertIsNotNone(self.app._initial_retry_after_id)
-
-        self.app.handle_service_event(ServiceEvent("reconnected", "Makcu on COM3"))
-
-        self.assertEqual(self.app.loading_frame.winfo_manager(), "")
         self.assertEqual(self.app.shell.winfo_manager(), "pack")
-        self.assertIsNone(self.app._initial_retry_after_id)
+        self.assertEqual(self.app.page_host.grid_slaves(), [self.app.settings_page])
+        self.assertEqual(self.app.stop_button.winfo_manager(), "grid")
+        self.assertEqual(self.app.geometry(), expected_geometry)
+        self.assertEqual(self.app.runtime_state_var.get(), "DISABLED")
+
+    def test_disconnect_keeps_focused_configuration_input_accessible(self):
+        self.app.deiconify()
+        self.app.start_runtime()
+        self.app.handle_service_event(ServiceEvent("connected", "Makcu on COM3"))
+        self.app.select_page(2)
+        self.app.update()
+        self.app.sound_volume_entry.focus_force()
+        self.app.update()
+
+        self.app.handle_service_event(ServiceEvent("disconnected", "Device lost"))
+        self.app.update_idletasks()
+
+        self.assertIs(self.app.focus_get(), self.app.sound_volume_entry)
+        self.assertEqual(self.app.sound_volume_entry.winfo_viewable(), 1)
 
     def test_app_creates_default_nonblocking_sound_player(self):
         app = JitterApp(
@@ -3525,10 +3556,18 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.assertEqual(self.app.sound_volume_var.get(), "70")
         self.assertEqual(self.store.saved[-1].sound_volume, 70)
 
-    def test_reconnect_delegates_to_service(self):
+    def test_explicit_reconnect_action_delegates_to_service_exactly_once(self):
         self.app.start_runtime()
-        self.app.reconnect()
+        self.app.reconnect_button.command()
         self.assertEqual(self.service.reconnects, 1)
+
+    def test_explicit_reconnect_action_starts_runtime_with_one_reconnect(self):
+        self.app.reconnect_button.command()
+
+        self.assertEqual(self.app.hotkey_watcher.started, 1)
+        self.assertEqual(self.service.started, 0)
+        self.assertEqual(self.service.reconnects, 1)
+        self.assertIn("Reconnect requested", self.service.stop_reasons)
 
     def test_reconnect_stops_normal_jitter_and_ai_motion_before_delegating(self):
         for mode in ("jitter", "ai_aim"):

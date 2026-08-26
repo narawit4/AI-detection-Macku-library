@@ -44,7 +44,6 @@ from sound_service import ToggleSoundPlayer
 _UI_QUEUE_MAX_BATCH = 50
 _UI_QUEUE_TIME_SLICE_S = 0.005
 _UI_QUEUE_IDLE_DELAY_MS = 15
-_INITIAL_CONNECTION_RETRY_MS = 2000
 _RUNTIME_STATE_LABELS = {
     "disabled": "DISABLED",
     "armed": "ARMED",
@@ -221,8 +220,6 @@ class JitterApp(tk.Tk):
         self._save_after_id: str | None = None
         self._capture_after_id: str | None = None
         self._ui_pump_after_id: str | None = None
-        self._initial_retry_after_id: str | None = None
-        self._dashboard_visible = False
         self._ui_queue: queue.SimpleQueue[
             tuple[str, int | None, Any]
         ] = queue.SimpleQueue()
@@ -263,7 +260,6 @@ class JitterApp(tk.Tk):
         self._configure_styles()
         self._create_variables()
         self._build_page()
-        self._build_loading_page()
 
         self.service_factory = service_factory or (lambda sink: MakcuService(sink))
         self.ai_service_factory = ai_service_factory or (lambda sink: AiService(sink))
@@ -897,50 +893,6 @@ class JitterApp(tk.Tk):
         ):
             panel.bind("<Configure>", self._redraw_shell_art, add="+")
         self._redraw_shell_art()
-
-    def _build_loading_page(self) -> None:
-        self.loading_frame = ttk.Frame(self, style="Liquid.App.TFrame")
-        content = ttk.Frame(self.loading_frame, style="Liquid.App.TFrame")
-        content.place(relx=0.5, rely=0.5, anchor="center")
-        ttk.Label(
-            content,
-            text="JITTER",
-            style="Liquid.Body.TLabel",
-            font=(FONT_FAMILY, 24, "bold"),
-        ).pack()
-        ttk.Label(
-            content,
-            text="AUTO-DETECTING MAKCU",
-            style="Liquid.Muted.TLabel",
-        ).pack(pady=(8, 18))
-        self.loading_progress = ttk.Progressbar(
-            content,
-            mode="indeterminate",
-            length=280,
-        )
-        self.loading_progress.pack()
-        ttk.Label(
-            content,
-            text="Connect your Makcu device. Jitter will continue automatically.",
-            style="Liquid.Muted.TLabel",
-        ).pack(pady=(16, 0))
-
-    def _show_loading_page(self) -> None:
-        if self._closing:
-            return
-        self._dashboard_visible = False
-        self.shell.pack_forget()
-        self.loading_frame.pack(fill="both", expand=True)
-        self.loading_progress.start(12)
-
-    def _show_dashboard(self) -> None:
-        if self._dashboard_visible:
-            return
-        self._dashboard_visible = True
-        self._cancel_after("_initial_retry_after_id")
-        self.loading_progress.stop()
-        self.loading_frame.pack_forget()
-        self.shell.pack(fill="both", expand=True)
 
     def _build_identity(self) -> None:
         identity_copy = ttk.Frame(
@@ -2301,37 +2253,17 @@ class JitterApp(tk.Tk):
         if self._runtime_started or self._closing:
             return
         self._runtime_started = True
-        self._show_loading_page()
         self.hotkey_watcher.start()
         self.service.connect()
         if self.load_outcome.warning:
             self.footer_var.set(self.load_outcome.warning)
 
-    def _schedule_initial_connection_retry(self) -> None:
-        if (self._dashboard_visible or self._closing
-                or self._initial_retry_after_id is not None):
-            return
-        self._initial_retry_after_id = self.after(
-            _INITIAL_CONNECTION_RETRY_MS,
-            self._retry_initial_connection,
-        )
-
-    def _retry_initial_connection(self) -> None:
-        self._initial_retry_after_id = None
-        if self._dashboard_visible or self._closing:
-            return
-        try:
-            self.service.reconnect()
-        except Exception as exc:
-            logging.warning("Automatic Makcu detection failed: %s", exc)
-            self._schedule_initial_connection_retry()
-
     def reconnect(self) -> None:
         if self._closing:
             return
         if not self._runtime_started:
-            self.start_runtime()
-            return
+            self._runtime_started = True
+            self.hotkey_watcher.start()
         self.emergency_stop("Reconnect requested")
         try:
             self.service.reconnect()
@@ -2673,7 +2605,6 @@ class JitterApp(tk.Tk):
             self.device_status_var.set("Connecting to Makcu...")
         elif kind in {"connected", "reconnected"}:
             self._set_connection_state("Connected")
-            self._show_dashboard()
             if event.payload:
                 logging.info("Makcu connected: %s", event.payload)
             self.device_status_var.set(_device_summary_text(event.payload))
@@ -2682,8 +2613,6 @@ class JitterApp(tk.Tk):
             self._set_connection_state("Disconnected")
             self.device_status_var.set(str(event.payload or "Makcu device not connected"))
             self.emergency_stop("Device disconnected")
-            self._show_loading_page()
-            self._schedule_initial_connection_retry()
         elif kind == "button":
             try:
                 button, pressed = event.payload
@@ -3264,8 +3193,6 @@ class JitterApp(tk.Tk):
         self._cancel_after("_save_after_id")
         self._cancel_after("_capture_after_id")
         self._cancel_after("_ui_pump_after_id")
-        self._cancel_after("_initial_retry_after_id")
-        self.loading_progress.stop()
         self._capturing_hotkey = False
         self.emergency_stop("Stopped on close")
         try:
