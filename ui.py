@@ -25,6 +25,7 @@ from ai_targeting import (
     aim_settings_from_mapping,
     aim_settings_to_mapping,
 )
+from combined_motion import MotionSources
 from hotkeys import HotkeyWatcher
 from makcu_service import MakcuService, ServiceEvent
 from motion import (
@@ -39,6 +40,7 @@ from motion import (
 from settings import AppConfig, ConfigStore
 from liquid_widgets import LiquidIconButton, LiquidNavigation, LiquidSlider
 from sound_service import ToggleSoundPlayer
+from overlay import DetectionOverlay, OverlaySetupError
 
 
 _UI_QUEUE_MAX_BATCH = 50
@@ -53,9 +55,13 @@ _RUNTIME_STATE_LABELS = {
 _DEVICE_SUMMARY_FALLBACK = "Makcu device connected"
 _DEVICE_SUMMARY_MAX_CHARS = 40
 _DEVICE_PORT_PATTERN = re.compile(r"COM[0-9]{1,5}", re.IGNORECASE)
-_MODE_LABELS = {"jitter": "Jitter", "ai_aim": "AI Aim"}
 _TEST_MOTION_MODES = {
-    "test", "test_pending", "test_ai_loading", "test_ai",
+    "test_jitter_pending",
+    "test_jitter",
+    "test_ai_loading",
+    "test_ai",
+    "test_combined_loading",
+    "test_combined",
 }
 _LIFECYCLE_SERVICE_EVENTS = frozenset({
     "button",
@@ -73,8 +79,8 @@ class _DeferredMotionAction:
     kind: str
     retiring_source: Any
     lifecycle_epoch: int
-    mode: str
-    ai_test_generation: int | None = None
+    sources: MotionSources
+    test_generation: int | None = None
 
 DARK_PALETTE = {
     "window": "#0D1420", "surface": "#172232", "raised": "#202F43",
@@ -190,7 +196,9 @@ class JitterApp(tk.Tk):
         service_factory: Callable[[Callable[[Any], None]], Any] | None = None,
         ai_service_factory: Callable[[Callable[[AiEvent], None]], Any] | None = None,
         hotkey_factory: Callable[[int, Callable[[], None]], Any] | None = None,
+        overlay_factory: Callable[[tk.Misc], Any] | None = None,
         sound_player: Any | None = None,
+        clock: Callable[[], float] = time.perf_counter,
         auto_start: bool = True,
     ) -> None:
         super().__init__()
@@ -220,6 +228,7 @@ class JitterApp(tk.Tk):
         self._save_after_id: str | None = None
         self._capture_after_id: str | None = None
         self._ui_pump_after_id: str | None = None
+        self._overlay_after_id: str | None = None
         self._ui_queue: queue.SimpleQueue[
             tuple[str, int | None, Any]
         ] = queue.SimpleQueue()
@@ -234,9 +243,14 @@ class JitterApp(tk.Tk):
         self._invalid_motion_keys: set[str] = set()
         self._updating_ai_controls = False
         self._invalid_ai_keys: set[str] = set()
-        self.enabled = False
+        self.jitter_selected = False
+        self.ai_selected = False
+        self.master_armed = False
+        self.overlay_visible = False
+        self._clock = clock
         self._motion_mode: str | None = None
-        self._test_restore_enabled = False
+        self._test_restore_master = False
+        self._test_sources: MotionSources | None = None
         self._test_start_pending = False
         self._normal_motion_started = False
         self._expected_motion_generation: Any | None = None
@@ -247,9 +261,9 @@ class JitterApp(tk.Tk):
         self._ai_ready = False
         self._ai_provider: str | None = None
         self._ai_runtime_active = False
-        self._ai_test_generation = 0
-        self._ai_test_pending_generation: int | None = None
-        self._ai_test_waiting_for_motion_stop = False
+        self._test_generation = 0
+        self._test_pending_generation: int | None = None
+        self._test_waiting_for_motion_stop = False
         self._rounded_style_images: dict[str, tuple[tk.PhotoImage, ...]] = {}
         self._motion_lock = threading.RLock()
         self._motion_snapshot: MotionSettings = self.config.motion
@@ -260,6 +274,7 @@ class JitterApp(tk.Tk):
         self._configure_styles()
         self._create_variables()
         self._build_page()
+        self.overlay = (overlay_factory or DetectionOverlay)(self)
 
         self.service_factory = service_factory or (lambda sink: MakcuService(sink))
         self.ai_service_factory = ai_service_factory or (lambda sink: AiService(sink))
@@ -765,10 +780,6 @@ class JitterApp(tk.Tk):
         self.sound_volume_var = tk.StringVar(
             self, str(self.config.sound_volume)
         )
-        self.mode_var = tk.StringVar(self, self.config.mode)
-        self.mode_display_var = tk.StringVar(
-            self, _MODE_LABELS.get(self.config.mode, _MODE_LABELS["jitter"])
-        )
         self.ai_status_var = tk.StringVar(self, "Stopped")
         self.ai_fps_var = tk.StringVar(self, "0 FPS")
         self.ai_provider_var = tk.StringVar(self, "No provider")
@@ -935,6 +946,7 @@ class JitterApp(tk.Tk):
         self._configure_styles()
         self.configure(background=self._palette["window"])
         self.shell.configure(background=self._palette["window"])
+        self.motion_scroll_canvas.configure(background=self._palette["window"])
         self._redraw_shell_art()
         self._redraw_connection_indicator()
         self.nav.set_palette(self._navigation_palette())
@@ -1027,7 +1039,6 @@ class JitterApp(tk.Tk):
         for combo in (
             self.trigger_combo,
             self.modifier_combo,
-            self.mode_combo,
             self.preset_combo,
             self.ramp_mode_combo,
         ):
@@ -1081,13 +1092,14 @@ class JitterApp(tk.Tk):
         self.runtime_frame.columnconfigure(0, weight=1, uniform="runtime_actions")
         self.runtime_frame.columnconfigure(1, weight=2)
         self.runtime_frame.columnconfigure(2, weight=1, uniform="runtime_actions")
-        self.enable_button = ttk.Button(
+        self.master_button = ttk.Button(
             self.runtime_frame,
-            text=f"Enable {_MODE_LABELS.get(self.mode_var.get(), 'Jitter')}",
+            text="Enable Selected",
             style="Liquid.Primary.TButton",
-            command=self.toggle_enabled,
+            command=lambda: self.toggle_master(),
         )
-        self.enable_button.grid(row=0, column=0, sticky="ew")
+        self.master_button.grid(row=0, column=0, sticky="ew")
+        self.enable_button = self.master_button
         state = ttk.Frame(self.runtime_frame, style="Liquid.Surface.TFrame")
         state.grid(row=0, column=1, sticky="ew", padx=10)
         ttk.Label(
@@ -1247,12 +1259,36 @@ class JitterApp(tk.Tk):
             padx=(5, 0),
         )
         self.modifier_combo.bind("<<ComboboxSelected>>", self._bindings_event)
-        self.mode_combo = combo_card(
-            self.control_device_card, 3, 0, "Mode", self.mode_display_var,
-            tuple(_MODE_LABELS.values()), 14,
-            pady=(14, 0),
+        self.source_field = ttk.Frame(
+            self.control_device_card,
+            style="Liquid.DropdownField.TFrame",
         )
-        self.mode_combo.bind("<<ComboboxSelected>>", self._mode_selected)
+        self.source_field.grid(row=3, column=0, sticky="ew", pady=(14, 0))
+        self.source_field.columnconfigure(0, weight=1, uniform="sources")
+        self.source_field.columnconfigure(1, weight=1, uniform="sources")
+        ttk.Label(
+            self.source_field,
+            text="MOTION SOURCES",
+            style="Liquid.DropdownLabel.TLabel",
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 5))
+        self.jitter_source_button = ttk.Button(
+            self.source_field,
+            text="Jitter OFF",
+            style="Liquid.Secondary.TButton",
+            command=lambda: self.toggle_jitter_source(),
+        )
+        self.jitter_source_button.grid(
+            row=1, column=0, sticky="ew", padx=(0, 3)
+        )
+        self.ai_source_button = ttk.Button(
+            self.source_field,
+            text="AI Aim OFF",
+            style="Liquid.Secondary.TButton",
+            command=lambda: self.toggle_ai_source(),
+        )
+        self.ai_source_button.grid(
+            row=1, column=1, sticky="ew", padx=(3, 0)
+        )
         self.preset_combo = combo_card(
             self.control_device_card, 4, 0, "Preset", self.preset_var,
             self.preset_values, 14,
@@ -1500,23 +1536,70 @@ class JitterApp(tk.Tk):
                 "Tune movement strength, cadence, and acceleration feel.",
             )
         )
+        self.motion_scroll_frame = ttk.Frame(
+            self.motion_page, style="Liquid.App.TFrame"
+        )
+        self.motion_scroll_frame.grid(
+            row=1, column=0, columnspan=2, sticky="nsew"
+        )
+        self.motion_scroll_frame.columnconfigure(0, weight=1)
+        self.motion_scroll_frame.rowconfigure(0, weight=1)
+        self.motion_scroll_canvas = tk.Canvas(
+            self.motion_scroll_frame,
+            background=self._palette["window"],
+            highlightthickness=0,
+            borderwidth=0,
+            takefocus=False,
+        )
+        self.motion_scroll_canvas.grid(row=0, column=0, sticky="nsew")
+        self.motion_scrollbar = ttk.Scrollbar(
+            self.motion_scroll_frame,
+            orient="vertical",
+            style="Liquid.Vertical.TScrollbar",
+            command=self.motion_scroll_canvas.yview,
+        )
+        self.motion_scrollbar.grid(row=0, column=1, sticky="ns", padx=(6, 0))
+        self.motion_scroll_canvas.configure(
+            yscrollcommand=self.motion_scrollbar.set
+        )
+        self.motion_scroll_content = ttk.Frame(
+            self.motion_scroll_canvas, style="Liquid.App.TFrame"
+        )
+        self.motion_scroll_content.columnconfigure(
+            0, weight=3, uniform="motion"
+        )
+        self.motion_scroll_content.columnconfigure(
+            1, weight=2, uniform="motion"
+        )
+        self._motion_scroll_window = self.motion_scroll_canvas.create_window(
+            (0, 0), window=self.motion_scroll_content, anchor="nw"
+        )
+        self.motion_scroll_content.bind(
+            "<Configure>", self._refresh_motion_scrollregion, add="+"
+        )
+        self.motion_scroll_canvas.bind(
+            "<Configure>", self._resize_motion_scroll_content, add="+"
+        )
+        self.motion_scroll_canvas.bind(
+            "<MouseWheel>", self._scroll_motion_page, add="+"
+        )
         self.motion_hero_card = ttk.Frame(
-            self.motion_page,
+            self.motion_scroll_content,
             style="Liquid.SettingsCard.TFrame",
             padding=(18, 16, 18, 18),
         )
         self.motion_hero_card.grid(
-            row=1, column=0, sticky="nsew", padx=(0, 6)
+            row=0, column=0, sticky="nsew", padx=(0, 6), pady=(0, 8)
         )
         self.motion_hero_card.columnconfigure(0, weight=1)
         self.motion_hero_card.rowconfigure(2, weight=1)
         self.motion_summary_card = ttk.Frame(
-            self.motion_page,
+            self.motion_scroll_content,
             style="Liquid.SettingsCard.TFrame",
             padding=(16, 16, 16, 18),
         )
         self.motion_summary_card.grid(
-            row=1, column=1, sticky="nsew", padx=(6, 0)
+            row=0, column=1, sticky="nsew", padx=(6, 0), pady=(0, 8)
         )
         self.motion_summary_card.columnconfigure(0, weight=1)
         self.motion_summary_card.rowconfigure(2, weight=1)
@@ -1662,7 +1745,7 @@ class JitterApp(tk.Tk):
         )
 
         self.ai_settings_card = ttk.Frame(
-            self.motion_page,
+            self.motion_scroll_content,
             style="Liquid.SettingsCard.TFrame",
             padding=(18, 16, 18, 18),
         )
@@ -1702,7 +1785,7 @@ class JitterApp(tk.Tk):
             )
 
         self.ai_status_card = ttk.Frame(
-            self.motion_page,
+            self.motion_scroll_content,
             style="Liquid.SettingsCard.TFrame",
             padding=(16, 16, 16, 18),
         )
@@ -1745,7 +1828,34 @@ class JitterApp(tk.Tk):
                 wraplength=190,
                 justify="left",
             ).pack(anchor="w", pady=(4, 0))
-        self._show_mode_panels()
+        self.overlay_button = ttk.Button(
+            self.ai_status_card,
+            text="Overlay OFF",
+            style="Liquid.Secondary.TButton",
+            command=lambda: self.toggle_overlay(),
+        )
+        self.overlay_button.grid(row=5, column=0, sticky="ew", pady=(4, 0))
+
+    def _refresh_motion_scrollregion(
+        self, _event: tk.Event | None = None
+    ) -> None:
+        self.motion_scroll_canvas.configure(
+            scrollregion=self.motion_scroll_canvas.bbox("all")
+        )
+
+    def _resize_motion_scroll_content(self, event: tk.Event) -> None:
+        self.motion_scroll_canvas.itemconfigure(
+            self._motion_scroll_window,
+            width=max(1, int(event.width)),
+        )
+
+    def _scroll_motion_page(self, event: tk.Event) -> str:
+        delta = int(getattr(event, "delta", 0))
+        if delta:
+            self.motion_scroll_canvas.yview_scroll(
+                -1 if delta > 0 else 1, "units"
+            )
+        return "break"
 
     def _build_settings_page(self) -> None:
         self.settings_page.columnconfigure(0, weight=1)
@@ -2136,40 +2246,6 @@ class JitterApp(tk.Tk):
         if self.nav.selected_index != selected:
             self.nav.select(selected, notify=False)
 
-    def _mode_selected(self, _event: tk.Event | None = None) -> None:
-        selected_label = self.mode_display_var.get()
-        selected_mode = next(
-            (mode for mode, label in _MODE_LABELS.items()
-             if label == selected_label),
-            "jitter",
-        )
-        self.mode_var.set(selected_mode)
-        self.on_mode_changed()
-
-    def on_mode_changed(self) -> None:
-        selected = self.mode_var.get()
-        if selected not in _MODE_LABELS:
-            selected = "jitter"
-        self.emergency_stop("Mode changed")
-        self.mode_var.set(selected)
-        self.mode_display_var.set(_MODE_LABELS[selected])
-        self._show_mode_panels()
-        self.enable_button.configure(text=f"Enable {_MODE_LABELS[selected]}")
-        self.footer_var.set(f"{_MODE_LABELS[selected]} mode selected")
-        self._schedule_save()
-
-    def _show_mode_panels(self) -> None:
-        if self.mode_var.get() == "ai_aim":
-            self.motion_hero_card.grid_remove()
-            self.motion_summary_card.grid_remove()
-            self.ai_settings_card.grid()
-            self.ai_status_card.grid()
-        else:
-            self.ai_settings_card.grid_remove()
-            self.ai_status_card.grid_remove()
-            self.motion_hero_card.grid()
-            self.motion_summary_card.grid()
-
     # ---- runtime wiring -----------------------------------------------
 
     def _install_runtime_bindings(self) -> None:
@@ -2277,11 +2353,247 @@ class JitterApp(tk.Tk):
         except Exception as exc:
             self.footer_var.set(f"Reconnect failed: {type(exc).__name__}")
 
-    def toggle_enabled(self) -> None:
+    @property
+    def enabled(self) -> bool:
+        """Read-only compatibility view of the authoritative Master state."""
+        return self.master_armed
+
+    def _selected_sources(self) -> MotionSources:
+        return MotionSources(self.jitter_selected, self.ai_selected)
+
+    def _render_runtime_controls(self) -> None:
+        testing = self._motion_mode in _TEST_MOTION_MODES
+        self.jitter_source_button.configure(
+            text=f"Jitter {'ON' if self.jitter_selected else 'OFF'}",
+            style=(
+                "Liquid.Primary.TButton"
+                if self.jitter_selected else "Liquid.Secondary.TButton"
+            ),
+            state="disabled" if testing else "normal",
+        )
+        self.ai_source_button.configure(
+            text=f"AI Aim {'ON' if self.ai_selected else 'OFF'}",
+            style=(
+                "Liquid.Primary.TButton"
+                if self.ai_selected else "Liquid.Secondary.TButton"
+            ),
+            state="disabled" if testing else "normal",
+        )
+        self.master_button.configure(
+            text="Disable Selected" if self.master_armed else "Enable Selected"
+        )
+        self.overlay_button.configure(
+            text=f"Overlay {'ON' if self.overlay_visible else 'OFF'}",
+            style=(
+                "Liquid.Primary.TButton"
+                if self.overlay_visible else "Liquid.Secondary.TButton"
+            ),
+        )
+
+    def toggle_master(self) -> None:
         if self._motion_mode in _TEST_MOTION_MODES:
             self.footer_var.set("Test Run is active; use STOP to cancel")
             return
-        self.set_enabled(not self.enabled)
+        self.set_master(not self.master_armed)
+
+    def toggle_enabled(self) -> None:
+        self.toggle_master()
+
+    def set_enabled(self, enabled: bool) -> None:
+        self.set_master(enabled)
+
+    def set_master(self, armed: bool) -> None:
+        armed = bool(armed)
+        if not armed:
+            self.master_armed = False
+            self._normal_motion_started = False
+            self.trigger_gate.clear()
+            self._stop_motion_runtime("Disabled by user")
+            self._reconcile_ai_runtime("Master disabled")
+            self._advance_hotkey_epoch()
+            self._set_runtime_state("disabled")
+            self._render_runtime_controls()
+            self.footer_var.set("Selected sources disabled")
+            return
+        if self._closing:
+            return
+        if self._motion_mode in _TEST_MOTION_MODES:
+            self.footer_var.set("Test Run is active; use STOP to cancel")
+            return
+        sources = self._selected_sources()
+        if not sources.any:
+            self.footer_var.set("Select Jitter or AI Aim first")
+            return
+        if not self.service.connected:
+            self.footer_var.set("Makcu device is not connected")
+            return
+        self._motion_event_epoch += 1
+        self._advance_hotkey_epoch()
+        self.master_armed = True
+        self._motion_mode = None
+        self._normal_motion_started = False
+        self._expected_motion_generation = None
+        self._deferred_motion_action = None
+        self.trigger_gate.clear()
+        if not self._reconcile_ai_runtime("Master enabled"):
+            self._handle_ai_start_failure()
+            self._render_runtime_controls()
+            return
+        self._set_runtime_state("armed")
+        self._render_runtime_controls()
+        self.footer_var.set("Selected sources armed")
+
+    def toggle_jitter_source(self) -> None:
+        self._toggle_motion_source("jitter")
+
+    def toggle_ai_source(self) -> None:
+        self._toggle_motion_source("ai")
+
+    def _toggle_motion_source(self, source_name: str) -> None:
+        if self._motion_mode in _TEST_MOTION_MODES:
+            self.footer_var.set("Test Run is active; use STOP to cancel")
+            return
+        old_sources = self._selected_sources()
+        if source_name == "jitter":
+            self.jitter_selected = not self.jitter_selected
+        elif source_name == "ai":
+            self.ai_selected = not self.ai_selected
+        else:
+            raise ValueError(f"unknown motion source: {source_name}")
+        sources = self._selected_sources()
+        if not self.master_armed:
+            self._render_runtime_controls()
+            self.footer_var.set("Motion sources updated")
+            return
+        if not sources.any:
+            self.set_master(False)
+            self.footer_var.set("No motion sources selected; Master disabled")
+            return
+
+        adding_ai = not old_sources.ai and sources.ai
+        if adding_ai and not self._reconcile_ai_runtime("AI source selected"):
+            self._handle_ai_start_failure()
+            self._render_runtime_controls()
+            return
+
+        was_moving = self._normal_motion_started
+        if was_moving:
+            self._stop_motion_runtime("sources_changed")
+            self._normal_motion_started = False
+            self._set_runtime_state("armed")
+            if self.trigger_gate.active:
+                self._defer_motion_action("normal", sources=sources)
+
+        if not adding_ai:
+            self._reconcile_ai_runtime("Motion sources updated")
+        if self.trigger_gate.active and not was_moving:
+            self._normal_motion_started = self._start_gated_motion()
+            if self._normal_motion_started:
+                self._set_runtime_state("moving")
+        self._render_runtime_controls()
+        self.footer_var.set("Motion sources updated")
+
+    def _ai_runtime_required(self) -> bool:
+        return (
+            self.overlay_visible
+            or (self.master_armed and self.ai_selected)
+            or self._motion_mode in {
+                "test_ai_loading",
+                "test_ai",
+                "test_combined_loading",
+                "test_combined",
+            }
+        )
+
+    def _reconcile_ai_runtime(self, context: str) -> bool:
+        required = self._ai_runtime_required()
+        if required and not self._ai_runtime_active:
+            started = self._start_ai_runtime(context)
+            if not started:
+                self._hide_overlay_after_ai_failure()
+            return started
+        if not required and self._ai_runtime_active:
+            self._stop_ai_runtime(context)
+            self._ai_ready = False
+            self._ai_provider = None
+            self._ai_runtime_active = False
+        return True
+
+    def _hide_overlay_after_ai_failure(self) -> None:
+        if not self.overlay_visible:
+            return
+        self.overlay_visible = False
+        self._cancel_after("_overlay_after_id")
+        try:
+            self.overlay.hide()
+        except Exception:
+            logging.exception("Detection overlay hide failed after AI error")
+
+    def toggle_overlay(self) -> None:
+        if self.overlay_visible:
+            self.overlay_visible = False
+            self._cancel_after("_overlay_after_id")
+            try:
+                self.overlay.hide()
+            except Exception:
+                logging.exception("Detection overlay hide failed")
+            self._reconcile_ai_runtime("Overlay disabled")
+            self._render_runtime_controls()
+            self.footer_var.set("Overlay disabled")
+            return
+
+        try:
+            self.overlay.show()
+        except OverlaySetupError:
+            logging.exception("Detection overlay setup failed")
+            self.overlay_visible = False
+            self._render_runtime_controls()
+            self.footer_var.set("Overlay unavailable; check app.log")
+            return
+        except Exception:
+            logging.exception("Detection overlay setup failed")
+            self.overlay_visible = False
+            self._render_runtime_controls()
+            self.footer_var.set("Overlay unavailable; check app.log")
+            return
+
+        self.overlay_visible = True
+        self._render_runtime_controls()
+        if not self._reconcile_ai_runtime("Overlay enabled"):
+            self._render_runtime_controls()
+            self.footer_var.set("Overlay could not start AI detection")
+            return
+        self.footer_var.set("Overlay enabled")
+        self._poll_overlay()
+
+    def _poll_overlay(self) -> None:
+        self._overlay_after_id = None
+        if self._closing or not self.overlay_visible:
+            return
+        try:
+            self.overlay.render(
+                self.ai_service.latest_detection_snapshot(),
+                now=self._clock(),
+            )
+        except Exception:
+            logging.exception("Detection overlay rendering failed")
+            self._disable_overlay_after_error()
+            return
+        try:
+            self._overlay_after_id = self.after(16, self._poll_overlay)
+        except (tk.TclError, RuntimeError):
+            self._overlay_after_id = None
+
+    def _disable_overlay_after_error(self) -> None:
+        self.overlay_visible = False
+        self._cancel_after("_overlay_after_id")
+        try:
+            self.overlay.close()
+        except Exception:
+            logging.exception("Detection overlay cleanup failed")
+        self._reconcile_ai_runtime("Overlay failed")
+        self._render_runtime_controls()
+        self.footer_var.set("Overlay stopped; check app.log")
 
     def _start_ai_runtime(self, context: str) -> bool:
         if not self._ai_runtime_active:
@@ -2289,19 +2601,43 @@ class JitterApp(tk.Tk):
         self._ai_runtime_active = True
         try:
             generation = self.ai_service.start(self.get_ai_settings)
-        except Exception as exc:
+        except Exception:
             logging.exception("AI runtime could not start during %s", context)
-            self.handle_ai_event(
-                AiEvent("error", f"{type(exc).__name__}: AI service failed")
-            )
+            self._ai_ready = False
+            self._ai_provider = None
+            self._ai_runtime_active = False
+            self.ai_status_var.set("Error")
+            self.ai_fps_var.set("0 FPS")
+            self.ai_provider_var.set("No provider")
             return False
         if not generation:
             logging.error("AI runtime did not start during %s", context)
-            self.handle_ai_event(
-                AiEvent("error", "AI service returned no generation")
-            )
+            self._ai_ready = False
+            self._ai_provider = None
+            self._ai_runtime_active = False
+            self.ai_status_var.set("Error")
+            self.ai_fps_var.set("0 FPS")
+            self.ai_provider_var.set("No provider")
             return False
         return True
+
+    def _handle_ai_start_failure(self) -> None:
+        """Fail closed to Jitter when normal armed AI demand cannot start."""
+        self.ai_selected = False
+        self._ai_ready = False
+        self._ai_provider = None
+        self._ai_runtime_active = False
+        if self.jitter_selected and self.master_armed:
+            self._set_runtime_state(
+                "moving" if self._normal_motion_started else "armed"
+            )
+            self.footer_var.set("AI Aim stopped; Jitter remains available")
+        else:
+            self.master_armed = False
+            self.trigger_gate.clear()
+            self._set_runtime_state("disabled")
+            self.footer_var.set("AI Aim could not start; Master disabled")
+        self._advance_hotkey_epoch()
 
     def _stop_ai_runtime(self, reason: str) -> None:
         try:
@@ -2330,7 +2666,8 @@ class JitterApp(tk.Tk):
         self,
         kind: str,
         *,
-        ai_test_generation: int | None = None,
+        sources: MotionSources | None = None,
+        test_generation: int | None = None,
     ) -> bool:
         retiring_source = self._retiring_motion_generation
         if retiring_source is None:
@@ -2344,8 +2681,8 @@ class JitterApp(tk.Tk):
             kind=kind,
             retiring_source=retiring_source,
             lifecycle_epoch=self._motion_event_epoch,
-            mode=self.mode_var.get(),
-            ai_test_generation=ai_test_generation,
+            sources=sources or self._selected_sources(),
+            test_generation=test_generation,
         )
         return True
 
@@ -2353,157 +2690,116 @@ class JitterApp(tk.Tk):
         with self._hotkey_epoch_lock:
             self._hotkey_event_epoch += 1
 
-    def set_enabled(self, enabled: bool) -> None:
-        enabled = bool(enabled)
-        if not enabled:
-            self.emergency_stop("Disabled by user")
-            return
-        if self._closing:
-            return
-        if enabled and self._motion_mode in _TEST_MOTION_MODES:
-            self.footer_var.set("Test Run is active; use STOP to cancel")
-            return
-        if not self.service.connected:
-            self.enabled = False
-            self._set_runtime_state("disabled")
-            self.enable_button.configure(
-                text=f"Enable {_MODE_LABELS.get(self.mode_var.get(), 'Jitter')}"
-            )
-            self.footer_var.set("Makcu device is not connected")
-            return
-        self._motion_event_epoch += 1
-        self._advance_hotkey_epoch()
-        self.enabled = True
-        self._motion_mode = None
-        self._normal_motion_started = False
-        self._expected_motion_generation = None
-        self._deferred_motion_action = None
-        self.trigger_gate.clear()
-        self._set_runtime_state("armed")
-        mode_label = _MODE_LABELS.get(self.mode_var.get(), "Jitter")
-        self.enable_button.configure(text=f"Disable {mode_label}")
-        if self.mode_var.get() == "ai_aim":
-            if not self._start_ai_runtime("AI Aim enable"):
-                return
-            self.footer_var.set("AI Aim armed")
-        else:
-            self.footer_var.set("Jitter armed")
-
     def test_run(self) -> None:
         self.start_test_run()
 
     def start_test_run(self) -> None:
         if self._closing:
             return
-        if not self.service.connected:
-            self.footer_var.set("Makcu device is not connected")
-            return
         if self._motion_mode in _TEST_MOTION_MODES:
             self.footer_var.set("Test Run is already active")
             return
-        if self.mode_var.get() == "ai_aim":
-            self._start_ai_test_run()
+        sources = self._selected_sources()
+        if not sources.any:
+            self.footer_var.set("Select Jitter or AI Aim first")
             return
-        self._deferred_motion_action = None
-        self._test_restore_enabled = self.enabled
-        normal_motion_active = self._normal_motion_started
-        if normal_motion_active:
-            self._stop_motion_runtime("test_run")
-            self._normal_motion_started = False
-        self._set_runtime_state("testing")
-        self.test_button.set_enabled(False)
-        self._motion_mode = "test_pending"
-        self._test_start_pending = True
-        if self._defer_motion_action("jitter_test"):
-            # The normal worker emits a queued stop event after stop_motion().
-            # Start the timed worker only after that event, so the service's
-            # idempotent start contract cannot accidentally reuse the normal
-            # worker.
+        if not self.service.connected:
+            self.footer_var.set("Makcu device is not connected")
             return
-        started = self._begin_test_motion()
-        if not started:
-            self.footer_var.set("Test Run could not start")
 
-    def _start_ai_test_run(self) -> None:
         self._deferred_motion_action = None
-        self._test_restore_enabled = self.enabled
-        self._ai_test_generation += 1
-        generation = self._ai_test_generation
-        self._ai_test_pending_generation = generation
+        self._test_restore_master = self.master_armed
+        self._test_sources = sources
+        self._test_generation += 1
+        generation = self._test_generation
+        self._test_pending_generation = generation
+        self._test_start_pending = True
+        if sources.ai:
+            self._motion_mode = (
+                "test_combined_loading" if sources.jitter
+                else "test_ai_loading"
+            )
+        else:
+            self._motion_mode = "test_jitter_pending"
+
         if self._normal_motion_started:
             self._stop_motion_runtime("test_run")
             self._normal_motion_started = False
-        self._motion_mode = "test_ai_loading"
-        self._test_start_pending = True
+        self._test_waiting_for_motion_stop = self._defer_motion_action(
+            "test",
+            sources=sources,
+            test_generation=generation,
+        )
         self._set_runtime_state("testing")
         self.test_button.set_enabled(False)
-        self._ai_test_waiting_for_motion_stop = self._defer_motion_action(
-            "ai_test",
-            ai_test_generation=generation,
-        )
+        self._render_runtime_controls()
 
-        if self._ai_ready and not self._ai_test_waiting_for_motion_stop:
-            if not self._begin_ai_test_motion(generation):
-                self.footer_var.set("AI Test Run could not start")
+        if sources.ai and not self._reconcile_ai_runtime("Test Run"):
+            self._abort_test_run("AI Test Run could not start")
             return
-        if not self._ai_runtime_active:
-            self._start_ai_runtime("AI Test Run")
+        if self._test_waiting_for_motion_stop:
+            return
+        if sources.ai and not self._ai_ready:
+            self.footer_var.set("Loading AI for Test Run")
+            return
+        if not self._begin_test_motion(generation):
+            self._abort_test_run("Test Run could not start")
 
-    def _begin_ai_test_motion(self, generation: int) -> bool:
-        if (self._motion_mode != "test_ai_loading"
-                or self._ai_test_pending_generation != generation
-                or self._ai_test_waiting_for_motion_stop
-                or not self._ai_ready):
+    def _begin_test_motion(self, generation: int) -> bool:
+        sources = self._test_sources
+        if (
+            sources is None
+            or self._test_pending_generation != generation
+            or not self._test_start_pending
+            or self._test_waiting_for_motion_stop
+            or not bool(self.service.connected)
+            or (sources.ai and not self._ai_ready)
+        ):
             return False
-        self._motion_mode = "test_ai"
+        if sources.ai:
+            self._motion_mode = (
+                "test_combined" if sources.jitter else "test_ai"
+            )
+        else:
+            self._motion_mode = "test_jitter"
         self._test_start_pending = False
-        self._ai_test_pending_generation = None
+        self._test_pending_generation = None
         self._motion_event_epoch += 1
-        started = self._request_motion_start(ai=True, duration_s=3.0)
-        if not started:
-            self._restore_after_test()
-        return started
+        started = self._request_motion_start(sources, duration_s=3.0)
+        if started:
+            self.footer_var.set("Test Run active")
+            return True
+        return False
 
-    def _begin_test_motion(self) -> bool:
-        self._motion_mode = "test"
-        self._test_start_pending = False
-        self._motion_event_epoch += 1
-        started = self._request_motion_start(ai=False, duration_s=3.0)
-        if not started:
-            self._motion_mode = None
-            self.test_button.set_enabled(True)
-            self._restore_after_test()
-        return started
+    def _abort_test_run(self, message: str) -> None:
+        self._restore_after_test(restore_master=False)
+        self.footer_var.set(message)
 
-    def _restore_after_test(self) -> None:
-        was_ai_test = self._motion_mode in {"test_ai_loading", "test_ai"}
-        restore = self._test_restore_enabled and bool(self.service.connected)
+    def _restore_after_test(self, *, restore_master: bool = True) -> None:
+        restore = (
+            restore_master
+            and self._test_restore_master
+            and bool(self.service.connected)
+        )
         self._motion_event_epoch += 1
         self._expected_motion_generation = None
         self._deferred_motion_action = None
+        self._retiring_motion_generation = None
         self._motion_mode = None
+        self._test_sources = None
         self._test_start_pending = False
-        self._ai_test_pending_generation = None
-        self._ai_test_waiting_for_motion_stop = False
+        self._test_pending_generation = None
+        self._test_waiting_for_motion_stop = False
+        self._test_restore_master = False
         self.test_button.set_enabled(True)
-        mode_label = _MODE_LABELS.get(self.mode_var.get(), "Jitter")
+        self.master_armed = bool(restore)
         if restore:
-            self.enabled = True
             self._set_runtime_state("armed")
-            self.enable_button.configure(text=f"Disable {mode_label}")
         else:
-            self.enabled = False
             self.trigger_gate.clear()
             self._set_runtime_state("disabled")
-            self.enable_button.configure(text=f"Enable {mode_label}")
-            if was_ai_test:
-                try:
-                    self._stop_ai_runtime("test_complete")
-                except Exception:
-                    pass
-                self._ai_ready = False
-                self._ai_provider = None
-                self._ai_runtime_active = False
+        self._reconcile_ai_runtime("Test Run complete")
+        self._render_runtime_controls()
 
     def emergency_stop(
         self,
@@ -2512,22 +2808,25 @@ class JitterApp(tk.Tk):
         stop_device_motion: bool = True,
     ) -> None:
         stop_reason = str(reason or "Stopped")
-        self.enabled = False
+        self.master_armed = False
+        was_overlay_visible = self.overlay_visible
+        self.overlay_visible = False
+        self._cancel_after("_overlay_after_id")
+        if was_overlay_visible:
+            try:
+                self.overlay.hide()
+            except Exception:
+                logging.exception("Detection overlay hide failed during STOP")
         self._normal_motion_started = False
         self._deferred_motion_action = None
         self._motion_mode = None
+        self._test_sources = None
         self._test_start_pending = False
-        self._ai_test_generation += 1
-        self._ai_test_pending_generation = None
-        self._ai_test_waiting_for_motion_stop = False
-        self._ai_ready = False
-        self._ai_provider = None
-        self._ai_runtime_active = False
+        self._test_generation += 1
+        self._test_pending_generation = None
+        self._test_waiting_for_motion_stop = False
+        self._test_restore_master = False
         self.trigger_gate.clear()
-        try:
-            self._stop_ai_runtime(stop_reason)
-        except Exception:
-            pass
         try:
             self._stop_motion_runtime(
                 stop_reason,
@@ -2535,13 +2834,41 @@ class JitterApp(tk.Tk):
             )
         except Exception:
             pass
+        try:
+            self._reconcile_ai_runtime(stop_reason)
+        except Exception:
+            logging.exception("AI runtime stop failed during STOP")
         self._advance_hotkey_epoch()
         self._set_runtime_state("disabled")
-        self.enable_button.configure(
-            text=f"Enable {_MODE_LABELS.get(self.mode_var.get(), 'Jitter')}"
-        )
+        self._render_runtime_controls()
         self.test_button.set_enabled(True)
         self.footer_var.set(stop_reason)
+
+    def _handle_disconnect(self, reason: str) -> None:
+        self.master_armed = False
+        self._normal_motion_started = False
+        self._deferred_motion_action = None
+        self._motion_mode = None
+        self._test_sources = None
+        self._test_start_pending = False
+        self._test_generation += 1
+        self._test_pending_generation = None
+        self._test_waiting_for_motion_stop = False
+        self._test_restore_master = False
+        self.trigger_gate.clear()
+        try:
+            self._stop_motion_runtime(reason)
+        except Exception:
+            logging.exception("Makcu motion stop failed during disconnect")
+        try:
+            self._reconcile_ai_runtime(reason)
+        except Exception:
+            logging.exception("AI runtime reconciliation failed on disconnect")
+        self._advance_hotkey_epoch()
+        self._set_runtime_state("disabled")
+        self._render_runtime_controls()
+        self.test_button.set_enabled(True)
+        self.footer_var.set(reason)
 
     def _consume_deferred_motion_action(self, source: Any) -> None:
         action = self._deferred_motion_action
@@ -2553,13 +2880,13 @@ class JitterApp(tk.Tk):
             action.lifecycle_epoch != self._motion_event_epoch
             or self._closing
             or not bool(self.service.connected)
-            or self.mode_var.get() != action.mode
+            or self._selected_sources() != action.sources
         ):
             return
 
         if action.kind == "normal":
             if (
-                not self.enabled
+                not self.master_armed
                 or self._motion_mode is not None
                 or not self.trigger_gate.active
             ):
@@ -2569,33 +2896,22 @@ class JitterApp(tk.Tk):
                 self._set_runtime_state("moving")
             return
 
-        if action.kind == "jitter_test":
-            if (
-                action.mode != "jitter"
-                or self._motion_mode != "test_pending"
-                or not self._test_start_pending
-            ):
-                return
-            if not self._begin_test_motion():
-                self.footer_var.set("Test Run could not start")
-            return
-
-        if action.kind != "ai_test":
+        if action.kind != "test":
             return
         if (
-            action.mode != "ai_aim"
-            or self._motion_mode != "test_ai_loading"
+            self._motion_mode not in _TEST_MOTION_MODES
             or not self._test_start_pending
-            or not self._ai_test_waiting_for_motion_stop
-            or action.ai_test_generation is None
-            or self._ai_test_pending_generation != action.ai_test_generation
+            or not self._test_waiting_for_motion_stop
+            or action.test_generation is None
+            or self._test_pending_generation != action.test_generation
         ):
             return
-        self._ai_test_waiting_for_motion_stop = False
-        if self._ai_ready and not self._begin_ai_test_motion(
-            action.ai_test_generation
-        ):
-            self.footer_var.set("AI Test Run could not start")
+        self._test_waiting_for_motion_stop = False
+        sources = self._test_sources
+        if sources is not None and sources.ai and not self._ai_ready:
+            return
+        if not self._begin_test_motion(action.test_generation):
+            self._abort_test_run("Test Run could not start")
 
     def handle_service_event(self, event: ServiceEvent) -> None:
         if self._closing:
@@ -2629,7 +2945,7 @@ class JitterApp(tk.Tk):
         elif kind == "disconnected":
             self._set_connection_state("Disconnected")
             self.device_status_var.set(str(event.payload or "Makcu device not connected"))
-            self.emergency_stop("Device disconnected")
+            self._handle_disconnect("Device disconnected")
         elif kind == "button":
             try:
                 button, pressed = event.payload
@@ -2640,7 +2956,7 @@ class JitterApp(tk.Tk):
                 action = self._deferred_motion_action
                 if action is not None and action.kind == "normal":
                     self._deferred_motion_action = None
-            if self.enabled and self._motion_mode is None:
+            if self.master_armed and self._motion_mode is None:
                 if self.trigger_gate.active and not self._normal_motion_started:
                     self._normal_motion_started = self._start_gated_motion()
                     if self._normal_motion_started:
@@ -2658,13 +2974,9 @@ class JitterApp(tk.Tk):
         elif kind == "motion_stopped":
             reason = str(event.payload or "")
             if (
-                self._motion_mode == "test"
-                and reason == "duration_complete"
-            ):
-                self._restore_after_test()
-                self.footer_var.set("Test Run complete")
-            elif (
-                self._motion_mode == "test_ai"
+                self._motion_mode in {
+                    "test_jitter", "test_ai", "test_combined"
+                }
                 and reason == "duration_complete"
             ):
                 self._restore_after_test()
@@ -2672,72 +2984,36 @@ class JitterApp(tk.Tk):
             elif self._motion_mode is None and self._normal_motion_started:
                 self._expected_motion_generation = None
                 self._normal_motion_started = False
-                if self.enabled:
+                if self.master_armed:
                     self._set_runtime_state("armed")
 
     def _request_motion_start(
         self,
-        *,
-        ai: bool,
+        sources: MotionSources,
         duration_s: float | None = None,
     ) -> bool:
         """Reserve motion and remember the Makcu generation returned by start."""
         self._expected_motion_generation = None
-        if ai:
-            source_start = getattr(
-                self.service,
-                "start_ai_motion_source",
-                None,
-            )
-            if callable(source_start):
-                source = source_start(
-                    self.ai_service.latest_snapshot,
-                    self.get_ai_settings,
-                    duration_s=duration_s,
-                )
-            else:
-                started = self.service.start_ai_motion(
-                    self.ai_service.latest_snapshot,
-                    self.get_ai_settings,
-                    duration_s=duration_s,
-                )
-                source = (
-                    getattr(self.service, "motion_generation", started)
-                    if started else None
-                )
-        else:
-            source_start = getattr(
-                self.service,
-                "start_motion_source",
-                None,
-            )
-            if callable(source_start):
-                source = source_start(
-                    self.get_motion_settings,
-                    duration_s=duration_s,
-                )
-            else:
-                started = self.service.start_motion(
-                    self.get_motion_settings,
-                    duration_s=duration_s,
-                )
-                source = (
-                    getattr(self.service, "motion_generation", started)
-                    if started else None
-                )
+        source = self.service.start_composite_motion_source(
+            sources,
+            self.get_motion_settings,
+            self.ai_service.latest_snapshot,
+            self.get_ai_settings,
+            duration_s=duration_s,
+        )
         if source is None or source is False:
             return False
         self._expected_motion_generation = source
         return True
 
     def _start_gated_motion(self) -> bool:
-        ai = self.mode_var.get() == "ai_aim"
-        if ai and not self._ai_ready:
+        sources = self._selected_sources()
+        if not sources.any or (sources.ai and not self._ai_ready):
             return False
-        if self._defer_motion_action("normal"):
+        if self._defer_motion_action("normal", sources=sources):
             return False
         self._deferred_motion_action = None
-        return self._request_motion_start(ai=ai)
+        return self._request_motion_start(sources)
 
     def handle_ai_event(self, event: AiEvent) -> None:
         if self._closing:
@@ -2766,13 +3042,17 @@ class JitterApp(tk.Tk):
             self._ai_runtime_active = True
             self.ai_status_var.set(f"Ready ({provider})")
             self.ai_provider_var.set(provider)
-            if (self._motion_mode == "test_ai_loading"
-                    and self._ai_test_pending_generation is not None
-                    and not self._ai_test_waiting_for_motion_stop):
-                generation = self._ai_test_pending_generation
-                if not self._begin_ai_test_motion(generation):
-                    self.footer_var.set("AI Test Run could not start")
-            elif (self.enabled and self.mode_var.get() == "ai_aim"
+            if (
+                self._motion_mode in {
+                    "test_ai_loading", "test_combined_loading"
+                }
+                and self._test_pending_generation is not None
+                and not self._test_waiting_for_motion_stop
+            ):
+                generation = self._test_pending_generation
+                if not self._begin_test_motion(generation):
+                    self._abort_test_run("AI Test Run could not start")
+            elif (self.master_armed and self.ai_selected
                     and self._motion_mode is None
                     and self.trigger_gate.active
                     and not self._normal_motion_started):
@@ -2791,6 +3071,24 @@ class JitterApp(tk.Tk):
             self.ai_fps_var.set(f"{rendered} FPS")
         elif kind == "error":
             logging.error("AI runtime error: %s", event.payload)
+            was_master_armed = self.master_armed
+            was_test_run = self._motion_mode in _TEST_MOTION_MODES
+            gate_active = self.trigger_gate.active
+            jitter_fallback = was_master_armed and self.jitter_selected
+            had_motion = (
+                self._normal_motion_started
+                or self._expected_motion_generation is not None
+            )
+
+            self.ai_selected = False
+            was_overlay_visible = self.overlay_visible
+            self.overlay_visible = False
+            self._cancel_after("_overlay_after_id")
+            if was_overlay_visible:
+                try:
+                    self.overlay.hide()
+                except Exception:
+                    logging.exception("Overlay hide failed after AI error")
             try:
                 self._stop_ai_runtime("ai_error")
             except Exception:
@@ -2801,26 +3099,35 @@ class JitterApp(tk.Tk):
             self.ai_status_var.set("Error")
             self.ai_fps_var.set("0 FPS")
             self.ai_provider_var.set("No provider")
-            self.enabled = False
             self._normal_motion_started = False
             self._motion_mode = None
+            self._test_sources = None
             self._test_start_pending = False
             self._deferred_motion_action = None
-            self._ai_test_generation += 1
-            self._ai_test_pending_generation = None
-            self._ai_test_waiting_for_motion_stop = False
-            self.trigger_gate.clear()
-            try:
-                self._stop_motion_runtime("ai_error")
-            except Exception:
-                pass
+            self._test_generation += 1
+            self._test_pending_generation = None
+            self._test_waiting_for_motion_stop = False
+            self._test_restore_master = False
+            if had_motion or was_test_run:
+                try:
+                    self._stop_motion_runtime("ai_error")
+                except Exception:
+                    logging.exception("Motion stop failed after AI error")
+
+            self.master_armed = bool(jitter_fallback and not was_test_run)
+            if self.master_armed:
+                self._set_runtime_state("armed")
+                if gate_active:
+                    self._normal_motion_started = self._start_gated_motion()
+                    if self._normal_motion_started:
+                        self._set_runtime_state("moving")
+            else:
+                self.trigger_gate.clear()
+                self._set_runtime_state("disabled")
             self._advance_hotkey_epoch()
-            self._set_runtime_state("disabled")
-            self.enable_button.configure(text="Enable AI Aim")
+            self._render_runtime_controls()
             self.test_button.set_enabled(True)
-            self.footer_var.set(
-                "AI Aim stopped; switch to Jitter or try again"
-            )
+            self.footer_var.set("AI Aim stopped; Jitter remains available")
         elif kind == "stopped":
             self._ai_ready = False
             self._ai_provider = None
@@ -2984,7 +3291,7 @@ class JitterApp(tk.Tk):
         modifier = self.modifier_var.get()
         action = self._deferred_motion_action
         self._deferred_motion_action = None
-        if action is not None and action.kind in {"jitter_test", "ai_test"}:
+        if action is not None and action.kind == "test":
             self._restore_after_test()
             self.footer_var.set("Bindings changed; Test Run canceled")
         self.trigger_gate.configure(trigger, modifier)
@@ -3182,7 +3489,9 @@ class JitterApp(tk.Tk):
         config = AppConfig(
             motion=self.get_motion_settings(),
             ai=self.get_ai_settings(),
-            mode=self.mode_var.get(),
+            # Task 7 removes this legacy schema field.  Until then preserve
+            # the loaded value without using it as runtime selection state.
+            mode=self.config.mode,
             trigger=self.trigger_var.get(),
             modifier=self.modifier_var.get(),
             hotkey_vk=self._current_hotkey_vk(),
@@ -3210,8 +3519,13 @@ class JitterApp(tk.Tk):
         self._cancel_after("_save_after_id")
         self._cancel_after("_capture_after_id")
         self._cancel_after("_ui_pump_after_id")
+        self._cancel_after("_overlay_after_id")
         self._capturing_hotkey = False
         self.emergency_stop("Stopped on close")
+        try:
+            self.overlay.close()
+        except Exception:
+            logging.exception("Detection overlay close failed")
         try:
             self.hotkey_watcher.stop()
         except Exception:

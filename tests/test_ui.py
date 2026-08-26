@@ -6,10 +6,12 @@ import unittest
 
 from ai_service import AiEvent
 from ai_targeting import AimSettings
+from combined_motion import MotionSources
 from ui import JitterApp
 from makcu_service import ServiceEvent
 from liquid_widgets import LiquidIconButton, LiquidSlider
 from motion import MotionSettings
+from overlay import OverlaySetupError
 from settings import AppConfig
 from sound_service import ToggleSoundPlayer
 
@@ -38,6 +40,7 @@ class StubService:
         self.reconnect_hook = None
         self.motion_calls = []
         self.ai_motion_calls = []
+        self.composite_motion_calls = []
         self.stop_reasons = []
         self.cancel_reasons = []
         self.stop_hook = None
@@ -132,6 +135,32 @@ class StubService:
             self.start_ai_motion_hook()
         return source
 
+    def start_composite_motion_source(
+        self,
+        sources,
+        motion_provider,
+        target_provider,
+        aim_provider,
+        duration_s=None,
+    ):
+        self.started += 1
+        call = SimpleNamespace(
+            sources=sources,
+            motion_provider=motion_provider,
+            target_provider=target_provider,
+            aim_provider=aim_provider,
+            duration_s=duration_s,
+        )
+        self.composite_motion_calls.append(call)
+        if not self.connected:
+            return None
+        if self.motion_active:
+            return self.active_motion_generation
+        self.motion_generation += 1
+        self.active_motion_generation = self.motion_generation
+        self.motion_active = True
+        return self.active_motion_generation
+
     def stop_motion(self, reason="manual"):
         self.stopped += 1
         self.stop_reasons.append(reason)
@@ -167,6 +196,7 @@ class StubAiService:
         self.stop_calls = []
         self.closed = 0
         self.snapshot = object()
+        self.detection_snapshot = object()
         self.generation = 0
         self.active_generation = None
         self.start_result = True
@@ -211,6 +241,9 @@ class StubAiService:
     def latest_snapshot(self):
         return self.snapshot
 
+    def latest_detection_snapshot(self):
+        return self.detection_snapshot
+
 
 class StubHotkey:
     def __init__(self, vk, callback):
@@ -242,6 +275,34 @@ class StubSounds:
 
     def configure(self, *, enabled, volume):
         self.configured.append((bool(enabled), int(volume)))
+
+    def close(self):
+        self.closed += 1
+
+
+class StubOverlay:
+    def __init__(self):
+        self.shown = self.hidden = self.closed = 0
+        self.cleared = 0
+        self.rendered = []
+        self.show_error = None
+        self.render_error = None
+
+    def show(self):
+        if self.show_error is not None:
+            raise self.show_error
+        self.shown += 1
+
+    def render(self, snapshot, *, now):
+        if self.render_error is not None:
+            raise self.render_error
+        self.rendered.append((snapshot, now))
+
+    def clear(self):
+        self.cleared += 1
+
+    def hide(self):
+        self.hidden += 1
 
     def close(self):
         self.closed += 1
@@ -286,10 +347,13 @@ class JitterLayoutTests(unittest.TestCase):
         self.app = None
         self.make_app()
 
-    def make_app(self, *, config=None):
+    def make_app(self, *, config=None, clock=None):
         self.service = None
         self.store = StubStore(config or AppConfig())
         self.ai = StubAiService()
+        self.overlay = StubOverlay()
+        self.sounds = StubSounds()
+        self.cancelled_callbacks = []
 
         def service_factory(event_sink):
             self.service = StubService(event_sink)
@@ -300,9 +364,18 @@ class JitterLayoutTests(unittest.TestCase):
             service_factory=service_factory,
             ai_service_factory=lambda sink: self.ai.with_sink(sink),
             hotkey_factory=StubHotkey,
-            sound_player=StubSounds(),
+            overlay_factory=lambda _root: self.overlay,
+            sound_player=self.sounds,
+            clock=clock or (lambda: 123.5),
             auto_start=False,
         )
+        original_after_cancel = self.app.after_cancel
+
+        def recording_after_cancel(callback_id):
+            self.cancelled_callbacks.append(callback_id)
+            return original_after_cancel(callback_id)
+
+        self.app.after_cancel = recording_after_cancel
         self.app.withdraw()
         return self.app
 
@@ -313,24 +386,35 @@ class JitterLayoutTests(unittest.TestCase):
         except tk.TclError:
             pass
 
-    def test_ai_controls_reflect_config_and_mode(self):
+    def test_launches_with_all_runtime_switches_off_and_no_mode_selector(self):
+        self.assertFalse(self.app.jitter_selected)
+        self.assertFalse(self.app.ai_selected)
+        self.assertFalse(self.app.master_armed)
+        self.assertFalse(self.app.overlay_visible)
+        self.assertEqual(self.app.master_button.cget("text"), "Enable Selected")
+        self.assertEqual(self.app.jitter_source_button.cget("text"), "Jitter OFF")
+        self.assertEqual(self.app.ai_source_button.cget("text"), "AI Aim OFF")
+        self.assertFalse(hasattr(self.app, "mode_combo"))
+
+    def test_ai_controls_reflect_config_without_restoring_runtime_selection(self):
         self.app.close_app()
         app = self.make_app(config=AppConfig(
             mode="ai_aim",
             ai=AimSettings(0.5, 0.6, 0.7, 30),
         ))
 
-        self.assertEqual(app.mode_var.get(), "ai_aim")
         self.assertEqual(app.ai_vars["confidence"].get(), "0.5")
         self.assertEqual(app.ai_vars["aim_strength"].get(), "0.6")
         self.assertEqual(app.ai_vars["smoothing"].get(), "0.7")
         self.assertEqual(app.ai_vars["max_step"].get(), "30")
         self.assertEqual(app.ai_status_var.get(), "Stopped")
         self.assertEqual(app.ai_fps_var.get(), "0 FPS")
-        self.assertFalse(app.enabled)
+        self.assertFalse(app.jitter_selected)
+        self.assertFalse(app.ai_selected)
+        self.assertFalse(app.master_armed)
         self.assertEqual(app.runtime_state_var.get(), "DISABLED")
-        self.assertEqual(app.enable_button.cget("text"), "Enable AI Aim")
-        self.assertEqual(app.motion_hero_card.winfo_manager(), "")
+        self.assertEqual(app.master_button.cget("text"), "Enable Selected")
+        self.assertEqual(app.motion_hero_card.winfo_manager(), "grid")
         self.assertEqual(app.ai_settings_card.winfo_manager(), "grid")
 
     def test_ai_service_is_injected_after_widgets_without_autostart(self):
@@ -338,20 +422,16 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertEqual(self.ai.event_sink.__func__, self.app.queue_ai_event.__func__)
         self.assertEqual(self.ai.start_calls, [])
 
-    def test_mode_selector_shows_only_the_selected_motion_cards(self):
-        self.assertEqual(self.app.mode_combo.cget("values"), ("Jitter", "AI Aim"))
-        self.assertEqual(self.app.motion_hero_card.winfo_manager(), "grid")
-        self.assertEqual(self.app.motion_summary_card.winfo_manager(), "grid")
-        self.assertEqual(self.app.ai_settings_card.winfo_manager(), "")
-        self.assertEqual(self.app.ai_status_card.winfo_manager(), "")
-
-        self.app.mode_var.set("ai_aim")
-        self.app.on_mode_changed()
-
-        self.assertEqual(self.app.motion_hero_card.winfo_manager(), "")
-        self.assertEqual(self.app.motion_summary_card.winfo_manager(), "")
-        self.assertEqual(self.app.ai_settings_card.winfo_manager(), "grid")
-        self.assertEqual(self.app.ai_status_card.winfo_manager(), "grid")
+    def test_motion_scroll_keeps_both_source_settings_available(self):
+        self.assertIsInstance(self.app.motion_scroll_canvas, tk.Canvas)
+        for card in (
+            self.app.motion_hero_card,
+            self.app.motion_summary_card,
+            self.app.ai_settings_card,
+            self.app.ai_status_card,
+        ):
+            self.assertIs(card.master, self.app.motion_scroll_content)
+            self.assertEqual(card.winfo_manager(), "grid")
         self.app.update_idletasks()
         self.assertEqual(self.app.geometry().split("+")[0], "840x620")
         self.assertEqual(self.app.stop_button.winfo_manager(), "grid")
@@ -1133,6 +1213,12 @@ class JitterLayoutTests(unittest.TestCase):
                 self.assertEqual(
                     card.cget("style"), "Liquid.SettingsCard.TFrame"
                 )
+                self.assertEqual(int(card.grid_info()["row"]), 0)
+        for card in (
+            self.app.ai_settings_card,
+            self.app.ai_status_card,
+        ):
+            with self.subTest(card=str(card)):
                 self.assertEqual(int(card.grid_info()["row"]), 1)
         for readout, variable in (
             (
@@ -1709,7 +1795,9 @@ class JitterLayoutTests(unittest.TestCase):
 
     def test_required_actions_are_present(self):
         texts = widget_texts(self.app)
-        for expected in ("Enable Jitter", "STOP"):
+        for expected in (
+            "Jitter OFF", "AI Aim OFF", "Enable Selected", "Overlay OFF", "STOP"
+        ):
             self.assertIn(expected, texts)
         self.assertEqual(self.app.reconnect_button.icon, "↻")
         self.assertEqual(self.app.test_button.icon, "▶")
@@ -1723,2230 +1811,698 @@ class JitterLayoutTests(unittest.TestCase):
 
 
 class JitterRuntimeTests(JitterLayoutTests):
-    def make_connected_ai_app(self):
-        self.app.close_app()
-        app = self.make_app(config=AppConfig(mode="ai_aim"))
+    def drain_ui_queue(self):
+        self.app._cancel_after("_ui_pump_after_id")
+        self.app._drain_ui_queue()
+
+    def prepare_armed_sources(self, sources, *, gate_active=False):
         self.service.connected = True
-        return app
+        self.app.jitter_selected = sources.jitter
+        self.app.ai_selected = sources.ai
+        self.app._render_runtime_controls()
+        self.app.set_master(True)
+        if sources.ai:
+            self.app.handle_ai_event(
+                AiEvent("ready", "DmlExecutionProvider")
+            )
+        if gate_active:
+            self.app.handle_service_event(
+                ServiceEvent("button", ("Left", True))
+            )
 
-    def prepare_retiring_test_source(self, mode, cancellation):
-        self.app.close_app()
-        app = self.make_app(config=AppConfig(mode=mode))
-        self.service.connected = True
-        app._cancel_after("_ui_pump_after_id")
-        app.set_enabled(True)
-        if mode == "ai_aim":
-            app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
-        app.handle_service_event(ServiceEvent("button", ("Left", True)))
-        source = self.service.active_motion_generation
-        self.assertIs(type(source), int)
-
-        if cancellation == "release":
-            app.handle_service_event(ServiceEvent("button", ("Left", False)))
-        elif cancellation == "rebind":
-            app.trigger_var.set("Mouse4")
-            app.on_bindings_changed()
-        elif cancellation == "stop":
-            app.emergency_stop("Stopped by user")
-        else:
-            self.fail(f"unknown cancellation: {cancellation}")
-
-        self.assertTrue(self.service.motion_active)
-        self.assertEqual(app._retiring_motion_generation, source)
-        return app, source
-
-    def motion_calls_for_mode(self, mode):
-        return (
-            self.service.ai_motion_calls
-            if mode == "ai_aim" else self.service.motion_calls
+    def test_ai_error_falls_back_to_jitter_after_exact_retiring_generation(self):
+        self.prepare_armed_sources(
+            MotionSources(True, True), gate_active=True
         )
+        retiring = self.service.active_motion_generation
 
-    def ready_pending_ai_test(self, app, mode):
-        if mode == "ai_aim" and not app._ai_ready:
-            app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        with self.assertLogs(level="ERROR"):
+            self.app.handle_ai_event(
+                AiEvent("error", "RuntimeError: AI service failed")
+            )
 
-    def assert_test_started_from_fresh_source(
-        self,
-        app,
-        mode,
-        retiring_source,
-        calls_before_test,
-    ):
-        calls = self.motion_calls_for_mode(mode)
-        fresh_source = self.service.active_motion_generation
-        self.assertIs(type(fresh_source), int)
-        self.assertNotEqual(fresh_source, retiring_source)
-        self.assertEqual(len(calls), calls_before_test + 1)
-        self.assertEqual(calls[-1][-1], 3.0)
+        self.assertTrue(self.app.jitter_selected)
+        self.assertFalse(self.app.ai_selected)
+        self.assertFalse(self.app.overlay_visible)
+        self.assertTrue(self.app.master_armed)
+        self.assertEqual(self.service.cancel_reasons[-1], "ai_error")
+        self.assertEqual(len(self.service.composite_motion_calls), 1)
+
+        self.app.handle_service_event(ServiceEvent(
+            "motion_stopped", "ai_error", retiring + 1
+        ))
+        self.assertEqual(len(self.service.composite_motion_calls), 1)
+        self.service.motion_active = False
+        self.service.active_motion_generation = None
+        self.app.handle_service_event(ServiceEvent(
+            "motion_stopped", "ai_error", retiring
+        ))
         self.assertEqual(
-            app._motion_mode,
-            "test_ai" if mode == "ai_aim" else "test",
+            self.service.composite_motion_calls[-1].sources,
+            MotionSources(True, False),
         )
-        self.assertEqual(app._expected_motion_generation, fresh_source)
-        self.assertEqual(app.runtime_state_var.get(), "TESTING")
-        self.assertFalse(app.test_button._enabled)
-        return fresh_source
 
-    def test_release_rebind_and_stop_defer_both_tests_for_stopped_or_error(self):
-        for mode in ("jitter", "ai_aim"):
-            for cancellation in ("release", "rebind", "stop"):
-                for terminal_kind in ("motion_stopped", "motion_error"):
-                    with self.subTest(
-                        mode=mode,
-                        cancellation=cancellation,
-                        terminal=terminal_kind,
-                    ):
-                        app, retiring_source = self.prepare_retiring_test_source(
-                            mode,
-                            cancellation,
-                        )
-                        calls = self.motion_calls_for_mode(mode)
-                        calls_before_test = len(calls)
+    def test_ai_error_disarms_ai_only_source(self):
+        self.prepare_armed_sources(MotionSources(False, True))
 
-                        app.start_test_run()
-                        self.ready_pending_ai_test(app, mode)
+        with self.assertLogs(level="ERROR"):
+            self.app.handle_ai_event(
+                AiEvent("error", "RuntimeError: AI service failed")
+            )
 
-                        self.assertEqual(len(calls), calls_before_test)
-                        self.assertEqual(app.runtime_state_var.get(), "TESTING")
-                        self.assertFalse(app.test_button._enabled)
-                        self.service.emit(ServiceEvent(
-                            terminal_kind,
-                            (
-                                "RuntimeError: retiring worker failed"
-                                if terminal_kind == "motion_error"
-                                else f"{cancellation}_complete"
-                            ),
-                            retiring_source,
-                        ))
-                        app._drain_ui_queue()
+        self.assertFalse(self.app.ai_selected)
+        self.assertFalse(self.app.master_armed)
+        self.assertEqual(self.app.runtime_state_var.get(), "DISABLED")
 
-                        fresh_source = self.assert_test_started_from_fresh_source(
-                            app,
-                            mode,
-                            retiring_source,
-                            calls_before_test,
-                        )
-                        app._cancel_after("_ui_pump_after_id")
-                        self.service.emit(ServiceEvent(
-                            "motion_stopped",
-                            "duration_complete",
-                            fresh_source,
-                        ))
-                        app._drain_ui_queue()
+    def test_disconnect_disarms_motion_but_keeps_overlay_demand(self):
+        self.app.toggle_overlay()
+        self.prepare_armed_sources(MotionSources(False, True))
 
-                        restored = cancellation != "stop"
-                        self.assertEqual(app.enabled, restored)
-                        self.assertIsNone(app._motion_mode)
-                        self.assertTrue(app.test_button._enabled)
-                        self.assertEqual(
-                            app.runtime_state_var.get(),
-                            "ARMED" if restored else "DISABLED",
-                        )
-
-    def test_retiring_terminal_queued_during_test_request_starts_once(self):
-        for mode in ("jitter", "ai_aim"):
-            for terminal_kind in ("motion_stopped", "motion_error"):
-                with self.subTest(mode=mode, terminal=terminal_kind):
-                    app, retiring_source = self.prepare_retiring_test_source(
-                        mode,
-                        "release",
-                    )
-                    calls = self.motion_calls_for_mode(mode)
-                    calls_before_test = len(calls)
-                    callback_count = 0
-
-                    def emit_during_ownership_read():
-                        nonlocal callback_count
-                        callback_count += 1
-                        self.service.motion_active_hook = None
-                        self.service.emit(ServiceEvent(
-                            terminal_kind,
-                            (
-                                "RuntimeError: retiring worker failed"
-                                if terminal_kind == "motion_error"
-                                else "trigger_released"
-                            ),
-                            retiring_source,
-                        ))
-
-                    self.service.motion_active_hook = emit_during_ownership_read
-                    app.start_test_run()
-                    self.ready_pending_ai_test(app, mode)
-                    app._drain_ui_queue()
-
-                    self.assertEqual(callback_count, 1)
-                    self.assert_test_started_from_fresh_source(
-                        app,
-                        mode,
-                        retiring_source,
-                        calls_before_test,
-                    )
-
-    def test_wrong_and_duplicate_retiring_sources_cannot_launch_twice(self):
-        for mode in ("jitter", "ai_aim"):
-            with self.subTest(mode=mode):
-                app, retiring_source = self.prepare_retiring_test_source(
-                    mode,
-                    "release",
-                )
-                calls = self.motion_calls_for_mode(mode)
-                calls_before_test = len(calls)
-                app.start_test_run()
-                self.ready_pending_ai_test(app, mode)
-
-                self.service.emit(ServiceEvent(
-                    "motion_error",
-                    "RuntimeError: wrong source",
-                    retiring_source + 1000,
-                ))
-                app._drain_ui_queue()
-                self.assertEqual(len(calls), calls_before_test)
-                self.assertEqual(
-                    app._motion_mode,
-                    "test_ai_loading" if mode == "ai_aim" else "test_pending",
-                )
-
-                app._cancel_after("_ui_pump_after_id")
-                self.service.emit(ServiceEvent(
-                    "motion_stopped",
-                    "trigger_released",
-                    retiring_source,
-                ))
-                app._drain_ui_queue()
-                fresh_source = self.assert_test_started_from_fresh_source(
-                    app,
-                    mode,
-                    retiring_source,
-                    calls_before_test,
-                )
-
-                app._cancel_after("_ui_pump_after_id")
-                self.service.emit(ServiceEvent(
-                    "motion_error",
-                    "RuntimeError: duplicate retiring source",
-                    retiring_source,
-                ))
-                app._drain_ui_queue()
-                self.assertEqual(len(calls), calls_before_test + 1)
-                self.assertEqual(
-                    self.service.active_motion_generation,
-                    fresh_source,
-                )
-                self.assertFalse(app.test_button._enabled)
-
-    def test_pending_test_handoff_is_cleared_by_every_cancellation_path(self):
-        for mode in ("jitter", "ai_aim"):
-            for cancellation in (
-                "stop",
-                "disable",
-                "mode_switch",
-                "disconnect",
-                "new_cancellation",
-                "shutdown",
-            ):
-                with self.subTest(mode=mode, cancellation=cancellation):
-                    app, retiring_source = self.prepare_retiring_test_source(
-                        mode,
-                        "release",
-                    )
-                    calls = self.motion_calls_for_mode(mode)
-                    calls_before_test = len(calls)
-                    app.start_test_run()
-                    self.ready_pending_ai_test(app, mode)
-                    self.assertEqual(len(calls), calls_before_test)
-
-                    if cancellation == "stop":
-                        app.emergency_stop("Stopped by user")
-                    elif cancellation == "disable":
-                        app.set_enabled(False)
-                    elif cancellation == "mode_switch":
-                        app.mode_var.set(
-                            "jitter" if mode == "ai_aim" else "ai_aim"
-                        )
-                        app.on_mode_changed()
-                    elif cancellation == "disconnect":
-                        self.service.connected = False
-                        app.handle_service_event(ServiceEvent(
-                            "disconnected",
-                            "Device lost",
-                        ))
-                    elif cancellation == "new_cancellation":
-                        app.trigger_var.set("Mouse5")
-                        app.on_bindings_changed()
-                    else:
-                        app.close_app()
-
-                    self.assertIsNone(
-                        getattr(app, "_deferred_motion_action", None)
-                    )
-                    if cancellation != "shutdown":
-                        self.service.emit(ServiceEvent(
-                            "motion_stopped",
-                            "trigger_released",
-                            retiring_source,
-                        ))
-                        app._drain_ui_queue()
-                    self.assertEqual(len(calls), calls_before_test)
-                    self.assertIsNone(app._motion_mode)
-                    self.assertTrue(app.test_button._enabled)
-
-    def test_ai_enable_arms_detection_but_not_movement(self):
-        app = self.make_connected_ai_app()
-
-        app.set_enabled(True)
-
-        self.assertEqual(self.ai.start_calls, [app.get_ai_settings])
-        self.assertEqual(self.service.motion_calls, [])
-        self.assertEqual(self.service.ai_motion_calls, [])
-        self.assertEqual(app.runtime_state_var.get(), "ARMED")
-
-    def test_ai_ready_and_active_gate_start_ai_motion(self):
-        app = self.make_connected_ai_app()
-        app.set_enabled(True)
-        app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
-
-        app.handle_service_event(ServiceEvent("button", ("Left", True)))
-
-        self.assertEqual(len(self.service.ai_motion_calls), 1)
-        self.assertEqual(self.service.motion_calls, [])
-        snapshot_provider, settings_provider, duration_s = (
-            self.service.ai_motion_calls[0]
+        self.app.handle_service_event(
+            ServiceEvent("disconnected", "Device lost")
         )
-        self.assertIs(snapshot_provider.__self__, self.ai)
-        self.assertEqual(snapshot_provider(), self.ai.snapshot)
-        self.assertEqual(settings_provider(), app.get_ai_settings())
-        self.assertIsNone(duration_s)
-        self.assertEqual(app.runtime_state_var.get(), "MOVING")
 
-    def test_ai_gate_held_before_ready_starts_motion_on_ready(self):
-        app = self.make_connected_ai_app()
-        app.set_enabled(True)
-        app.handle_service_event(ServiceEvent("button", ("Left", True)))
-        self.assertEqual(self.service.ai_motion_calls, [])
+        self.assertFalse(self.app.master_armed)
+        self.assertTrue(self.app.overlay_visible)
+        self.assertTrue(self.app._ai_runtime_active)
+        self.assertTrue(self.app.ai_selected)
 
-        app.handle_ai_event(AiEvent("ready", "CPUExecutionProvider"))
+    def test_disconnect_recovery_start_failure_hides_existing_overlay(self):
+        self.app.toggle_overlay()
+        self.app.handle_ai_event(AiEvent("stopped", "worker ended"))
+        self.ai.start_result = False
 
-        self.assertEqual(len(self.service.ai_motion_calls), 1)
+        with self.assertLogs(level="ERROR"):
+            self.app.handle_service_event(
+                ServiceEvent("disconnected", "Device lost")
+            )
 
-    def test_ai_gate_release_stops_only_motion_and_leaves_capture_armed(self):
-        app = self.make_connected_ai_app()
-        app.set_enabled(True)
-        app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
-        app.handle_service_event(ServiceEvent("button", ("Left", True)))
-        ai_stop_count = len(self.ai.stop_calls)
+        self.assertFalse(self.app.overlay_visible)
+        self.assertEqual(self.overlay.hidden, 1)
+        self.assertFalse(self.app._ai_runtime_active)
 
-        app.handle_service_event(ServiceEvent("button", ("Left", False)))
+    def test_stop_hides_overlay_but_preserves_source_choices(self):
+        self.prepare_armed_sources(MotionSources(True, True))
+        self.app.toggle_overlay()
 
-        self.assertIn("trigger_released", self.service.stop_reasons)
-        self.assertEqual(len(self.ai.stop_calls), ai_stop_count)
-        self.assertTrue(app.enabled)
-        self.assertEqual(app.runtime_state_var.get(), "ARMED")
+        self.app.emergency_stop("Stopped by user")
 
-    def test_ai_modifier_gate_requires_both_buttons(self):
-        app = self.make_connected_ai_app()
-        app.modifier_var.set("Right")
-        app.on_bindings_changed()
-        app.set_enabled(True)
-        app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        self.assertFalse(self.app.master_armed)
+        self.assertFalse(self.app.overlay_visible)
+        self.assertTrue(self.app.jitter_selected)
+        self.assertTrue(self.app.ai_selected)
+        self.assertEqual(self.overlay.hidden, 1)
 
-        app.handle_service_event(ServiceEvent("button", ("Left", True)))
-        self.assertEqual(self.service.ai_motion_calls, [])
-        app.handle_service_event(ServiceEvent("button", ("Right", True)))
+    def test_disconnect_during_test_never_restores_master_on_late_completion(self):
+        self.prepare_armed_sources(MotionSources(True, False))
+        self.app.start_test_run()
+        generation = self.service.active_motion_generation
 
-        self.assertEqual(len(self.service.ai_motion_calls), 1)
+        self.app.handle_service_event(
+            ServiceEvent("disconnected", "Device lost")
+        )
+        self.app.handle_service_event(ServiceEvent(
+            "motion_stopped", "duration_complete", generation
+        ))
 
-    def test_trigger_change_stops_active_motion_in_both_modes(self):
-        for mode in ("jitter", "ai_aim"):
-            with self.subTest(mode=mode):
+        self.assertFalse(self.app.master_armed)
+        self.assertIsNone(self.app._motion_mode)
+
+    def test_close_cancels_overlay_poll_and_closes_overlay(self):
+        self.app.toggle_overlay()
+        callback = self.app._overlay_after_id
+
+        self.app.close_app()
+
+        self.assertIn(callback, self.cancelled_callbacks)
+        self.assertEqual(self.overlay.closed, 1)
+
+    def test_hotkey_toggles_master_and_plays_only_successful_state_changes(self):
+        self.service.connected = True
+        self.app._cancel_after("_ui_pump_after_id")
+
+        self.app._hotkey_pressed()
+        self.drain_ui_queue()
+        self.assertFalse(self.app.master_armed)
+        self.assertEqual(self.sounds.played, [])
+
+        self.app.toggle_jitter_source()
+        self.app._hotkey_pressed()
+        self.drain_ui_queue()
+        self.assertTrue(self.app.master_armed)
+        self.app._hotkey_pressed()
+        self.drain_ui_queue()
+        self.assertFalse(self.app.master_armed)
+        self.assertEqual(self.sounds.played, [True, False])
+
+    def test_stale_queued_hotkey_cannot_rearm_after_stop(self):
+        self.service.connected = True
+        self.app.toggle_jitter_source()
+        self.app._cancel_after("_ui_pump_after_id")
+        self.app._hotkey_pressed()
+
+        self.app.emergency_stop("Stopped by user")
+        self.drain_ui_queue()
+
+        self.assertFalse(self.app.master_armed)
+
+    def test_test_run_uses_selected_source_matrix(self):
+        for sources in (
+            MotionSources(True, False),
+            MotionSources(False, True),
+            MotionSources(True, True),
+        ):
+            with self.subTest(sources=sources):
                 self.app.close_app()
-                app = self.make_app(config=AppConfig(mode=mode))
+                app = self.make_app()
                 self.service.connected = True
-                app.set_enabled(True)
-                if mode == "ai_aim":
+                app.jitter_selected = sources.jitter
+                app.ai_selected = sources.ai
+
+                app.start_test_run()
+
+                if sources.ai:
+                    self.assertEqual(self.service.composite_motion_calls, [])
                     app.handle_ai_event(
                         AiEvent("ready", "DmlExecutionProvider")
                     )
-                app.handle_service_event(
-                    ServiceEvent("button", ("Left", True))
+                self.assertEqual(
+                    self.service.composite_motion_calls[-1].sources,
+                    sources,
                 )
-                self.assertEqual(app.runtime_state_var.get(), "MOVING")
-                ai_stop_count = len(self.ai.stop_calls)
-
-                app.trigger_var.set("Mouse4")
-                app.on_bindings_changed()
-
-                self.assertIn("bindings_changed", self.service.stop_reasons)
-                self.assertFalse(app._normal_motion_started)
-                self.assertEqual(app.runtime_state_var.get(), "ARMED")
-                self.assertTrue(app.enabled)
-                self.assertEqual(len(self.ai.stop_calls), ai_stop_count)
-
-    def test_modifier_change_stops_active_motion_in_both_modes(self):
-        for mode in ("jitter", "ai_aim"):
-            with self.subTest(mode=mode):
-                self.app.close_app()
-                app = self.make_app(config=AppConfig(
-                    mode=mode,
-                    modifier="Right",
-                ))
-                self.service.connected = True
-                app.set_enabled(True)
-                if mode == "ai_aim":
-                    app.handle_ai_event(
-                        AiEvent("ready", "CPUExecutionProvider")
-                    )
-                app.handle_service_event(
-                    ServiceEvent("button", ("Left", True))
+                self.assertEqual(
+                    self.service.composite_motion_calls[-1].duration_s,
+                    3.0,
                 )
-                app.handle_service_event(
-                    ServiceEvent("button", ("Right", True))
-                )
-                self.assertEqual(app.runtime_state_var.get(), "MOVING")
-                ai_stop_count = len(self.ai.stop_calls)
 
-                app.modifier_var.set("Mouse4")
-                app.on_bindings_changed()
-
-                self.assertIn("bindings_changed", self.service.stop_reasons)
-                self.assertFalse(app._normal_motion_started)
-                self.assertEqual(app.runtime_state_var.get(), "ARMED")
-                self.assertTrue(app.enabled)
-                self.assertEqual(len(self.ai.stop_calls), ai_stop_count)
-
-    def test_disconnected_ai_enable_keeps_ai_mode_label_and_stays_disabled(self):
-        app = self.make_connected_ai_app()
-        self.service.connected = False
-
-        app.set_enabled(True)
-
-        self.assertFalse(app.enabled)
-        self.assertEqual(app.enable_button.cget("text"), "Enable AI Aim")
-        self.assertEqual(self.ai.start_calls, [])
-
-    def test_jitter_mode_never_starts_ai_runtime_or_ai_motion(self):
+    def test_test_run_rejects_no_sources(self):
         self.service.connected = True
-        self.app.set_enabled(True)
+
+        self.app.start_test_run()
+
+        self.assertIsNone(self.app._motion_mode)
+        self.assertIn("Select Jitter or AI Aim", self.app.footer_var.get())
+        self.assertEqual(self.service.composite_motion_calls, [])
+
+    def test_test_run_waits_for_exact_retiring_worker_and_ai_ready(self):
+        self.service.connected = True
+        self.app.toggle_jitter_source()
+        self.app.toggle_ai_source()
+        self.app.set_master(True)
+        self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
         self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        retiring = self.service.active_motion_generation
 
-        self.assertEqual(len(self.service.motion_calls), 1)
-        self.assertEqual(self.ai.start_calls, [])
-        self.assertEqual(self.service.ai_motion_calls, [])
-
-    def test_mode_change_immediately_cancels_ai_and_makcu(self):
-        app = self.make_connected_ai_app()
-        app.set_enabled(True)
-        app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
-        app.handle_service_event(ServiceEvent("button", ("Left", True)))
-
-        app.mode_var.set("jitter")
-        app.on_mode_changed()
-
-        self.assertFalse(app.enabled)
-        self.assertEqual(app.mode_var.get(), "jitter")
-        self.assertEqual(self.ai.stop_calls[-1], "Mode changed")
-        self.assertEqual(self.service.stop_reasons[-1], "Mode changed")
-        self.assertEqual(app.ai_settings_card.winfo_manager(), "")
-
-    def test_ai_events_are_marshaled_to_the_tk_thread(self):
-        app = self.make_connected_ai_app()
-        app.set_enabled(True)
-        self.assertTrue(
-            self.ai.emit(AiEvent("ready", "DmlExecutionProvider"))
-        )
-        self.assertEqual(app.ai_status_var.get(), "Stopped")
-
-        app.update()
-
-        self.assertEqual(app.ai_status_var.get(), "Ready (DirectML)")
-        self.assertEqual(app.ai_provider_var.get(), "DirectML")
-
-    def test_queued_ready_and_press_from_old_arm_do_not_cross_stop_and_rearm(self):
-        app = self.make_connected_ai_app()
-        app._cancel_after("_ui_pump_after_id")
-        app.set_enabled(True)
-        old_generation = self.ai.active_generation
-        self.assertTrue(self.ai.emit(
-            AiEvent("ready", "DmlExecutionProvider"),
-            generation=old_generation,
+        self.app.start_test_run()
+        self.assertEqual(self.service.cancel_reasons[-1], "test_run")
+        self.app.handle_service_event(ServiceEvent(
+            "motion_stopped", "test_run", retiring + 100
         ))
-        self.service.emit(ServiceEvent("button", ("Left", True)))
+        self.assertEqual(len(self.service.composite_motion_calls), 1)
 
-        app.emergency_stop("Stopped by user")
-        app.set_enabled(True)
-        app._drain_ui_queue()
-
-        self.assertNotEqual(self.ai.active_generation, old_generation)
-        self.assertFalse(app._ai_ready)
-        self.assertFalse(app.trigger_gate.active)
-        self.assertEqual(self.service.ai_motion_calls, [])
-        self.assertEqual(app.runtime_state_var.get(), "ARMED")
-
-    def test_inflight_ready_during_stop_cannot_activate_new_ai_test(self):
-        app = self.make_connected_ai_app()
-        app._cancel_after("_ui_pump_after_id")
-        app.set_enabled(True)
-        old_generation = self.ai.active_generation
-
-        def emit_ready_during_stop(generation):
-            self.assertEqual(generation, old_generation)
-            self.assertTrue(self.ai.emit(
-                AiEvent("ready", "DmlExecutionProvider"),
-                generation=generation,
-            ))
-
-        self.ai.stop_hook = emit_ready_during_stop
-        app.emergency_stop("Stopped by user")
-        self.ai.stop_hook = None
-
-        app.start_test_run()
-        app._drain_ui_queue()
-
-        self.assertFalse(app._ai_ready)
-        self.assertEqual(app._motion_mode, "test_ai_loading")
-        self.assertIsNotNone(app._ai_test_pending_generation)
-        self.assertEqual(self.service.ai_motion_calls, [])
-
-    def test_queued_error_from_old_ai_arm_is_discarded_after_mode_switch(self):
-        app = self.make_connected_ai_app()
-        app._cancel_after("_ui_pump_after_id")
-        app.set_enabled(True)
-        self.assertTrue(self.ai.emit(
-            AiEvent("error", "OldGenerationError: stale")
+        self.service.motion_active = False
+        self.service.active_motion_generation = None
+        self.app.handle_service_event(ServiceEvent(
+            "motion_stopped", "test_run", retiring
         ))
 
-        app.mode_var.set("jitter")
-        app.on_mode_changed()
-        app._drain_ui_queue()
-
-        self.assertEqual(app.mode_var.get(), "jitter")
-        self.assertEqual(app.ai_status_var.get(), "Stopped")
-        self.assertNotIn("ai_error", self.service.stop_reasons)
-        self.assertEqual(app.footer_var.get(), "Jitter mode selected")
-
-    def test_queued_motion_terminal_from_old_arm_cannot_end_new_motion(self):
-        self.service.connected = True
-        self.app._cancel_after("_ui_pump_after_id")
-        self.app.set_enabled(True)
-        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
-        self.service.emit(ServiceEvent("motion_stopped", "old_motion"))
-
-        self.app.emergency_stop("Stopped by user")
-        self.app.set_enabled(True)
-        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
-        self.app._drain_ui_queue()
-
-        self.assertTrue(self.app._normal_motion_started)
-        self.assertEqual(self.app.runtime_state_var.get(), "MOVING")
-
-    def test_rebind_terminal_cannot_clear_motion_started_by_fresh_binding_edge(self):
-        self.service.connected = True
-        self.app._cancel_after("_ui_pump_after_id")
-        self.app.set_enabled(True)
-        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
-
-        self.service.stop_hook = lambda _reason: self.service.emit(
-            ServiceEvent("motion_stopped", "bindings_changed")
+        self.assertEqual(len(self.service.composite_motion_calls), 2)
+        self.assertEqual(
+            self.service.composite_motion_calls[-1].sources,
+            MotionSources(True, True),
         )
-        self.app.trigger_var.set("Mouse4")
-        self.app.on_bindings_changed()
-        self.service.stop_hook = None
-        self.app.handle_service_event(
-            ServiceEvent("button", ("Mouse4", True))
+        self.assertEqual(
+            self.service.composite_motion_calls[-1].duration_s,
+            3.0,
         )
 
-        self.app._drain_ui_queue()
-
-        self.assertEqual(len(self.service.motion_calls), 2)
-        self.assertTrue(self.app._normal_motion_started)
-        self.assertEqual(self.app.runtime_state_var.get(), "MOVING")
-
-    def test_terminal_emitted_after_rebind_stop_cannot_clear_fresh_motion(self):
+    def test_duration_complete_restores_prior_master_and_source_choices(self):
         self.service.connected = True
-        self.app._cancel_after("_ui_pump_after_id")
-        self.app.set_enabled(True)
-        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        self.app.toggle_jitter_source()
+        self.app.set_master(True)
+        selected = self.app._selected_sources()
 
-        self.app.trigger_var.set("Mouse4")
-        self.app.on_bindings_changed()
-        self.service.emit(
-            ServiceEvent("motion_stopped", "bindings_changed")
-        )
-        self.app.handle_service_event(
-            ServiceEvent("button", ("Mouse4", True))
-        )
-        self.app._drain_ui_queue()
-
-        self.assertTrue(self.app._normal_motion_started)
-        self.assertEqual(self.app.runtime_state_var.get(), "MOVING")
-
-    def test_terminal_emitted_after_release_cannot_clear_fresh_motion(self):
-        self.service.connected = True
-        self.app._cancel_after("_ui_pump_after_id")
-        self.app.set_enabled(True)
-        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
-
-        self.app.handle_service_event(ServiceEvent("button", ("Left", False)))
-        self.service.emit(
-            ServiceEvent("motion_stopped", "trigger_released")
-        )
-        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
-        self.app._drain_ui_queue()
-
-        self.assertTrue(self.app._normal_motion_started)
-        self.assertEqual(self.app.runtime_state_var.get(), "MOVING")
-
-    def test_jitter_release_then_press_waits_for_old_stopped_before_fresh_start(self):
-        self.service.connected = True
-        self.app._cancel_after("_ui_pump_after_id")
-        self.app.set_enabled(True)
-        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
-        old_source = self.service.active_motion_generation
-
-        self.app.handle_service_event(ServiceEvent("button", ("Left", False)))
-        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
-
-        self.assertEqual(len(self.service.motion_calls), 1)
-        self.assertEqual(self.service.active_motion_generation, old_source)
-        self.assertFalse(self.app._normal_motion_started)
-
-        self.service.emit(ServiceEvent(
-            "motion_stopped",
-            "trigger_released",
-            old_source,
+        self.app.start_test_run()
+        generation = self.service.active_motion_generation
+        self.service.motion_active = False
+        self.service.active_motion_generation = None
+        self.app.handle_service_event(ServiceEvent(
+            "motion_stopped", "duration_complete", generation
         ))
-        self.app._drain_ui_queue()
 
-        fresh_source = self.service.active_motion_generation
-        self.assertIs(type(fresh_source), int)
-        self.assertNotEqual(fresh_source, old_source)
-        self.assertEqual(len(self.service.motion_calls), 2)
-        self.assertEqual(self.app._expected_motion_generation, fresh_source)
-        self.assertTrue(self.app._normal_motion_started)
-        self.assertEqual(self.app.runtime_state_var.get(), "MOVING")
-
-    def test_ai_rebind_then_press_waits_for_old_stopped_before_fresh_start(self):
-        app = self.make_connected_ai_app()
-        app._cancel_after("_ui_pump_after_id")
-        app.set_enabled(True)
-        app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
-        app.handle_service_event(ServiceEvent("button", ("Left", True)))
-        old_source = self.service.active_motion_generation
-
-        app.trigger_var.set("Mouse4")
-        app.on_bindings_changed()
-        app.handle_service_event(ServiceEvent("button", ("Mouse4", True)))
-
-        self.assertEqual(len(self.service.ai_motion_calls), 1)
-        self.assertEqual(self.service.active_motion_generation, old_source)
-        self.assertFalse(app._normal_motion_started)
-
-        self.service.emit(ServiceEvent(
-            "motion_stopped",
-            "bindings_changed",
-            old_source,
-        ))
-        app._drain_ui_queue()
-
-        fresh_source = self.service.active_motion_generation
-        self.assertIs(type(fresh_source), int)
-        self.assertNotEqual(fresh_source, old_source)
-        self.assertEqual(len(self.service.ai_motion_calls), 2)
-        self.assertEqual(app._expected_motion_generation, fresh_source)
-        self.assertTrue(app._normal_motion_started)
-        self.assertEqual(app.runtime_state_var.get(), "MOVING")
-
-    def test_jitter_stop_rearm_then_press_waits_for_old_error_before_fresh_start(self):
-        self.service.connected = True
-        self.app._cancel_after("_ui_pump_after_id")
-        self.app.set_enabled(True)
-        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
-        old_source = self.service.active_motion_generation
-
-        self.app.emergency_stop("Stopped by user")
-        self.app.set_enabled(True)
-        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
-
-        self.assertEqual(len(self.service.motion_calls), 1)
-        self.assertEqual(self.service.active_motion_generation, old_source)
-        self.assertFalse(self.app._normal_motion_started)
-
-        self.service.emit(ServiceEvent(
-            "motion_error",
-            "RuntimeError: canceled Jitter worker",
-            old_source,
-        ))
-        self.app._drain_ui_queue()
-
-        fresh_source = self.service.active_motion_generation
-        self.assertIs(type(fresh_source), int)
-        self.assertNotEqual(fresh_source, old_source)
-        self.assertEqual(len(self.service.motion_calls), 2)
-        self.assertEqual(self.app._expected_motion_generation, fresh_source)
-        self.assertTrue(self.app.enabled)
-        self.assertTrue(self.app._normal_motion_started)
-        self.assertEqual(self.app.runtime_state_var.get(), "MOVING")
-
-    def test_ai_stop_rearm_then_press_waits_for_old_error_before_fresh_start(self):
-        app = self.make_connected_ai_app()
-        app._cancel_after("_ui_pump_after_id")
-        app.set_enabled(True)
-        app.handle_ai_event(AiEvent("ready", "CPUExecutionProvider"))
-        app.handle_service_event(ServiceEvent("button", ("Left", True)))
-        old_source = self.service.active_motion_generation
-
-        app.emergency_stop("Stopped by user")
-        app.set_enabled(True)
-        app.handle_ai_event(AiEvent("ready", "CPUExecutionProvider"))
-        app.handle_service_event(ServiceEvent("button", ("Left", True)))
-
-        self.assertEqual(len(self.service.ai_motion_calls), 1)
-        self.assertEqual(self.service.active_motion_generation, old_source)
-        self.assertFalse(app._normal_motion_started)
-
-        self.service.emit(ServiceEvent(
-            "motion_error",
-            "RuntimeError: canceled AI worker",
-            old_source,
-        ))
-        app._drain_ui_queue()
-
-        fresh_source = self.service.active_motion_generation
-        self.assertIs(type(fresh_source), int)
-        self.assertNotEqual(fresh_source, old_source)
-        self.assertEqual(len(self.service.ai_motion_calls), 2)
-        self.assertEqual(app._expected_motion_generation, fresh_source)
-        self.assertEqual(app.ai_status_var.get(), "Ready (CPU)")
-        self.assertTrue(app.enabled)
-        self.assertTrue(app._normal_motion_started)
-        self.assertEqual(app.runtime_state_var.get(), "MOVING")
-
-    def test_pending_restart_is_canceled_when_gate_releases_before_terminal(self):
-        self.service.connected = True
-        self.app._cancel_after("_ui_pump_after_id")
-        self.app.set_enabled(True)
-        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
-        old_source = self.service.active_motion_generation
-
-        self.app.handle_service_event(ServiceEvent("button", ("Left", False)))
-        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
-        self.app.handle_service_event(ServiceEvent("button", ("Left", False)))
-        self.service.emit(ServiceEvent(
-            "motion_stopped",
-            "trigger_released",
-            old_source,
-        ))
-        self.app._drain_ui_queue()
-
-        self.assertEqual(len(self.service.motion_calls), 1)
-        self.assertIsNone(self.service.active_motion_generation)
-        self.assertTrue(self.app.enabled)
-        self.assertFalse(self.app._normal_motion_started)
+        self.assertTrue(self.app.master_armed)
+        self.assertEqual(self.app._selected_sources(), selected)
+        self.assertIsNone(self.app._motion_mode)
         self.assertEqual(self.app.runtime_state_var.get(), "ARMED")
 
-    def test_pending_restart_is_canceled_by_stop_before_terminal(self):
+    def test_test_run_keeps_master_off_when_it_started_disarmed(self):
         self.service.connected = True
-        self.app._cancel_after("_ui_pump_after_id")
-        self.app.set_enabled(True)
-        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
-        old_source = self.service.active_motion_generation
+        self.app.toggle_jitter_source()
 
-        self.app.handle_service_event(ServiceEvent("button", ("Left", False)))
-        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
-        self.app.emergency_stop("Stopped by user")
-        self.service.emit(ServiceEvent(
-            "motion_error",
-            "RuntimeError: canceled before restart",
-            old_source,
+        self.app.start_test_run()
+        generation = self.service.active_motion_generation
+        self.service.motion_active = False
+        self.service.active_motion_generation = None
+        self.app.handle_service_event(ServiceEvent(
+            "motion_stopped", "duration_complete", generation
         ))
-        self.app._drain_ui_queue()
 
-        self.assertEqual(len(self.service.motion_calls), 1)
-        self.assertIsNone(self.service.active_motion_generation)
-        self.assertFalse(self.app.enabled)
-        self.assertFalse(self.app._normal_motion_started)
+        self.assertFalse(self.app.master_armed)
         self.assertEqual(self.app.runtime_state_var.get(), "DISABLED")
 
-    def test_old_terminal_after_stop_and_rearm_cannot_clear_fresh_motion(self):
+    def test_overlay_only_starts_ai_without_makcu_and_hiding_stops_final_demand(self):
+        self.service.connected = False
+
+        self.app.toggle_overlay()
+
+        self.assertTrue(self.app.overlay_visible)
+        self.assertEqual(self.overlay.shown, 1)
+        self.assertEqual(len(self.ai.start_calls), 1)
+        self.assertEqual(self.service.composite_motion_calls, [])
+
+        self.app.toggle_overlay()
+
+        self.assertFalse(self.app.overlay_visible)
+        self.assertEqual(self.overlay.hidden, 1)
+        self.assertEqual(self.ai.stop_calls[-1], "Overlay disabled")
+
+    def test_hiding_overlay_does_not_reload_or_stop_armed_ai(self):
         self.service.connected = True
-        self.app._cancel_after("_ui_pump_after_id")
-        self.app.set_enabled(True)
-        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
-
-        self.app.emergency_stop("Stopped by user")
-        self.app.set_enabled(True)
-        self.service.emit(
-            ServiceEvent("motion_stopped", "Stopped by user")
-        )
-        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
-        self.app._drain_ui_queue()
-
-        self.assertTrue(self.app._normal_motion_started)
-        self.assertEqual(self.app.runtime_state_var.get(), "MOVING")
-
-    def test_old_terminal_cannot_complete_a_directly_started_test(self):
-        self.service.connected = True
-        self.app._cancel_after("_ui_pump_after_id")
-        self.service.emit(ServiceEvent("motion_stopped", "old_motion"))
-
-        self.app.start_test_run()
-        self.app._drain_ui_queue()
-
-        self.assertEqual(self.app._motion_mode, "test")
-        self.assertEqual(self.app.runtime_state_var.get(), "TESTING")
-        self.assertFalse(self.app.test_button._enabled)
-
-    def test_old_terminal_during_jitter_test_start_is_ignored(self):
-        self.service.connected = True
-        self.app._cancel_after("_ui_pump_after_id")
-        self.service.start_motion_hook = lambda: self.service.emit(
-            ServiceEvent("motion_stopped", "trigger_released")
-        )
-
-        self.app.start_test_run()
-        self.service.start_motion_hook = None
-        self.app._drain_ui_queue()
-
-        self.assertEqual(self.app._motion_mode, "test")
-        self.assertEqual(self.app.runtime_state_var.get(), "TESTING")
-        self.assertFalse(self.app.test_button._enabled)
-
-    def test_old_terminal_during_ai_test_start_is_ignored(self):
-        app = self.make_connected_ai_app()
-        app._cancel_after("_ui_pump_after_id")
-        app.start_test_run()
-        self.service.start_ai_motion_hook = lambda: self.service.emit(
-            ServiceEvent("motion_stopped", "bindings_changed")
-        )
-
-        app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
-        self.service.start_ai_motion_hook = None
-        app._drain_ui_queue()
-
-        self.assertEqual(app._motion_mode, "test_ai")
-        self.assertEqual(app.runtime_state_var.get(), "TESTING")
-        self.assertFalse(app.test_button._enabled)
-
-    def test_reentrant_terminal_during_stop_handoff_starts_test_once(self):
-        self.service.connected = True
-        self.app._cancel_after("_ui_pump_after_id")
-        self.app.set_enabled(True)
-        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
-        self.assertTrue(self.service.motion_active)
-        self.service.stop_hook = lambda _reason: self.service.emit(
-            ServiceEvent("motion_stopped", "test_run")
-        )
-
-        self.app.start_test_run()
-        self.service.stop_hook = None
-        self.app._drain_ui_queue()
-
-        self.assertEqual(self.app._motion_mode, "test")
-        self.assertEqual(len(self.service.motion_calls), 2)
-        self.assertEqual(self.service.motion_calls[-1][1], 3.0)
-        self.assertEqual(self.app.runtime_state_var.get(), "TESTING")
-
-    def test_late_jitter_test_completion_after_restoration_cannot_clear_fresh_motion(self):
-        self.service.connected = True
-        self.app._cancel_after("_ui_pump_after_id")
-        self.app.set_enabled(True)
-        self.app.start_test_run()
-        test_source = self.service.active_motion_generation
-
-        self.service.emit(
-            ServiceEvent("motion_stopped", "duration_complete", test_source)
-        )
-        self.app._drain_ui_queue()
-        self.app._cancel_after("_ui_pump_after_id")
-        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
-        self.service.emit(
-            ServiceEvent("motion_stopped", "duration_complete", test_source)
-        )
-        self.app._drain_ui_queue()
-
-        self.assertTrue(self.app.enabled)
-        self.assertTrue(self.app._normal_motion_started)
-        self.assertEqual(self.app.runtime_state_var.get(), "MOVING")
-
-    def test_late_ai_test_completion_after_restoration_cannot_clear_fresh_motion(self):
-        app = self.make_connected_ai_app()
-        app._cancel_after("_ui_pump_after_id")
-        app.set_enabled(True)
-        app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
-        app.start_test_run()
-        test_source = self.service.active_motion_generation
-        self.service.emit(
-            ServiceEvent("motion_stopped", "duration_complete", test_source)
-        )
-        app._drain_ui_queue()
-        app._cancel_after("_ui_pump_after_id")
-        app.handle_service_event(ServiceEvent("button", ("Left", True)))
-
-        self.service.emit(
-            ServiceEvent("motion_stopped", "duration_complete", test_source)
-        )
-        app._drain_ui_queue()
-
-        self.assertTrue(app._normal_motion_started)
-        self.assertEqual(app.runtime_state_var.get(), "MOVING")
-
-    def test_old_jitter_duration_after_new_test_start_cannot_complete_it(self):
-        self.service.connected = True
-        self.app._cancel_after("_ui_pump_after_id")
-        self.app.start_test_run()
-        old_source = self.service.active_motion_generation
-        self.service.emit(ServiceEvent(
-            "motion_stopped",
-            "duration_complete",
-            old_source,
-        ))
-        self.app._drain_ui_queue()
-        self.app._cancel_after("_ui_pump_after_id")
-
-        self.app.start_test_run()
-        fresh_source = self.service.active_motion_generation
-        self.service.emit(ServiceEvent(
-            "motion_stopped",
-            "duration_complete",
-            old_source,
-        ))
-        self.app._drain_ui_queue()
-
-        self.assertNotEqual(fresh_source, old_source)
-        self.assertEqual(self.app._motion_mode, "test")
-        self.assertFalse(self.app.test_button._enabled)
-        self.assertEqual(self.app.runtime_state_var.get(), "TESTING")
-
-    def test_old_jitter_duration_during_new_test_start_cannot_complete_it(self):
-        self.service.connected = True
-        self.app._cancel_after("_ui_pump_after_id")
-        self.app.start_test_run()
-        old_source = self.service.active_motion_generation
-        self.service.emit(ServiceEvent(
-            "motion_stopped",
-            "duration_complete",
-            old_source,
-        ))
-        self.app._drain_ui_queue()
-        self.app._cancel_after("_ui_pump_after_id")
-        self.service.start_motion_hook = lambda: self.service.emit(
-            ServiceEvent(
-                "motion_stopped",
-                "duration_complete",
-                old_source,
-            )
-        )
-
-        self.app.start_test_run()
-        self.service.start_motion_hook = None
-        fresh_source = self.service.active_motion_generation
-        self.app._drain_ui_queue()
-
-        self.assertNotEqual(fresh_source, old_source)
-        self.assertEqual(self.app._motion_mode, "test")
-        self.assertFalse(self.app.test_button._enabled)
-        self.assertEqual(self.app.runtime_state_var.get(), "TESTING")
-
-    def test_old_ai_duration_after_new_test_start_cannot_complete_it(self):
-        app = self.make_connected_ai_app()
-        app._cancel_after("_ui_pump_after_id")
-        app.set_enabled(True)
-        app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
-        app.start_test_run()
-        old_source = self.service.active_motion_generation
-        self.service.emit(ServiceEvent(
-            "motion_stopped",
-            "duration_complete",
-            old_source,
-        ))
-        app._drain_ui_queue()
-        app._cancel_after("_ui_pump_after_id")
-
-        app.start_test_run()
-        fresh_source = self.service.active_motion_generation
-        self.service.emit(ServiceEvent(
-            "motion_stopped",
-            "duration_complete",
-            old_source,
-        ))
-        app._drain_ui_queue()
-
-        self.assertNotEqual(fresh_source, old_source)
-        self.assertEqual(app._motion_mode, "test_ai")
-        self.assertFalse(app.test_button._enabled)
-        self.assertEqual(app.runtime_state_var.get(), "TESTING")
-
-    def test_old_ai_duration_during_new_test_start_cannot_complete_it(self):
-        app = self.make_connected_ai_app()
-        app._cancel_after("_ui_pump_after_id")
-        app.set_enabled(True)
-        app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
-        app.start_test_run()
-        old_source = self.service.active_motion_generation
-        self.service.emit(ServiceEvent(
-            "motion_stopped",
-            "duration_complete",
-            old_source,
-        ))
-        app._drain_ui_queue()
-        app._cancel_after("_ui_pump_after_id")
-        self.service.start_ai_motion_hook = lambda: self.service.emit(
-            ServiceEvent(
-                "motion_stopped",
-                "duration_complete",
-                old_source,
-            )
-        )
-
-        app.start_test_run()
-        self.service.start_ai_motion_hook = None
-        fresh_source = self.service.active_motion_generation
-        app._drain_ui_queue()
-
-        self.assertNotEqual(fresh_source, old_source)
-        self.assertEqual(app._motion_mode, "test_ai")
-        self.assertFalse(app.test_button._enabled)
-        self.assertEqual(app.runtime_state_var.get(), "TESTING")
-
-    def test_stale_motion_error_after_rebind_cannot_disable_fresh_motion(self):
-        self.service.connected = True
-        self.app._cancel_after("_ui_pump_after_id")
-        self.app.set_enabled(True)
-        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
-        old_source = self.service.active_motion_generation
-
-        self.app.trigger_var.set("Mouse4")
-        self.app.on_bindings_changed()
-        self.service.emit(ServiceEvent(
-            "motion_error",
-            "RuntimeError: stale rebind failure",
-            old_source,
-        ))
-        self.app.handle_service_event(ServiceEvent("button", ("Mouse4", True)))
-        fresh_source = self.service.active_motion_generation
-        self.app._drain_ui_queue()
-
-        self.assertNotEqual(fresh_source, old_source)
-        self.assertTrue(self.app.enabled)
-        self.assertTrue(self.app._normal_motion_started)
-        self.assertEqual(self.app.runtime_state_var.get(), "MOVING")
-
-    def test_stale_motion_error_after_stop_cannot_disable_fresh_motion(self):
-        self.service.connected = True
-        self.app._cancel_after("_ui_pump_after_id")
-        self.app.set_enabled(True)
-        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
-        old_source = self.service.active_motion_generation
-
-        self.app.emergency_stop("Stopped by user")
-        self.app.set_enabled(True)
-        self.service.emit(ServiceEvent(
-            "motion_error",
-            "RuntimeError: stale stopped failure",
-            old_source,
-        ))
-        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
-        fresh_source = self.service.active_motion_generation
-        self.app._drain_ui_queue()
-
-        self.assertNotEqual(fresh_source, old_source)
-        self.assertTrue(self.app.enabled)
-        self.assertTrue(self.app._normal_motion_started)
-        self.assertEqual(self.app.runtime_state_var.get(), "MOVING")
-
-    def test_stale_motion_error_during_next_start_cannot_disable_fresh_motion(self):
-        self.service.connected = True
-        self.app._cancel_after("_ui_pump_after_id")
-        self.app.set_enabled(True)
-        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
-        old_source = self.service.active_motion_generation
-        self.app.handle_service_event(ServiceEvent("button", ("Left", False)))
-        # The old worker has released its motion slot, but its sink callback is
-        # still delayed until the next start is in progress.
-        self.service.motion_active = False
-        self.service.active_motion_generation = None
-        self.service.start_motion_hook = lambda: self.service.emit(
-            ServiceEvent(
-                "motion_error",
-                "RuntimeError: stale during-start failure",
-                old_source,
-            )
-        )
-
-        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
-        self.service.start_motion_hook = None
-        fresh_source = self.service.active_motion_generation
-        self.app._drain_ui_queue()
-
-        self.assertNotEqual(fresh_source, old_source)
-        self.assertTrue(self.app.enabled)
-        self.assertTrue(self.app._normal_motion_started)
-        self.assertEqual(self.app.runtime_state_var.get(), "MOVING")
-
-    def test_stale_ai_motion_error_during_next_start_cannot_disable_fresh_motion(self):
-        app = self.make_connected_ai_app()
-        app._cancel_after("_ui_pump_after_id")
-        app.set_enabled(True)
-        app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
-        app.handle_service_event(ServiceEvent("button", ("Left", True)))
-        old_source = self.service.active_motion_generation
-        app.handle_service_event(ServiceEvent("button", ("Left", False)))
-        self.service.motion_active = False
-        self.service.active_motion_generation = None
-        self.service.start_ai_motion_hook = lambda: self.service.emit(
-            ServiceEvent(
-                "motion_error",
-                "RuntimeError: stale AI during-start failure",
-                old_source,
-            )
-        )
-
-        app.handle_service_event(ServiceEvent("button", ("Left", True)))
-        self.service.start_ai_motion_hook = None
-        fresh_source = self.service.active_motion_generation
-        app._drain_ui_queue()
-
-        self.assertNotEqual(fresh_source, old_source)
-        self.assertTrue(app.enabled)
-        self.assertTrue(app._normal_motion_started)
-        self.assertEqual(app.runtime_state_var.get(), "MOVING")
-
-    def test_current_normal_motion_terminal_returns_moving_to_armed(self):
-        self.service.connected = True
-        self.app.set_enabled(True)
-        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
-        source = self.service.active_motion_generation
-
-        self.app.handle_service_event(ServiceEvent(
-            "motion_stopped",
-            "worker_complete",
-            source,
-        ))
-
-        self.assertTrue(self.app.enabled)
-        self.assertFalse(self.app._normal_motion_started)
-        self.assertIsNone(self.app._expected_motion_generation)
-        self.assertEqual(self.app.runtime_state_var.get(), "ARMED")
-
-    def test_ai_status_fps_provider_and_stopped_events_are_concise(self):
-        app = self.make_connected_ai_app()
-        app.set_enabled(True)
-        app.handle_ai_event(AiEvent("loading"))
-        self.assertEqual(app.ai_status_var.get(), "Loading")
-        self.assertEqual(app.ai_fps_var.get(), "0 FPS")
-
-        app.handle_ai_event(AiEvent("ready", "CPUExecutionProvider"))
-        self.assertEqual(app.ai_status_var.get(), "Ready (CPU)")
-        self.assertEqual(app.ai_provider_var.get(), "CPU")
-        app.handle_ai_event(AiEvent("fps", 59.75))
-        self.assertEqual(app.ai_fps_var.get(), "59.8 FPS")
-
-        app.handle_ai_event(AiEvent("stopped", "manual"))
-        self.assertEqual(app.ai_status_var.get(), "Stopped")
-        self.assertEqual(app.ai_fps_var.get(), "0 FPS")
-        self.assertEqual(app.ai_provider_var.get(), "No provider")
-
-    def test_unsolicited_ready_is_ignored_while_ai_runtime_is_inactive(self):
-        app = self.make_connected_ai_app()
-        app._cancel_after("_ui_pump_after_id")
-
-        app.queue_ai_event(AiEvent("ready", "DmlExecutionProvider"))
-        app._drain_ui_queue()
-
-        self.assertFalse(app._ai_ready)
-        self.assertEqual(app.ai_status_var.get(), "Stopped")
-        self.assertEqual(app.ai_provider_var.get(), "No provider")
-
-    def test_ai_error_logs_detail_stops_motion_and_disables_without_hiding_mode(self):
-        app = self.make_connected_ai_app()
-        app.set_enabled(True)
-        app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
-        app.handle_service_event(ServiceEvent("button", ("Left", True)))
-
-        with self.assertLogs(level="ERROR") as captured:
-            app.handle_ai_event(AiEvent("error", "SecretDetectorError: details"))
-
-        self.assertFalse(app.enabled)
-        self.assertEqual(app.runtime_state_var.get(), "DISABLED")
-        self.assertEqual(app.ai_status_var.get(), "Error")
-        self.assertEqual(app.mode_var.get(), "ai_aim")
-        self.assertIn("ai_error", self.service.stop_reasons)
-        self.assertIn("ai_error", self.ai.stop_calls)
-        self.assertNotIn("SecretDetectorError", app.footer_var.get())
-        self.assertIn("SecretDetectorError", captured.output[0])
-
-    def test_ai_enable_start_none_logs_and_returns_to_disabled(self):
-        app = self.make_connected_ai_app()
-        self.ai.start_result = None
-
-        with self.assertLogs(level="ERROR") as captured:
-            app.set_enabled(True)
-
-        self.assertFalse(app.enabled)
-        self.assertFalse(app._ai_runtime_active)
-        self.assertFalse(app._ai_ready)
-        self.assertEqual(app.runtime_state_var.get(), "DISABLED")
-        self.assertEqual(app.ai_status_var.get(), "Error")
-        self.assertTrue(app.test_button._enabled)
-        self.assertEqual(self.service.ai_motion_calls, [])
-        self.assertIn("AI runtime did not start", captured.output[0])
-        self.assertNotIn("None", app.footer_var.get())
-
-    def test_ai_enable_start_exception_logs_and_returns_to_disabled(self):
-        app = self.make_connected_ai_app()
-        self.ai.start_exception = RuntimeError("private enable failure")
-
-        with self.assertLogs(level="ERROR") as captured:
-            app.set_enabled(True)
-
-        self.assertFalse(app.enabled)
-        self.assertFalse(app._ai_runtime_active)
-        self.assertEqual(app.runtime_state_var.get(), "DISABLED")
-        self.assertEqual(app.ai_status_var.get(), "Error")
-        self.assertIn("private enable failure", "\n".join(captured.output))
-        self.assertNotIn("private enable failure", app.footer_var.get())
-
-    def test_ai_test_start_false_unwinds_loading_state(self):
-        app = self.make_connected_ai_app()
-        self.ai.start_result = False
-
-        with self.assertLogs(level="ERROR") as captured:
-            app.start_test_run()
-
-        self.assertFalse(app.enabled)
-        self.assertFalse(app._ai_runtime_active)
-        self.assertFalse(app._ai_ready)
-        self.assertIsNone(app._motion_mode)
-        self.assertIsNone(app._ai_test_pending_generation)
-        self.assertFalse(app._test_start_pending)
-        self.assertEqual(app.runtime_state_var.get(), "DISABLED")
-        self.assertEqual(app.ai_status_var.get(), "Error")
-        self.assertTrue(app.test_button._enabled)
-        self.assertEqual(self.service.ai_motion_calls, [])
-        self.assertIn("AI runtime did not start", captured.output[0])
-
-    def test_ai_test_start_exception_unwinds_loading_state(self):
-        app = self.make_connected_ai_app()
-        self.ai.start_exception = RuntimeError("private test failure")
-
-        with self.assertLogs(level="ERROR") as captured:
-            app.start_test_run()
-
-        self.assertFalse(app.enabled)
-        self.assertFalse(app._ai_runtime_active)
-        self.assertIsNone(app._motion_mode)
-        self.assertIsNone(app._ai_test_pending_generation)
-        self.assertFalse(app._test_start_pending)
-        self.assertEqual(app.runtime_state_var.get(), "DISABLED")
-        self.assertEqual(app.ai_status_var.get(), "Error")
-        self.assertTrue(app.test_button._enabled)
-        self.assertIn("private test failure", "\n".join(captured.output))
-        self.assertNotIn("private test failure", app.footer_var.get())
-
-    def test_ai_test_ready_before_start_begins_timed_motion_immediately(self):
-        app = self.make_connected_ai_app()
-        app._cancel_after("_ui_pump_after_id")
-        app.set_enabled(True)
-        self.assertTrue(
-            self.ai.emit(AiEvent("ready", "DmlExecutionProvider"))
-        )
-        app._drain_ui_queue()
-
-        app.start_test_run()
-
-        self.assertEqual(app._motion_mode, "test_ai")
-        self.assertEqual(app.runtime_state_var.get(), "TESTING")
-        self.assertEqual(len(self.service.ai_motion_calls), 1)
-        self.assertEqual(self.service.ai_motion_calls[0][2], 3.0)
-        self.assertEqual(self.ai.start_calls, [app.get_ai_settings])
-
-    def test_ai_test_waits_for_asynchronous_ready_without_blocking_tk(self):
-        app = self.make_connected_ai_app()
-
-        app.start_test_run()
-
-        self.assertEqual(app._motion_mode, "test_ai_loading")
-        self.assertIsNotNone(app._ai_test_pending_generation)
-        self.assertEqual(self.ai.start_calls, [app.get_ai_settings])
-        self.assertEqual(self.service.ai_motion_calls, [])
-        app.handle_ai_event(AiEvent("loading"))
-        self.assertEqual(self.service.ai_motion_calls, [])
-
-        app.handle_ai_event(AiEvent("ready", "CPUExecutionProvider"))
-
-        self.assertEqual(app._motion_mode, "test_ai")
-        self.assertEqual(len(self.service.ai_motion_calls), 1)
-        self.assertEqual(self.service.ai_motion_calls[0][2], 3.0)
-
-    def test_ai_test_waits_for_active_motion_stop_before_timed_start(self):
-        app = self.make_connected_ai_app()
-        app.set_enabled(True)
-        app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
-        app.handle_service_event(ServiceEvent("button", ("Left", True)))
-        self.assertEqual(len(self.service.ai_motion_calls), 1)
-        normal_source = self.service.active_motion_generation
-
-        app.start_test_run()
-
-        self.assertEqual(app._motion_mode, "test_ai_loading")
-        self.assertEqual(len(self.service.ai_motion_calls), 1)
-        self.assertEqual(self.service.stop_reasons[-1], "test_run")
-
-        app.handle_service_event(ServiceEvent(
-            "motion_stopped",
-            "test_run",
-            normal_source,
-        ))
-
-        self.assertEqual(app._motion_mode, "test_ai")
-        self.assertEqual(len(self.service.ai_motion_calls), 2)
-        self.assertEqual(self.service.ai_motion_calls[-1][2], 3.0)
-
-    def test_ai_test_load_error_aborts_and_clears_pending_generation(self):
-        app = self.make_connected_ai_app()
-        app.start_test_run()
+        self.app.toggle_ai_source()
+        self.app.set_master(True)
+        self.app.toggle_overlay()
+        starts = len(self.ai.start_calls)
+
+        self.app.toggle_overlay()
+
+        self.assertEqual(len(self.ai.start_calls), starts)
+        self.assertEqual(self.ai.stop_calls, [])
+
+    def test_overlay_setup_failure_turns_off_only_overlay(self):
+        self.app.toggle_ai_source()
+        self.overlay.show_error = OverlaySetupError("affinity failed")
 
         with self.assertLogs(level="ERROR"):
-            app.handle_ai_event(AiEvent("error", "ModelContractError: invalid"))
+            self.app.toggle_overlay()
 
-        self.assertIsNone(app._ai_test_pending_generation)
-        self.assertIsNone(app._motion_mode)
-        self.assertEqual(self.service.ai_motion_calls, [])
-        self.assertTrue(app.test_button._enabled)
-        self.assertEqual(app.ai_status_var.get(), "Error")
+        self.assertFalse(self.app.overlay_visible)
+        self.assertTrue(self.app.ai_selected)
+        self.assertEqual(self.ai.start_calls, [])
 
-    def test_ai_test_stop_clears_pending_and_late_ready_cannot_move(self):
-        app = self.make_connected_ai_app()
-        app.start_test_run()
+    def test_overlay_ai_start_failure_hides_overlay_and_starts_no_motion(self):
+        self.ai.start_result = False
 
-        app.emergency_stop("Stopped by user")
-        app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        with self.assertLogs(level="ERROR"):
+            self.app.toggle_overlay()
 
-        self.assertIsNone(app._ai_test_pending_generation)
-        self.assertIsNone(app._motion_mode)
-        self.assertEqual(self.service.ai_motion_calls, [])
-        self.assertFalse(app.enabled)
+        self.assertFalse(self.app.overlay_visible)
+        self.assertEqual(self.overlay.shown, 1)
+        self.assertEqual(self.overlay.hidden, 1)
+        self.assertEqual(self.service.composite_motion_calls, [])
 
-    def test_ai_test_duration_completion_restores_disabled_and_stops_ai(self):
-        app = self.make_connected_ai_app()
-        app.start_test_run()
-        app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
-        test_source = self.service.active_motion_generation
+    def test_overlay_poll_renders_detection_snapshot_with_injected_clock(self):
+        self.app.toggle_overlay()
 
-        app.handle_service_event(ServiceEvent(
-            "motion_stopped",
-            "duration_complete",
-            test_source,
+        self.assertEqual(
+            self.overlay.rendered[-1],
+            (self.ai.detection_snapshot, 123.5),
+        )
+        self.assertIsNotNone(self.app._overlay_after_id)
+
+    def test_overlay_render_error_turns_off_overlay_and_final_ai_demand(self):
+        self.overlay.render_error = RuntimeError("canvas failed")
+
+        with self.assertLogs(level="ERROR"):
+            self.app.toggle_overlay()
+
+        self.assertFalse(self.app.overlay_visible)
+        self.assertEqual(self.overlay.closed, 1)
+        self.assertEqual(self.ai.stop_calls[-1], "Overlay failed")
+
+    def test_master_rejects_empty_selection_and_disconnected_device(self):
+        self.app.toggle_master()
+        self.assertFalse(self.app.master_armed)
+        self.assertIn("Select Jitter or AI Aim", self.app.footer_var.get())
+        self.app.toggle_jitter_source()
+        self.app.toggle_master()
+        self.assertFalse(self.app.master_armed)
+        self.assertEqual(
+            self.app.footer_var.get(), "Makcu device is not connected"
+        )
+
+    def test_both_selected_start_one_combined_worker_when_gate_activates(self):
+        self.service.connected = True
+        self.app.toggle_jitter_source()
+        self.app.toggle_ai_source()
+        self.app.toggle_master()
+        self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+
+        self.assertEqual(
+            self.service.composite_motion_calls[-1].sources,
+            MotionSources(True, True),
+        )
+        self.assertEqual(len(self.service.composite_motion_calls), 1)
+        self.assertTrue(self.app.master_armed)
+
+    def test_source_change_cancels_exact_generation_before_restart(self):
+        self.service.connected = True
+        self.app.toggle_jitter_source()
+        self.app.set_master(True)
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        retiring = self.service.active_motion_generation
+
+        self.app.toggle_ai_source()
+        self.assertEqual(self.service.cancel_reasons[-1], "sources_changed")
+        self.app.handle_service_event(ServiceEvent(
+            "motion_stopped", "sources_changed", retiring + 99
         ))
+        self.assertEqual(len(self.service.composite_motion_calls), 1)
 
-        self.assertFalse(app.enabled)
-        self.assertIsNone(app._motion_mode)
-        self.assertEqual(app.runtime_state_var.get(), "DISABLED")
-        self.assertTrue(app.test_button._enabled)
-        self.assertEqual(self.ai.stop_calls[-1], "test_complete")
-
-    def test_ai_test_duration_completion_restores_prior_armed_state(self):
-        app = self.make_connected_ai_app()
-        app.set_enabled(True)
-        app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
-        stop_count = len(self.ai.stop_calls)
-
-        app.start_test_run()
-        test_source = self.service.active_motion_generation
-        app.handle_service_event(ServiceEvent(
-            "motion_stopped",
-            "duration_complete",
-            test_source,
+        self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        self.service.motion_active = False
+        self.service.active_motion_generation = None
+        self.app.handle_service_event(ServiceEvent(
+            "motion_stopped", "sources_changed", retiring
         ))
-
-        self.assertTrue(app.enabled)
-        self.assertEqual(app.runtime_state_var.get(), "ARMED")
-        self.assertEqual(len(self.ai.stop_calls), stop_count)
-        self.assertEqual(app.ai_status_var.get(), "Ready (DirectML)")
-
-    def test_ai_test_disconnect_cancels_pending_and_disallows_late_ready(self):
-        app = self.make_connected_ai_app()
-        app.start_test_run()
-
-        app.handle_service_event(ServiceEvent("disconnected", "Device lost"))
-        app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
-
-        self.assertIsNone(app._ai_test_pending_generation)
-        self.assertIsNone(app._motion_mode)
-        self.assertEqual(self.service.ai_motion_calls, [])
-        self.assertFalse(app.enabled)
-
-    def test_ai_test_mode_change_cancels_pending_and_disallows_late_ready(self):
-        app = self.make_connected_ai_app()
-        app.start_test_run()
-
-        app.mode_var.set("jitter")
-        app.on_mode_changed()
-        app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
-
-        self.assertIsNone(app._ai_test_pending_generation)
-        self.assertIsNone(app._motion_mode)
-        self.assertEqual(self.service.ai_motion_calls, [])
-        self.assertEqual(app.mode_var.get(), "jitter")
-
-    def test_save_config_persists_selected_mode_and_ai_snapshot(self):
-        app = self.make_connected_ai_app()
-        values = {
-            "confidence": "0.55",
-            "aim_strength": "1.25",
-            "smoothing": "0.45",
-            "max_step": "42",
-        }
-        for key, value in values.items():
-            app.ai_vars[key].set(value)
-        app.update()
-
-        app._cancel_after("_save_after_id")
-        app.save_config()
-
-        saved = self.store.saved[-1]
-        self.assertEqual(saved.mode, "ai_aim")
-        self.assertEqual(saved.ai, AimSettings(0.55, 1.25, 0.45, 42))
-
-    def test_invalid_ai_entry_keeps_snapshot_marks_entry_and_does_not_save(self):
-        previous = self.app.get_ai_settings()
-        self.app._cancel_after("_save_after_id")
-
-        self.app.ai_vars["confidence"].set("0.01")
-        self.app.update_idletasks()
-
-        self.assertEqual(self.app.get_ai_settings(), previous)
-        self.assertIn("confidence", self.app._invalid_ai_keys)
         self.assertEqual(
-            self.app.ai_confidence_entry.cget("style"),
-            "Liquid.Invalid.TEntry",
+            self.service.composite_motion_calls[-1].sources,
+            MotionSources(True, True),
         )
-        self.assertIsNone(self.app._save_after_id)
-        self.assertEqual(self.store.saved, [])
-
-    def test_fractional_max_step_is_invalid_and_valid_edit_recovers(self):
-        previous = self.app.get_ai_settings()
-        self.app.ai_vars["max_step"].set("12.5")
-        self.app.update_idletasks()
-        self.assertEqual(self.app.get_ai_settings(), previous)
-        self.assertEqual(
-            self.app.ai_max_step_entry.cget("style"),
-            "Liquid.Invalid.TEntry",
+        self.assertNotEqual(
+            self.service.active_motion_generation,
+            retiring,
         )
 
-        self.app.ai_vars["max_step"].set("12")
-        self.app.update_idletasks()
+    def test_removing_final_source_disarms_master_and_preserves_selection(self):
+        self.service.connected = True
+        self.app.toggle_jitter_source()
+        self.app.set_master(True)
 
-        self.assertEqual(self.app.get_ai_settings().max_step, 12)
-        self.assertEqual(
-            self.app.ai_max_step_entry.cget("style"),
-            "Liquid.Entry.TEntry",
+        self.app.toggle_jitter_source()
+
+        self.assertFalse(self.app.master_armed)
+        self.assertEqual(self.app._selected_sources(), MotionSources(False, False))
+        self.assertEqual(self.app.master_button.cget("text"), "Enable Selected")
+
+    def test_ai_start_failure_while_jitter_moves_keeps_current_worker(self):
+        self.prepare_armed_sources(
+            MotionSources(True, False), gate_active=True
         )
-        self.assertEqual(self.app.footer_var.get(), "Ready")
+        generation = self.service.active_motion_generation
+        self.ai.start_result = False
 
-    def test_ai_snapshot_access_and_replacement_are_lock_protected(self):
-        class CountingLock:
-            def __init__(self):
-                self.enters = 0
+        with self.assertLogs(level="ERROR"):
+            self.app.toggle_ai_source()
 
-            def __enter__(self):
-                self.enters += 1
-                return self
-
-            def __exit__(self, *_args):
-                return False
-
-        lock = CountingLock()
-        self.app._ai_lock = lock
-        self.app.get_ai_settings()
-        self.app.ai_vars["confidence"].set("0.5")
-        self.app.update_idletasks()
-
-        self.assertGreaterEqual(lock.enters, 2)
-
-    def test_toggle_is_blocked_while_ai_test_is_loading(self):
-        app = self.make_connected_ai_app()
-        app.start_test_run()
-
-        app.toggle_enabled()
-
-        self.assertFalse(app.enabled)
-        self.assertEqual(app._motion_mode, "test_ai_loading")
-        self.assertIn("Test Run is active", app.footer_var.get())
-
-    def test_runtime_keeps_dashboard_and_stop_mounted_while_connecting(self):
-        self.app.start_runtime()
-        self.app.handle_service_event(ServiceEvent("connecting"))
-        self.app.update_idletasks()
-
-        self.assertEqual(self.app.shell.winfo_manager(), "pack")
-        self.assertEqual(self.app.stop_button.winfo_manager(), "grid")
-        self.assertEqual(self.app.connection_state_var.get(), "Connecting")
-        self.assertEqual(self.app.device_status_var.get(), "Connecting to Makcu...")
-
-    def test_startup_connects_once_without_scheduling_ui_reconnect(self):
-        self.app._cancel_after("_ui_pump_after_id")
-        scheduled = []
-        self.app.after = lambda delay, callback: scheduled.append(
-            (delay, callback)
-        ) or f"scheduled-{len(scheduled)}"
-
-        self.app.start_runtime()
-
-        self.assertEqual(self.service.started, 1)
-        self.assertEqual(self.service.reconnects, 0)
-        self.assertEqual(scheduled, [])
-
-    def test_disconnect_does_not_schedule_ui_reconnect(self):
-        self.app.start_runtime()
-        self.app._cancel_after("_ui_pump_after_id")
-        scheduled = []
-        self.app.after = lambda delay, callback: scheduled.append(
-            (delay, callback)
-        ) or f"scheduled-{len(scheduled)}"
-
-        self.app.handle_service_event(ServiceEvent("disconnected", "Not found"))
-
-        for _delay, callback in tuple(scheduled):
-            callback()
-
-        self.assertEqual(scheduled, [])
-        self.assertEqual(self.service.reconnects, 0)
-
-    def test_disconnect_keeps_selected_page_and_runtime_layout_mounted(self):
-        self.app.start_runtime()
-        self.app.handle_service_event(ServiceEvent("connected", "Makcu on COM3"))
-        self.app.select_page(2)
-        self.app.update_idletasks()
-        expected_geometry = self.app.geometry()
-
-        self.app.handle_service_event(ServiceEvent("disconnected", "Device lost"))
-        self.app.update_idletasks()
-
-        self.assertEqual(self.app.shell.winfo_manager(), "pack")
-        self.assertEqual(self.app.page_host.grid_slaves(), [self.app.settings_page])
-        self.assertEqual(self.app.stop_button.winfo_manager(), "grid")
-        self.assertEqual(self.app.geometry(), expected_geometry)
-        self.assertEqual(self.app.runtime_state_var.get(), "DISABLED")
-
-    def test_disconnect_keeps_focused_configuration_input_accessible(self):
-        self.app.deiconify()
-        self.app.start_runtime()
-        self.app.handle_service_event(ServiceEvent("connected", "Makcu on COM3"))
-        self.app.select_page(2)
-        self.app.update()
-        self.app.sound_volume_entry.focus_force()
-        self.app.update()
-
-        self.app.handle_service_event(ServiceEvent("disconnected", "Device lost"))
-        self.app.update_idletasks()
-
-        self.assertIs(self.app.focus_get(), self.app.sound_volume_entry)
-        self.assertEqual(self.app.sound_volume_entry.winfo_viewable(), 1)
-
-    def test_app_creates_default_nonblocking_sound_player(self):
-        app = JitterApp(
-            config_store=StubStore(),
-            service_factory=StubService,
-            hotkey_factory=StubHotkey,
-            auto_start=False,
-        )
-        try:
-            self.assertIsInstance(app.sound_player, ToggleSoundPlayer)
-        finally:
-            app.close_app()
-
-    def test_fresh_balanced_preset_still_starts_disabled(self):
-        self.assertEqual(self.app.preset_var.get(), "Balanced")
-        self.assertFalse(self.app.enabled)
-        self.assertEqual(self.app.runtime_state_var.get(), "DISABLED")
-
-    def test_runtime_state_uses_exact_uppercase_vocabulary(self):
-        """Fails if a runtime transition emits stale or mixed-case wording."""
-        observed = [self.app.runtime_state_var.get()]
-        self.service.connected = True
-        self.app.set_enabled(True)
-        observed.append(self.app.runtime_state_var.get())
-        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
-        observed.append(self.app.runtime_state_var.get())
-        self.app.emergency_stop("Stopped by user")
-        observed.append(self.app.runtime_state_var.get())
-        self.app.start_test_run()
-        observed.append(self.app.runtime_state_var.get())
-
-        self.assertEqual(
-            observed,
-            ["DISABLED", "ARMED", "MOVING", "DISABLED", "TESTING"],
-        )
-
-    def test_start_runtime_starts_hotkey_and_connection_once(self):
-        self.app.start_runtime()
-        self.app.start_runtime()
-        self.assertEqual(self.app.hotkey_watcher.started, 1)
-        self.assertEqual(self.service.started, 1)
-
-    def test_enabled_trigger_starts_and_release_stops_motion(self):
-        self.service.connected = True
-        self.app.set_enabled(True)
-        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
-        self.assertGreaterEqual(self.service.started, 1)
-        self.app.handle_service_event(ServiceEvent("button", ("Left", False)))
-        self.assertGreaterEqual(self.service.stopped, 1)
-
-    def test_modifier_gate_requires_both_buttons(self):
-        self.service.connected = True
-        self.app.modifier_var.set("Right")
-        self.app.on_bindings_changed()
-        self.app.set_enabled(True)
-        started = self.service.started
-        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
-        self.assertEqual(self.service.started, started)
-        self.app.handle_service_event(ServiceEvent("button", ("Right", True)))
-        self.assertGreater(self.service.started, started)
-
-    def test_stop_disables_and_clears_trigger_state(self):
-        self.service.connected = True
-        self.app.set_enabled(True)
-        self.app.trigger_gate.update_button("Left", True)
-        self.app.emergency_stop("Stopped by user")
-        self.assertFalse(self.app.enabled)
-        self.assertFalse(self.app.trigger_gate.active)
-        self.assertEqual(self.app.runtime_state_var.get(), "DISABLED")
-        self.assertEqual(self.ai.stop_calls[-1], "Stopped by user")
-        self.assertEqual(self.service.cancel_reasons[-1], "Stopped by user")
-
-    def test_disconnect_performs_emergency_stop(self):
-        self.service.connected = True
-        self.app.set_enabled(True)
-        self.app.handle_service_event(ServiceEvent("disconnected", "Device lost"))
-        self.assertFalse(self.app.enabled)
-        self.assertEqual(self.app.connection_state_var.get(), "Disconnected")
-        self.assertEqual(self.ai.stop_calls[-1], "Device disconnected")
-
-    def test_test_run_bypasses_trigger_but_requires_connection(self):
-        self.service.connected = False
-        self.app.start_test_run()
-        stopped_count = self.service.stopped
-        self.service.connected = True
-        self.app.start_test_run()
-        self.assertEqual(self.app.runtime_state_var.get(), "TESTING")
-        self.assertGreaterEqual(self.service.started, 1)
-        self.assertEqual(self.service.stopped, stopped_count)
-
-    def test_test_run_ignores_queued_normal_stop_before_duration_completion(self):
-        self.service.connected = True
-        self.app.set_enabled(True)
-        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        self.assertFalse(self.app.ai_selected)
+        self.assertTrue(self.app.master_armed)
         self.assertTrue(self.app._normal_motion_started)
-        normal_source = self.service.active_motion_generation
+        self.assertEqual(self.app.runtime_state_var.get(), "MOVING")
+        self.assertEqual(self.service.active_motion_generation, generation)
+        self.assertEqual(len(self.service.composite_motion_calls), 1)
+        self.assertNotIn("sources_changed", self.service.cancel_reasons)
+
+    def test_test_run_waits_for_worker_already_retiring_after_gate_release(self):
+        self.prepare_armed_sources(
+            MotionSources(True, False), gate_active=True
+        )
+        retiring = self.service.active_motion_generation
+        self.app.handle_service_event(
+            ServiceEvent("button", ("Left", False))
+        )
+
         self.app.start_test_run()
-        self.assertEqual(self.app.runtime_state_var.get(), "TESTING")
-        self.app.handle_service_event(ServiceEvent(
-            "motion_stopped",
-            "test_run",
-            normal_source,
+
+        self.assertEqual(len(self.service.composite_motion_calls), 1)
+        self.assertTrue(self.app._test_waiting_for_motion_stop)
+        self.service.emit(ServiceEvent(
+            "motion_stopped", "trigger_released", retiring
         ))
-        self.assertEqual(self.app.runtime_state_var.get(), "TESTING")
-        test_source = self.service.active_motion_generation
-        self.app.handle_service_event(ServiceEvent(
-            "motion_stopped",
-            "duration_complete",
-            test_source,
+        self.drain_ui_queue()
+        self.assertEqual(len(self.service.composite_motion_calls), 2)
+        self.assertEqual(
+            self.service.composite_motion_calls[-1].duration_s, 3.0
+        )
+
+    def test_binding_change_cancels_pending_test_handoff(self):
+        self.prepare_armed_sources(
+            MotionSources(True, False), gate_active=True
+        )
+        retiring = self.service.active_motion_generation
+        self.app.handle_service_event(
+            ServiceEvent("button", ("Left", False))
+        )
+        self.app.start_test_run()
+        self.assertIsNotNone(self.app._deferred_motion_action)
+
+        self.app.trigger_var.set("Mouse4")
+        self.app.on_bindings_changed()
+
+        self.assertIsNone(self.app._motion_mode)
+        self.assertIsNone(self.app._deferred_motion_action)
+        self.assertTrue(self.app.test_button._enabled)
+        self.service.emit(ServiceEvent(
+            "motion_stopped", "trigger_released", retiring
         ))
+        self.drain_ui_queue()
+        self.assertEqual(len(self.service.composite_motion_calls), 1)
+
+    def test_ai_only_start_failure_disarms_and_deselects_ai(self):
+        self.service.connected = True
+        self.app.ai_selected = True
+        self.ai.start_result = False
+
+        with self.assertLogs(level="ERROR"):
+            self.app.set_master(True)
+
+        self.assertFalse(self.app.ai_selected)
+        self.assertFalse(self.app.master_armed)
+        self.assertFalse(self.app.overlay_visible)
+        self.assertEqual(self.app.runtime_state_var.get(), "DISABLED")
+
+    def test_combined_start_failure_falls_back_to_armed_jitter(self):
+        self.service.connected = True
+        self.app.jitter_selected = True
+        self.app.ai_selected = True
+        self.ai.start_exception = RuntimeError("load failed")
+
+        with self.assertLogs(level="ERROR"):
+            self.app.set_master(True)
+
+        self.assertTrue(self.app.jitter_selected)
+        self.assertFalse(self.app.ai_selected)
+        self.assertTrue(self.app.master_armed)
         self.assertEqual(self.app.runtime_state_var.get(), "ARMED")
 
-    def test_toggle_is_blocked_while_test_run_is_active(self):
-        self.service.connected = True
-        self.app.start_test_run()
-        self.assertFalse(self.app.enabled)
-        self.app.toggle_enabled()
-        self.assertFalse(self.app.enabled)
-        self.assertEqual(self.app.runtime_state_var.get(), "TESTING")
-
-    def test_captured_hotkey_updates_watcher_and_persisted_name(self):
-        self.app.apply_captured_hotkey(0x77, "F8")
-        self.assertEqual(self.app.hotkey_watcher.vk, 0x77)
-        self.assertEqual(self.app.hotkey_name_var.get(), "F8")
-
-    def test_save_config_writes_current_independent_bindings(self):
-        self.app.trigger_var.set("Mouse4")
-        self.app.modifier_var.set("None")
-        self.app.save_config()
-        self.assertEqual(self.store.saved[-1].trigger, "Mouse4")
-        self.assertEqual(self.store.saved[-1].modifier, "None")
-
-    def test_close_stops_hotkey_motion_and_service(self):
-        self.app.start_runtime()
-        self.app.close_app()
-        self.assertEqual(self.app.hotkey_watcher.stopped, 1)
-        self.assertGreaterEqual(self.service.stopped, 1)
-        self.assertEqual(self.service.cancel_reasons[-1], "Stopped on close")
-        self.assertEqual(self.service.closed, 1)
-        self.assertGreaterEqual(len(self.ai.stop_calls), 1)
-        self.assertEqual(self.ai.closed, 1)
-
-    def test_close_cancels_queue_polling_callback(self):
-        queue_poll_id = self.app._ui_pump_after_id
-        self.assertIsNotNone(queue_poll_id)
-        cancelled = []
-        original_after_cancel = self.app.after_cancel
-
-        def recording_after_cancel(callback_id):
-            cancelled.append(callback_id)
-            return original_after_cancel(callback_id)
-
-        self.app.after_cancel = recording_after_cancel
-        self.app.close_app()
-        self.assertIn(queue_poll_id, cancelled)
-        self.assertIsNone(self.app._ui_pump_after_id)
-
-    def test_queue_drain_yields_after_a_bounded_batch(self):
-        self.app._cancel_after("_ui_pump_after_id")
-        handled = []
-        scheduled = []
-        self.app.handle_service_event = handled.append
-
-        def recording_after(delay, callback):
-            scheduled.append((delay, callback))
-            return f"scheduled-{len(scheduled)}"
-
-        self.app.after = recording_after
-        for index in range(200):
-            self.app._ui_queue.put(
-                ("service", None, ServiceEvent("item", index))
-            )
-
-        self.app._drain_ui_queue()
-
-        self.assertGreater(len(handled), 0)
-        self.assertLess(len(handled), 200)
-        self.assertEqual(scheduled[-1][0], 0)
-
-    def test_queue_drain_recovers_from_handler_failure_and_keeps_polling(self):
-        self.app._cancel_after("_ui_pump_after_id")
-        hotkeys = []
-        scheduled = []
-
-        def failing_handler(_event):
-            raise RuntimeError("bad service event")
-
-        def recording_after(delay, callback):
-            scheduled.append((delay, callback))
-            return f"scheduled-{len(scheduled)}"
-
-        self.app.handle_service_event = failing_handler
-        self.app.toggle_enabled = lambda: hotkeys.append("handled")
-        self.app.after = recording_after
-        self.app._ui_queue.put(("service", None, ServiceEvent("bad")))
-        self.app._ui_queue.put(
-            ("hotkey", self.app._hotkey_event_epoch, None)
+    def test_gate_release_cancels_composite_but_keeps_master_and_ai_demand(self):
+        self.prepare_armed_sources(
+            MotionSources(True, True), gate_active=True
         )
 
-        with self.assertLogs(level="ERROR") as captured_logs:
-            try:
-                self.app._drain_ui_queue()
-            except RuntimeError as exc:
-                self.fail(f"queue handler failure escaped the UI pump: {exc}")
-            if not hotkeys:
-                scheduled[-1][1]()
+        self.app.handle_service_event(
+            ServiceEvent("button", ("Left", False))
+        )
 
-        self.assertEqual(hotkeys, ["handled"])
-        self.assertTrue(scheduled)
-        self.assertIn("UI queue handler failed", captured_logs.output[0])
+        self.assertEqual(self.service.cancel_reasons[-1], "trigger_released")
+        self.assertTrue(self.app.master_armed)
+        self.assertTrue(self.app._ai_runtime_active)
+        self.assertEqual(self.app.runtime_state_var.get(), "ARMED")
 
-    def test_service_events_are_marshaled_to_tk_thread(self):
-        self.app.queue_service_event(ServiceEvent("connected", "Fake Makcu"))
-        self.assertEqual(self.app.connection_state_var.get(), "Disconnected")
-        self.app.update()
-        self.assertEqual(self.app.connection_state_var.get(), "Connected")
+    def test_modifier_gate_requires_both_buttons_for_composite_worker(self):
+        self.app.modifier_var.set("Right")
+        self.app.on_bindings_changed()
+        self.prepare_armed_sources(MotionSources(True, True))
 
-    def test_global_hotkey_toggles_on_tk_thread(self):
-        self.service.connected = True
-        self.app._hotkey_pressed()
-        self.assertFalse(self.app.enabled)
-        self.app.update()
-        self.assertTrue(self.app.enabled)
-
-    def test_global_hotkey_disable_stops_ai_immediately(self):
-        app = self.make_connected_ai_app()
-        app.set_enabled(True)
-
-        app._hotkey_pressed()
-        app.update()
-
-        self.assertFalse(app.enabled)
-        self.assertEqual(self.ai.stop_calls[-1], "Disabled by user")
-
-    def test_paused_inflight_hotkey_before_stop_cannot_reenable_after_stop(self):
-        self.service.connected = True
-        self.app.set_enabled(True)
-        self.app._cancel_after("_ui_pump_after_id")
-        captured = threading.Event()
-        resume = threading.Event()
-        worker_ident = {"value": None}
-
-        class PauseAfterFirstWorkerCapture:
-            def __init__(self):
-                self._lock = threading.Lock()
-                self._paused = False
-
-            def __enter__(self):
-                self._lock.acquire()
-                return self
-
-            def __exit__(self, *_args):
-                self._lock.release()
-                if (
-                    threading.get_ident() == worker_ident["value"]
-                    and not self._paused
-                ):
-                    self._paused = True
-                    captured.set()
-                    resume.wait(2.0)
-                return False
-
-        self.app._hotkey_epoch_lock = PauseAfterFirstWorkerCapture()
-
-        def press_hotkey():
-            worker_ident["value"] = threading.get_ident()
-            self.app._hotkey_pressed()
-
-        worker = threading.Thread(target=press_hotkey)
-        worker.start()
-        try:
-            self.assertTrue(captured.wait(2.0))
-            self.app.emergency_stop("Stopped by user")
-        finally:
-            resume.set()
-            worker.join(2.0)
-
-        self.assertFalse(worker.is_alive())
-        self.app._drain_ui_queue()
-        self.assertFalse(self.app.enabled)
-        self.assertEqual(self.app.runtime_state_var.get(), "DISABLED")
-
-    def test_global_hotkey_plays_on_and_off_cues_after_state_changes(self):
-        self.service.connected = True
-        self.app._cancel_after("_ui_pump_after_id")
-        self.app._hotkey_pressed()
-        self.app._drain_ui_queue()
-        self.app._cancel_after("_ui_pump_after_id")
-        self.app._hotkey_pressed()
-        self.app._drain_ui_queue()
-        self.assertEqual(self.app.sound_player.played, [True, False])
-
-    def test_ui_enable_button_does_not_play_hotkey_cue(self):
-        self.service.connected = True
-        self.app.toggle_enabled()
-        self.app.toggle_enabled()
-        self.assertEqual(self.app.sound_player.played, [])
-
-    def test_sound_controls_apply_immediately_and_save(self):
-        self.app.sound_enabled_var.set(False)
-        self.app.sound_volume_var.set("25")
-        self.app.apply_sound_settings()
-        self.assertEqual(self.app.sound_player.configured[-1], (False, 25))
-        self.app._cancel_after("_save_after_id")
-        self.app.save_config()
-        self.assertFalse(self.store.saved[-1].sound_enabled)
-        self.assertEqual(self.store.saved[-1].sound_volume, 25)
-
-    def test_sound_preview_buttons_bypass_mute_at_selected_volume(self):
-        self.app.sound_enabled_var.set(False)
-        self.app.sound_volume_var.set("40")
-        self.app.apply_sound_settings()
-        self.app.preview_sound(True)
-        self.app.preview_sound(False)
-        self.assertEqual(self.app.sound_player.played[-2:], [True, False])
-        self.assertEqual(self.app.sound_player.forced[-2:], [True, True])
-
-    def test_invalid_sound_volume_is_repaired_before_save(self):
-        self.app.sound_volume_var.set("loud")
-        self.app.save_config()
-        self.assertEqual(self.app.sound_volume_var.get(), "70")
-        self.assertEqual(self.store.saved[-1].sound_volume, 70)
-
-    def test_explicit_reconnect_action_delegates_to_service_exactly_once(self):
-        self.app.start_runtime()
-        self.app.reconnect_button.command()
-        self.assertEqual(self.service.reconnects, 1)
-
-    def test_explicit_reconnect_action_starts_runtime_with_one_reconnect(self):
-        self.app.reconnect_button.command()
-
-        self.assertEqual(self.app.hotkey_watcher.started, 1)
-        self.assertEqual(self.service.started, 0)
-        self.assertEqual(self.service.reconnects, 1)
-        self.assertNotIn("Reconnect requested", self.service.stop_reasons)
-
-    def test_reconnect_does_not_call_the_synchronous_service_stop_barrier(self):
-        stop_barrier_called = threading.Event()
-        self.service.stop_hook = lambda _reason: stop_barrier_called.set()
-
-        self.app.reconnect()
-
-        self.assertFalse(stop_barrier_called.is_set())
-        self.assertEqual(self.service.reconnects, 1)
-        self.assertEqual(self.app.runtime_state_var.get(), "DISABLED")
-
-    def test_reconnect_stops_normal_jitter_and_ai_motion_before_delegating(self):
-        for mode in ("jitter", "ai_aim"):
-            with self.subTest(mode=mode):
-                self.app.close_app()
-                app = self.make_app(config=AppConfig(mode=mode))
-                app.start_runtime()
-                self.service.connected = True
-                app.set_enabled(True)
-                if mode == "ai_aim":
-                    app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
-                    app.queue_ai_event(AiEvent("ready", "CPUExecutionProvider"))
-                app.handle_service_event(ServiceEvent("button", ("Left", True)))
-                source = self.service.active_motion_generation
-                calls = self.motion_calls_for_mode(mode)
-                calls_before = len(calls)
-                app.queue_service_event(ServiceEvent("button", ("Left", True)))
-
-                observed = []
-                self.service.reconnect_hook = lambda: observed.append((
-                    app.enabled,
-                    app._normal_motion_started,
-                    app._ai_runtime_active,
-                    app._expected_motion_generation,
-                    app._motion_mode,
-                    app.test_button._enabled,
-                ))
-                app.reconnect()
-                self.service.reconnect_hook = None
-
-                self.assertEqual(
-                    observed,
-                    [(False, False, False, None, None, True)],
-                )
-                self.assertEqual(app.runtime_state_var.get(), "DISABLED")
-                self.assertNotIn("Reconnect requested", self.service.stop_reasons)
-                if mode == "ai_aim":
-                    self.assertIn("Reconnect requested", self.ai.stop_calls)
-
-                app.queue_service_event(ServiceEvent(
-                    "motion_error",
-                    "PrivateOldMotionFailure: token=secret",
-                    source,
-                ))
-                app._cancel_after("_ui_pump_after_id")
-                app._drain_ui_queue()
-                self.assertFalse(app.enabled)
-                self.assertFalse(app._ai_ready)
-                self.assertEqual(len(calls), calls_before)
-                self.assertEqual(app.runtime_state_var.get(), "DISABLED")
-
-    def test_reconnect_clears_deferred_normal_restart_without_a_terminal(self):
-        for mode in ("jitter", "ai_aim"):
-            with self.subTest(mode=mode):
-                self.app.close_app()
-                app = self.make_app(config=AppConfig(mode=mode))
-                app.start_runtime()
-                self.service.connected = True
-                app.set_enabled(True)
-                if mode == "ai_aim":
-                    app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
-                app.handle_service_event(ServiceEvent("button", ("Left", True)))
-                retiring_source = self.service.active_motion_generation
-                app.handle_service_event(ServiceEvent("button", ("Left", False)))
-                app.handle_service_event(ServiceEvent("button", ("Left", True)))
-                calls = self.motion_calls_for_mode(mode)
-                calls_before = len(calls)
-                self.assertEqual(app._deferred_motion_action.kind, "normal")
-
-                app.reconnect()
-
-                self.assertIsNone(app._deferred_motion_action)
-                self.assertIsNone(app._motion_mode)
-                self.assertTrue(app.test_button._enabled)
-                app.queue_service_event(ServiceEvent(
-                    "motion_stopped",
-                    "trigger_released",
-                    retiring_source,
-                ))
-                app._cancel_after("_ui_pump_after_id")
-                app._drain_ui_queue()
-                self.assertEqual(len(calls), calls_before)
-                self.assertFalse(app.enabled)
-                self.assertEqual(app.runtime_state_var.get(), "DISABLED")
-
-    def test_reconnect_cancels_active_jitter_and_ai_tests_without_a_terminal(self):
-        for mode in ("jitter", "ai_aim"):
-            with self.subTest(mode=mode):
-                self.app.close_app()
-                app = self.make_app(config=AppConfig(mode=mode))
-                app.start_runtime()
-                self.service.connected = True
-                app.set_enabled(True)
-                if mode == "ai_aim":
-                    app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
-                app.start_test_run()
-                test_source = self.service.active_motion_generation
-                self.assertEqual(
-                    app._motion_mode,
-                    "test_ai" if mode == "ai_aim" else "test",
-                )
-                self.assertFalse(app.test_button._enabled)
-
-                app.reconnect()
-
-                self.assertFalse(app.enabled)
-                self.assertIsNone(app._motion_mode)
-                self.assertFalse(app._test_start_pending)
-                self.assertTrue(app.test_button._enabled)
-                self.assertEqual(app.runtime_state_var.get(), "DISABLED")
-                app.queue_service_event(ServiceEvent(
-                    "motion_stopped",
-                    "duration_complete",
-                    test_source,
-                ))
-                app._cancel_after("_ui_pump_after_id")
-                app._drain_ui_queue()
-                self.assertFalse(app.enabled)
-                self.assertIsNone(app._motion_mode)
-                self.assertTrue(app.test_button._enabled)
-
-    def test_reconnect_cancels_loading_ai_test_and_discards_late_ready(self):
-        app = self.make_connected_ai_app()
-        app.start_runtime()
-        app.start_test_run()
-        self.assertEqual(app._motion_mode, "test_ai_loading")
-        self.assertFalse(app.test_button._enabled)
-        app.queue_ai_event(AiEvent("ready", "DmlExecutionProvider"))
-
-        app.reconnect()
-        app._cancel_after("_ui_pump_after_id")
-        app._drain_ui_queue()
-
-        self.assertFalse(app.enabled)
-        self.assertFalse(app._ai_runtime_active)
-        self.assertFalse(app._ai_ready)
-        self.assertIsNone(app._ai_test_pending_generation)
-        self.assertIsNone(app._motion_mode)
-        self.assertTrue(app.test_button._enabled)
-        self.assertEqual(self.service.ai_motion_calls, [])
-        self.assertEqual(app.runtime_state_var.get(), "DISABLED")
-
-    def test_reconnect_disables_armed_state_and_discards_queued_hotkey(self):
-        self.app.start_runtime()
-        self.service.connected = True
-        self.app.set_enabled(True)
-        self.app._cancel_after("_ui_pump_after_id")
-        self.app._hotkey_pressed()
-
-        self.app.reconnect()
-        self.app._drain_ui_queue()
-
-        self.assertFalse(self.app.enabled)
-        self.assertEqual(self.app.runtime_state_var.get(), "DISABLED")
-        self.assertEqual(self.app.enable_button.cget("text"), "Enable Jitter")
-        self.assertEqual(self.app.footer_var.get(), "Connecting to Makcu...")
-
-    def test_makcu_motion_error_logs_detail_but_footer_is_fixed_and_actionable(self):
-        self.service.connected = True
-        self.app.set_enabled(True)
         self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
-        source = self.service.active_motion_generation
-        private_detail = (
-            "SerialException: COM3 access denied; api_key=TOP-SECRET; "
-            "trace=C:\\private\\driver.py:417"
+        self.assertEqual(self.service.composite_motion_calls, [])
+        self.app.handle_service_event(ServiceEvent("button", ("Right", True)))
+
+        self.assertEqual(len(self.service.composite_motion_calls), 1)
+        self.assertEqual(
+            self.service.composite_motion_calls[-1].sources,
+            MotionSources(True, True),
         )
 
-        with self.assertLogs(level="ERROR") as captured:
+    def test_binding_change_waits_for_exact_retiring_source_before_restart(self):
+        self.prepare_armed_sources(
+            MotionSources(True, False), gate_active=True
+        )
+        retiring = self.service.active_motion_generation
+
+        self.app.trigger_var.set("Mouse4")
+        self.app.on_bindings_changed()
+        self.app.handle_service_event(
+            ServiceEvent("button", ("Mouse4", True))
+        )
+        self.assertEqual(len(self.service.composite_motion_calls), 1)
+        self.app.handle_service_event(ServiceEvent(
+            "motion_stopped", "bindings_changed", retiring + 9
+        ))
+        self.assertEqual(len(self.service.composite_motion_calls), 1)
+
+        self.service.motion_active = False
+        self.service.active_motion_generation = None
+        self.app.handle_service_event(ServiceEvent(
+            "motion_stopped", "bindings_changed", retiring
+        ))
+        self.assertEqual(len(self.service.composite_motion_calls), 2)
+
+    def test_old_terminal_cannot_clear_fresh_composite_generation(self):
+        self.prepare_armed_sources(
+            MotionSources(True, False), gate_active=True
+        )
+        old_generation = self.service.active_motion_generation
+        self.app.handle_service_event(
+            ServiceEvent("button", ("Left", False))
+        )
+        self.service.motion_active = False
+        self.service.active_motion_generation = None
+        self.app.handle_service_event(ServiceEvent(
+            "motion_stopped", "trigger_released", old_generation
+        ))
+        self.app.handle_service_event(
+            ServiceEvent("button", ("Left", True))
+        )
+        fresh_generation = self.service.active_motion_generation
+
+        self.app.handle_service_event(ServiceEvent(
+            "motion_stopped", "trigger_released", old_generation
+        ))
+
+        self.assertNotEqual(fresh_generation, old_generation)
+        self.assertTrue(self.app._normal_motion_started)
+        self.assertEqual(
+            self.app._expected_motion_generation, fresh_generation
+        )
+
+    def test_test_run_disables_sources_but_leaves_overlay_and_stop_available(self):
+        self.service.connected = True
+        self.app.toggle_jitter_source()
+        selected = self.app._selected_sources()
+
+        self.app.start_test_run()
+
+        self.assertEqual(str(self.app.jitter_source_button.cget("state")), "disabled")
+        self.assertEqual(str(self.app.ai_source_button.cget("state")), "disabled")
+        self.assertFalse(self.app.test_button._enabled)
+        self.assertEqual(str(self.app.overlay_button.cget("state")), "normal")
+        self.assertEqual(str(self.app.stop_button.cget("state")), "normal")
+        self.app.toggle_jitter_source()
+        self.assertEqual(self.app._selected_sources(), selected)
+        self.app.toggle_overlay()
+        self.assertTrue(self.app.overlay_visible)
+
+    def test_stop_cancels_loading_ai_test_and_late_ready_cannot_move(self):
+        self.service.connected = True
+        self.app.toggle_ai_source()
+        self.app.start_test_run()
+        self.assertEqual(self.app._motion_mode, "test_ai_loading")
+
+        self.app.emergency_stop("Stopped by user")
+        self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+
+        self.assertIsNone(self.app._motion_mode)
+        self.assertFalse(self.app.master_armed)
+        self.assertEqual(self.service.composite_motion_calls, [])
+
+    def test_ai_error_during_loading_test_aborts_without_master_restore(self):
+        self.service.connected = True
+        self.app.toggle_ai_source()
+        self.app.set_master(True)
+        self.app.start_test_run()
+
+        with self.assertLogs(level="ERROR"):
+            self.app.handle_ai_event(AiEvent("error", "capture failed"))
+
+        self.assertIsNone(self.app._motion_mode)
+        self.assertFalse(self.app.master_armed)
+        self.assertFalse(self.app.ai_selected)
+        self.assertTrue(self.app.test_button._enabled)
+
+    def test_current_makcu_motion_error_stops_runtime_but_preserves_sources(self):
+        self.prepare_armed_sources(
+            MotionSources(True, True), gate_active=True
+        )
+        self.app.toggle_overlay()
+        selected = self.app._selected_sources()
+        generation = self.service.active_motion_generation
+
+        with self.assertLogs(level="ERROR"):
             self.app.handle_service_event(ServiceEvent(
-                "motion_error",
-                private_detail,
-                source,
+                "motion_error", "controller failed", generation
             ))
 
+        self.assertFalse(self.app.master_armed)
+        self.assertFalse(self.app.overlay_visible)
+        self.assertEqual(self.app._selected_sources(), selected)
         self.assertEqual(
             self.app.footer_var.get(),
             "Makcu movement failed; reconnect and try again",
         )
-        self.assertNotIn("TOP-SECRET", self.app.footer_var.get())
-        self.assertIn(private_detail, "\n".join(captured.output))
-        self.assertFalse(self.app.enabled)
-        self.assertEqual(self.app.runtime_state_var.get(), "DISABLED")
 
-    def test_timed_test_run_restores_armed_state(self):
+    def test_worker_events_enter_tk_only_through_the_queue(self):
         self.service.connected = True
-        self.app.set_enabled(True)
-        self.app.start_test_run()
-        self.assertEqual(self.app.runtime_state_var.get(), "TESTING")
-        self.app.handle_service_event(ServiceEvent(
-            "motion_stopped",
-            "duration_complete",
-            self.service.active_motion_generation,
-        ))
-        self.assertEqual(self.app.runtime_state_var.get(), "ARMED")
-        self.assertTrue(self.app.enabled)
+        self.app.toggle_jitter_source()
+        self.app.set_master(True)
+        self.app._cancel_after("_ui_pump_after_id")
 
-    def test_test_run_button_is_disabled_only_while_test_is_active(self):
-        self.assertTrue(self.app.test_button._enabled)
-        self.app.start_test_run()
-        self.assertTrue(self.app.test_button._enabled)
-
-        self.service.connected = True
-        self.app.start_test_run()
-        self.assertFalse(self.app.test_button._enabled)
-        self.app.handle_service_event(
-            ServiceEvent(
-                "motion_stopped",
-                "duration_complete",
-                self.service.active_motion_generation,
+        thread = threading.Thread(
+            target=lambda: self.service.emit(
+                ServiceEvent("button", ("Left", True))
             )
         )
-        self.assertTrue(self.app.test_button._enabled)
+        thread.start()
+        thread.join()
+        self.assertEqual(self.service.composite_motion_calls, [])
 
-        self.app.start_test_run()
-        self.assertFalse(self.app.test_button._enabled)
-        self.app.emergency_stop("Stopped by user")
-        self.assertTrue(self.app.test_button._enabled)
+        self.drain_ui_queue()
+        self.assertEqual(len(self.service.composite_motion_calls), 1)
 
-    def test_invalid_motion_edit_keeps_last_snapshot(self):
-        previous = self.app.get_motion_settings()
-        previous_readouts = (
-            self.app.motion_snapshot_size_var.get(),
-            self.app.motion_snapshot_rate_var.get(),
-            self.app.motion_snapshot_ramp_var.get(),
-        )
-        self.app.pulse_size_px_var.set("not-a-number")
-        self.app.update()
-        self.assertEqual(self.app.get_motion_settings(), previous)
-        self.assertEqual(
-            (
-                self.app.motion_snapshot_size_var.get(),
-                self.app.motion_snapshot_rate_var.get(),
-                self.app.motion_snapshot_ramp_var.get(),
-            ),
-            previous_readouts,
-        )
-        self.assertIn("pulse_size_px", self.app._invalid_motion_keys)
-        self.app.pulse_size_px_var.set("4")
-        self.app.update()
-        self.assertEqual(self.app.get_motion_settings().pulse_size_px, 4.0)
+    def test_unsolicited_ai_ready_is_ignored_without_runtime_demand(self):
+        self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
 
-    def test_future_schema_save_protection_is_honored(self):
-        self.app._save_allowed = False
-        self.app.save_config()
-        self.assertEqual(self.store.saved, [])
+        self.assertFalse(self.app._ai_ready)
+        self.assertEqual(self.app.ai_status_var.get(), "Stopped")
 
-    def test_hotkey_capture_accepts_each_mouse_button_on_a_new_down_edge(self):
-        down = set()
+    def test_start_runtime_is_idempotent(self):
+        self.app.start_runtime()
+        self.app.start_runtime()
 
-        def key_state(vk):
-            return 0x8000 if vk in down else 0
+        self.assertEqual(self.app.hotkey_watcher.started, 1)
+        self.assertEqual(self.service.started, 1)
 
-        self.app._get_async_key_state = key_state
-        mouse_buttons = {
-            0x01: "Mouse Left",
-            0x02: "Mouse Right",
-            0x04: "Mouse Middle",
-            0x05: "Mouse4",
-            0x06: "Mouse5",
-        }
-        for vk, expected_name in mouse_buttons.items():
-            with self.subTest(vk=vk):
-                down.clear()
-                self.app.capture_hotkey()
-                self.assertTrue(self.app._capturing_hotkey)
-                down.add(vk)
-                self.app._poll_hotkey_capture()
-                self.assertFalse(self.app._capturing_hotkey)
-                self.assertEqual(self.app.hotkey_watcher.vk, vk)
-                self.assertEqual(self.app.hotkey_name_var.get(), expected_name)
-
-    def test_stale_callbacks_do_not_raise_when_tk_scheduling_is_tearing_down(self):
-        def raising_after(*_args):
-            raise tk.TclError("application has been destroyed")
-
-        self.app.after = raising_after
-        self.app.queue_service_event(ServiceEvent("connected"))
+    def test_reconnect_disarms_and_discards_queued_hotkey_but_keeps_sources(self):
+        self.prepare_armed_sources(MotionSources(True, False))
+        self.app._cancel_after("_ui_pump_after_id")
         self.app._hotkey_pressed()
+        selected = self.app._selected_sources()
 
-    def test_worker_callbacks_never_call_tk_scheduling_directly(self):
-        release = threading.Event()
-        after_called = threading.Event()
+        self.app.reconnect()
+        self.drain_ui_queue()
 
-        def blocking_after(*_args):
-            after_called.set()
-            release.wait(1.0)
+        self.assertFalse(self.app.master_armed)
+        self.assertEqual(self.app._selected_sources(), selected)
+        self.assertEqual(self.service.reconnects, 1)
 
-        self.app.after = blocking_after
-        workers = (
-            threading.Thread(
-                target=self.app.queue_service_event,
-                args=(ServiceEvent("connected"),),
-            ),
-            threading.Thread(
-                target=self.app.queue_ai_event,
-                args=(AiEvent("loading"),),
-            ),
-            threading.Thread(target=self.app._hotkey_pressed),
-        )
-        try:
-            for worker in workers:
-                worker.start()
-            for worker in workers:
-                worker.join(0.1)
-            self.assertFalse(after_called.is_set())
-            self.assertTrue(all(not worker.is_alive() for worker in workers))
-        finally:
-            release.set()
-            for worker in workers:
-                worker.join(1.0)
+    def test_close_stops_every_owned_service(self):
+        self.app.toggle_overlay()
 
-    def test_motion_snapshot_access_is_lock_protected(self):
-        class CountingLock:
-            def __init__(self):
-                self.enters = 0
+        self.app.close_app()
 
-            def __enter__(self):
-                self.enters += 1
-                return self
+        self.assertEqual(self.app.hotkey_watcher.stopped, 1)
+        self.assertEqual(self.service.closed, 1)
+        self.assertEqual(self.ai.closed, 1)
+        self.assertEqual(self.overlay.closed, 1)
+        self.assertEqual(self.sounds.closed, 1)
 
-            def __exit__(self, *_args):
-                return False
-
-        lock = CountingLock()
-        self.app._motion_lock = lock
-        self.app.get_motion_settings()
-        self.app.pulse_size_px_var.set("4")
-        self.app.update()
-        self.assertGreaterEqual(lock.enters, 2)
-
-    def test_preset_clears_stale_invalid_entry_style(self):
-        self.app.pulse_size_px_var.set("not-a-number")
-        self.app.update()
-        self.assertEqual(self.app.pulse_size_px_entry.cget("style"),
-                         "Liquid.Invalid.TEntry")
-        self.assertEqual(
-            self.app.footer_var.get(),
-            "Invalid value for pulse size px",
-        )
-        self.app.preset_var.set("Balanced")
-        self.app.apply_preset()
-        self.assertEqual(self.app.pulse_size_px_entry.cget("style"),
-                         "Liquid.Entry.TEntry")
-        self.assertEqual(self.app.footer_var.get(), "Ready")
-
-    def test_valid_motion_edit_clears_stale_invalid_footer(self):
-        self.app.pulse_size_px_var.set("not-a-number")
-        self.app.update()
-        self.assertEqual(
-            self.app.footer_var.get(),
-            "Invalid value for pulse size px",
-        )
-
-        self.app.pulse_size_px_var.set("4")
-        self.app.update()
-
-        self.assertEqual(self.app.pulse_size_px_entry.cget("style"),
-                         "Liquid.Entry.TEntry")
-        self.assertEqual(self.app.footer_var.get(), "Ready")
-
-
-if __name__ == "__main__":
-    unittest.main()
+    def test_runtime_status_and_ai_metrics_use_concise_vocabulary(self):
+        self.prepare_armed_sources(MotionSources(False, True))
+        self.assertEqual(self.app.runtime_state_var.get(), "ARMED")
+        self.app.handle_ai_event(AiEvent("fps", 37.25))
+        self.assertEqual(self.app.ai_fps_var.get(), "37.2 FPS")
+        self.assertEqual(self.app.ai_provider_var.get(), "DirectML")
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        self.assertEqual(self.app.runtime_state_var.get(), "MOVING")
+        self.app.emergency_stop("Stopped")
+        self.assertEqual(self.app.runtime_state_var.get(), "DISABLED")
