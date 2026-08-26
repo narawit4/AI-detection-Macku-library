@@ -10,6 +10,11 @@ import shutil
 import sys
 from typing import Any, Mapping
 
+from ai_targeting import (
+    AimSettings,
+    aim_settings_from_mapping,
+    aim_settings_to_mapping,
+)
 from motion import (
     MOTION_PRESETS,
     MotionSettings,
@@ -18,14 +23,17 @@ from motion import (
 )
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 VALID_BUTTONS = ("Left", "Right", "Middle", "Mouse4", "Mouse5")
+VALID_MODES = ("jitter", "ai_aim")
 VALID_THEMES = ("light", "dark")
 
 
 @dataclass(frozen=True)
 class AppConfig:
     motion: MotionSettings = field(default_factory=MotionSettings)
+    ai: AimSettings = field(default_factory=AimSettings)
+    mode: str = "jitter"
     trigger: str = "Left"
     modifier: str = "None"
     hotkey_vk: int = 0xBD
@@ -139,6 +147,17 @@ class ConfigStore:
         theme = document.get("theme", "light")
         if theme not in VALID_THEMES:
             theme = "light"
+        if schema in (1, 2):
+            mode = "jitter"
+            ai = AimSettings()
+        else:
+            mode = document.get("mode", "jitter")
+            if mode not in VALID_MODES:
+                mode = "jitter"
+            ai_raw = document.get("ai")
+            ai = aim_settings_from_mapping(
+                ai_raw if isinstance(ai_raw, Mapping) else None
+            )
         if schema == 1:
             motion = MotionSettings()
             selected_preset = "Balanced"
@@ -152,6 +171,8 @@ class ConfigStore:
                 selected_preset = "Custom"
         config = AppConfig(
             motion=motion,
+            ai=ai,
+            mode=mode,
             trigger=trigger,
             modifier=modifier,
             hotkey_vk=_safe_int(document.get("hotkey_vk", 0xBD), 0xBD, 1, 255),
@@ -168,6 +189,8 @@ class ConfigStore:
         document = {
             "schema_version": SCHEMA_VERSION,
             "motion": motion_settings_to_mapping(config.motion),
+            "ai": aim_settings_to_mapping(config.ai),
+            "mode": config.mode if config.mode in VALID_MODES else "jitter",
             "trigger": config.trigger if config.trigger in VALID_BUTTONS else "Left",
             "modifier": config.modifier if config.modifier == "None" or config.modifier in VALID_BUTTONS else "None",
             "hotkey_vk": _safe_int(config.hotkey_vk, 0xBD, 1, 255),

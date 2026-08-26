@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from ai_targeting import AimSettings
 from motion import MotionSettings
 from settings import AppConfig, ConfigStore, SCHEMA_VERSION
 
@@ -19,7 +20,7 @@ class ConfigStoreTests(unittest.TestCase):
         self.assertEqual(outcome.config.theme, "light")
         self.assertTrue(outcome.save_allowed)
 
-    def test_schema_two_round_trip_saves_only_paired_pulse_motion(self):
+    def test_schema_three_round_trip_saves_only_paired_pulse_motion(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.json"
             store = ConfigStore(path)
@@ -30,13 +31,92 @@ class ConfigStoreTests(unittest.TestCase):
             store.save(config)
             document = json.loads(path.read_text(encoding="utf-8"))
             restored = store.load().config
-        self.assertEqual(document["schema_version"], 2)
+        self.assertEqual(document["schema_version"], 3)
         self.assertEqual(document["motion"], {
             "pulse_size_px": "4", "pulse_rate_hz": "45", "ramp_mode": "Instant",
         })
         self.assertNotIn("enabled", document)
         self.assertNotIn("moving", document)
         self.assertEqual(restored, config)
+
+    def test_schema_two_migrates_to_jitter_and_safe_ai_defaults(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            path.write_text(json.dumps({
+                "schema_version": 2,
+                "motion": {
+                    "pulse_size_px": "4",
+                    "pulse_rate_hz": "80",
+                    "ramp_mode": "Instant",
+                },
+                "mode": "ai_aim",
+                "ai": {"confidence": "0.9"},
+            }), encoding="utf-8")
+            outcome = ConfigStore(path).load()
+        self.assertEqual(outcome.config.mode, "jitter")
+        self.assertEqual(outcome.config.ai, AimSettings())
+
+    def test_schema_three_round_trips_ai_settings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            config = AppConfig(
+                mode="ai_aim",
+                ai=AimSettings(0.5, 0.6, 0.7, 30),
+            )
+            store = ConfigStore(path)
+            store.save(config)
+            document = json.loads(path.read_text(encoding="utf-8"))
+            restored = store.load().config
+        self.assertEqual(document["mode"], "ai_aim")
+        self.assertEqual(document["ai"], {
+            "confidence": "0.5",
+            "aim_strength": "0.6",
+            "smoothing": "0.7",
+            "max_step": "30",
+        })
+        self.assertEqual(restored, config)
+
+    def test_schema_three_invalid_mode_uses_jitter_default(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            path.write_text(json.dumps({
+                "schema_version": 3,
+                "mode": "unknown",
+            }), encoding="utf-8")
+            config = ConfigStore(path).load().config
+        self.assertEqual(config.mode, "jitter")
+
+    def test_schema_three_malformed_ai_settings_use_safe_defaults(self):
+        cases = (
+            None,
+            ["not", "an", "object"],
+            {"confidence": "bad", "aim_strength": None,
+             "smoothing": "infinite", "max_step": "many"},
+        )
+        for raw_ai in cases:
+            with self.subTest(ai=raw_ai), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "config.json"
+                path.write_text(json.dumps({
+                    "schema_version": 3,
+                    "ai": raw_ai,
+                }), encoding="utf-8")
+                config = ConfigStore(path).load().config
+            self.assertEqual(config.ai, AimSettings())
+
+    def test_schema_three_ai_settings_are_validated_and_clamped(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            path.write_text(json.dumps({
+                "schema_version": 3,
+                "ai": {
+                    "confidence": -1,
+                    "aim_strength": 10,
+                    "smoothing": "0.25",
+                    "max_step": 999,
+                },
+            }), encoding="utf-8")
+            config = ConfigStore(path).load().config
+        self.assertEqual(config.ai, AimSettings(0.0, 2.0, 0.25, 127))
 
     def test_invalid_theme_uses_safe_light_default(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -194,6 +274,8 @@ class ConfigStoreTests(unittest.TestCase):
         self.assertEqual(outcome.config.hotkey_name, "A")
         self.assertEqual(outcome.config.selected_preset, "Balanced")
         self.assertEqual(outcome.config.theme, "dark")
+        self.assertEqual(outcome.config.mode, "jitter")
+        self.assertEqual(outcome.config.ai, AimSettings())
         self.assertEqual(document["schema_version"], 1)
 
 
