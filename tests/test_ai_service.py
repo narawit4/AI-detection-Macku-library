@@ -169,6 +169,34 @@ class SelectiveGateLock:
         self._lock.release()
 
 
+class WorkerReleaseGateLock:
+    """Pause a worker after a selected lock release for interleaving tests."""
+
+    def __init__(self, worker_name, release_number):
+        self._lock = threading.RLock()
+        self._guard = threading.Lock()
+        self._worker_name = worker_name
+        self._release_number = release_number
+        self._worker_releases = 0
+        self.gate_entered = threading.Event()
+        self.release_gate = threading.Event()
+
+    def __enter__(self):
+        self._lock.acquire()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self._lock.release()
+        should_gate = False
+        with self._guard:
+            if threading.current_thread().name == self._worker_name:
+                self._worker_releases += 1
+                should_gate = self._worker_releases == self._release_number
+        if should_gate:
+            self.gate_entered.set()
+            self.release_gate.wait(1.0)
+
+
 class AiServiceTests(unittest.TestCase):
     def test_reentrant_loading_stop_or_close_does_not_launch_worker(self):
         for action in ("stop", "close"):
@@ -384,6 +412,33 @@ class AiServiceTests(unittest.TestCase):
         frame = service.latest_detection_snapshot()
         self.assertEqual(target.sequence, frame.sequence)
         self.assertEqual(frame.detections, (head,))
+        self.assertEqual(frame.selected_index, 0)
+
+    def test_worker_never_exposes_target_before_its_detection_frame(self):
+        detector = BlockingDetector()
+        service = AiService(
+            lambda _event: None,
+            detector_factory=lambda _path: detector,
+            capture_factory=lambda: FakeCapture([object()]),
+        )
+        self.addCleanup(service.close)
+        generation = service.start(AimSettings)
+        self.assertTrue(detector.entered.wait(1.0))
+
+        gate_lock = WorkerReleaseGateLock(
+            f"AiInference-{generation}", release_number=2
+        )
+        service._lock = gate_lock
+        self.addCleanup(gate_lock.release_gate.set)
+        self.addCleanup(detector.release.set)
+        detector.release.set()
+
+        self.assertTrue(gate_lock.gate_entered.wait(1.0))
+        target = service.latest_snapshot()
+        frame = service.latest_detection_snapshot()
+        self.assertIsNotNone(target)
+        self.assertIsNotNone(frame)
+        self.assertEqual(target.sequence, frame.sequence)
         self.assertEqual(frame.selected_index, 0)
 
     def test_stop_invalidates_late_inference_result(self):
