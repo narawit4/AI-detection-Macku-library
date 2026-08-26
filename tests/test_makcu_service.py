@@ -496,6 +496,318 @@ class MakcuMovementTests(unittest.TestCase):
 
         self.assertTrue(callback_observed_reader.is_set())
 
+    def test_new_motion_waits_for_prior_terminal_callback(self):
+        terminal_entered = threading.Event()
+        release_terminal = threading.Event()
+        terminal_delivered = threading.Event()
+        starter_entered = threading.Event()
+        start_returned = threading.Event()
+        start_observed_terminal = threading.Event()
+        start_results = []
+        blocker = BlockingAimEngine()
+
+        def sink(event):
+            if event.kind != "motion_stopped" or terminal_entered.is_set():
+                return
+            terminal_entered.set()
+            release_terminal.wait(1.0)
+            terminal_delivered.set()
+
+        controller = FakeController()
+        service = MakcuService(
+            sink,
+            controller_factory=lambda **_kwargs: controller,
+            aim_engine_factory=lambda: blocker,
+        )
+        self.addCleanup(service.close)
+        service._connect_worker(service._begin_connection())
+        target = TargetSnapshot(1, time.perf_counter(), "head", 170, 160)
+        self.assertTrue(
+            service.start_ai_motion(lambda: None, AimSettings, duration_s=0)
+        )
+        self.assertTrue(terminal_entered.wait(1.0))
+
+        def start_next_motion():
+            starter_entered.set()
+            start_results.append(
+                service.start_ai_motion(lambda: target, AimSettings)
+            )
+            if terminal_delivered.is_set():
+                start_observed_terminal.set()
+            start_returned.set()
+
+        starter = threading.Thread(target=start_next_motion)
+        starter.start()
+        try:
+            self.assertTrue(starter_entered.wait(1.0))
+            self.assertFalse(start_returned.wait(0.05))
+            release_terminal.set()
+            self.assertTrue(start_returned.wait(1.0))
+            self.assertTrue(blocker.entered.wait(1.0))
+        finally:
+            release_terminal.set()
+            service.stop_motion("test_cleanup")
+            blocker.release.set()
+            starter.join(1.0)
+            service.join_motion(1.0)
+
+        self.assertEqual(start_results, [True])
+        self.assertTrue(start_observed_terminal.is_set())
+
+    def test_terminal_callback_can_start_next_motion_directly(self):
+        callback_finished = threading.Event()
+        reentrant_attempted = threading.Event()
+        start_results = []
+        blocker = BlockingAimEngine()
+        target = TargetSnapshot(1, time.perf_counter(), "head", 170, 160)
+        service = None
+
+        def sink(event):
+            if event.kind != "motion_stopped" or reentrant_attempted.is_set():
+                return
+            reentrant_attempted.set()
+            start_results.append(
+                service.start_ai_motion(lambda: target, AimSettings)
+            )
+            callback_finished.set()
+
+        controller = FakeController()
+        service = MakcuService(
+            sink,
+            controller_factory=lambda **_kwargs: controller,
+            aim_engine_factory=lambda: blocker,
+        )
+        self.addCleanup(service.close)
+        service._connect_worker(service._begin_connection())
+
+        self.assertTrue(
+            service.start_ai_motion(lambda: None, AimSettings, duration_s=0)
+        )
+        self.assertTrue(callback_finished.wait(1.0))
+        self.assertEqual(start_results, [True])
+        self.assertTrue(blocker.entered.wait(1.0))
+
+        service.stop_motion("test_cleanup")
+        blocker.release.set()
+        service.join_motion(1.0)
+
+    def test_close_suppresses_terminal_event_queued_behind_callback(self):
+        first_callback_entered = threading.Event()
+        second_terminal_reserved = threading.Event()
+        release_first_callback = threading.Event()
+        first_callback_finished = threading.Event()
+        events = []
+        service = None
+
+        def sink(event):
+            events.append(event)
+            if event.kind != "motion_stopped" or first_callback_entered.is_set():
+                return
+            first_callback_entered.set()
+            service.start_ai_motion(lambda: None, AimSettings, duration_s=0)
+            service.join_motion(1.0)
+            second_terminal_reserved.set()
+            release_first_callback.wait(1.0)
+            first_callback_finished.set()
+
+        controller = FakeController()
+        service = MakcuService(
+            sink,
+            controller_factory=lambda **_kwargs: controller,
+        )
+        self.addCleanup(service.close)
+        service._connect_worker(service._begin_connection())
+        events.clear()
+        self.assertTrue(
+            service.start_ai_motion(lambda: None, AimSettings, duration_s=0)
+        )
+        self.assertTrue(first_callback_entered.wait(1.0))
+        self.assertTrue(second_terminal_reserved.wait(1.0))
+
+        service.close()
+        release_first_callback.set()
+        self.assertTrue(first_callback_finished.wait(1.0))
+        service.join_motion(1.0)
+
+        self.assertEqual(
+            events, [ServiceEvent("motion_stopped", "duration_complete")]
+        )
+
+    def test_close_suppresses_queued_reconnect_events(self):
+        terminal_entered = threading.Event()
+        release_terminal = threading.Event()
+        terminal_finished = threading.Event()
+        events = []
+
+        def sink(event):
+            events.append(event)
+            if event.kind != "motion_stopped":
+                return
+            terminal_entered.set()
+            release_terminal.wait(1.0)
+            terminal_finished.set()
+
+        old = FakeController()
+        fresh = FakeController()
+        controllers = iter((old, fresh))
+        service = MakcuService(
+            sink,
+            controller_factory=lambda **_kwargs: next(controllers),
+        )
+        self.addCleanup(service.close)
+        service._connect_worker(service._begin_connection())
+        events.clear()
+        self.assertTrue(
+            service.start_ai_motion(lambda: None, AimSettings, duration_s=0)
+        )
+        self.assertTrue(terminal_entered.wait(1.0))
+
+        service.reconnect()
+        self.assertTrue(wait_until(lambda: service.controller is fresh))
+        service.close()
+        release_terminal.set()
+        self.assertTrue(terminal_finished.wait(1.0))
+        service.join_motion(1.0)
+
+        self.assertEqual(
+            events, [ServiceEvent("motion_stopped", "duration_complete")]
+        )
+
+    def test_terminal_callback_helper_can_close_service(self):
+        callback_entered = threading.Event()
+        helper_finished = threading.Event()
+        callback_observed_helper = threading.Event()
+        callback_finished = threading.Event()
+        helper_threads = []
+        service = None
+
+        def sink(event):
+            if event.kind != "motion_stopped" or callback_entered.is_set():
+                return
+            callback_entered.set()
+
+            def close_service():
+                service.close()
+                helper_finished.set()
+
+            helper = threading.Thread(target=close_service)
+            helper_threads.append(helper)
+            helper.start()
+            if helper_finished.wait(0.25):
+                callback_observed_helper.set()
+            callback_finished.set()
+
+        controller = FakeController()
+        service = MakcuService(
+            sink,
+            controller_factory=lambda **_kwargs: controller,
+        )
+        self.addCleanup(service.close)
+        service._connect_worker(service._begin_connection())
+
+        self.assertTrue(
+            service.start_ai_motion(lambda: None, AimSettings, duration_s=0)
+        )
+        self.assertTrue(callback_finished.wait(1.0))
+        for helper in helper_threads:
+            helper.join(1.0)
+
+        self.assertTrue(callback_observed_helper.is_set())
+        self.assertTrue(helper_finished.is_set())
+        self.assertFalse(service.connected)
+
+    def test_terminal_callback_helper_can_reconnect_service(self):
+        callback_entered = threading.Event()
+        helper_finished = threading.Event()
+        callback_observed_helper = threading.Event()
+        callback_finished = threading.Event()
+        helper_threads = []
+        old = FakeController()
+        fresh = FakeController()
+        controllers = iter((old, fresh))
+        service = None
+
+        def sink(event):
+            if event.kind != "motion_stopped" or callback_entered.is_set():
+                return
+            callback_entered.set()
+
+            def reconnect_service():
+                service.reconnect()
+                helper_finished.set()
+
+            helper = threading.Thread(target=reconnect_service)
+            helper_threads.append(helper)
+            helper.start()
+            if helper_finished.wait(0.25):
+                callback_observed_helper.set()
+            callback_finished.set()
+
+        service = MakcuService(
+            sink,
+            controller_factory=lambda **_kwargs: next(controllers),
+        )
+        self.addCleanup(service.close)
+        service._connect_worker(service._begin_connection())
+
+        self.assertTrue(
+            service.start_ai_motion(lambda: None, AimSettings, duration_s=0)
+        )
+        self.assertTrue(callback_finished.wait(1.0))
+        for helper in helper_threads:
+            helper.join(1.0)
+
+        self.assertTrue(callback_observed_helper.is_set())
+        self.assertTrue(helper_finished.is_set())
+        self.assertTrue(wait_until(lambda: service.controller is fresh))
+
+    def test_join_motion_waits_for_terminal_callback(self):
+        terminal_entered = threading.Event()
+        release_terminal = threading.Event()
+        terminal_finished = threading.Event()
+        join_entered = threading.Event()
+        join_returned = threading.Event()
+        join_observed_terminal = threading.Event()
+
+        def sink(event):
+            if event.kind != "motion_stopped":
+                return
+            terminal_entered.set()
+            release_terminal.wait(1.0)
+            terminal_finished.set()
+
+        controller = FakeController()
+        service = MakcuService(
+            sink,
+            controller_factory=lambda **_kwargs: controller,
+        )
+        self.addCleanup(service.close)
+        service._connect_worker(service._begin_connection())
+        self.assertTrue(
+            service.start_ai_motion(lambda: None, AimSettings, duration_s=0)
+        )
+        self.assertTrue(terminal_entered.wait(1.0))
+
+        def join_motion():
+            join_entered.set()
+            service.join_motion()
+            if terminal_finished.is_set():
+                join_observed_terminal.set()
+            join_returned.set()
+
+        joiner = threading.Thread(target=join_motion)
+        joiner.start()
+        try:
+            self.assertTrue(join_entered.wait(1.0))
+            self.assertFalse(join_returned.wait(0.05))
+            release_terminal.set()
+            self.assertTrue(join_returned.wait(1.0))
+        finally:
+            release_terminal.set()
+            joiner.join(1.0)
+
+        self.assertTrue(join_observed_terminal.is_set())
+
     def test_close_during_ai_motion_cancels_before_disconnect(self):
         engine = BlockingAimEngine()
         target = TargetSnapshot(1, time.perf_counter(), "head", 170, 160)

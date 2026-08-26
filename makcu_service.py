@@ -64,8 +64,10 @@ class MakcuService:
         self._motion_cancel_lock = threading.Lock()
         self._motion_dispatch_done = threading.Event()
         self._motion_dispatch_done.set()
-        self._motion_dispatch_threads: set[threading.Thread] = set()
-        self._motion_dispatch_count = 0
+        self._motion_dispatch_owner: threading.Thread | None = None
+        self._motion_dispatch_queue: list[
+            tuple[ServiceEvent, Callable[[], bool] | None]
+        ] = []
         self._motion_generation = 0
         self._motion_stop = threading.Event()
         self._motion_thread: threading.Thread | None = None
@@ -108,16 +110,48 @@ class MakcuService:
             self._connected = False
             self._setup_disconnected.discard(generation)
             self._disconnect_notified.discard(generation)
-        self._wait_for_motion_dispatch()
-        self._emit(ServiceEvent("connecting"))
+            should_dispatch = self._reserve_event_locked(
+                ServiceEvent("connecting"),
+                lambda: generation == self._generation and not self._closed,
+            )
+        if should_dispatch:
+            self._drain_event_dispatch()
         return generation
 
-    def _wait_for_motion_dispatch(self) -> None:
+    def _reserve_event_locked(
+        self,
+        event: ServiceEvent,
+        current_guard: Callable[[], bool] | None = None,
+    ) -> bool:
+        # Dispatch has two states, both changed only under ``_lock``: idle
+        # (no owner, done set) and draining (one owner, done clear).  Producers
+        # only append here; the owner invokes the external sink without any
+        # service lock and then returns to ``_lock`` for the next reservation.
+        self._motion_dispatch_queue.append((event, current_guard))
+        if self._motion_dispatch_owner is not None:
+            return False
+        self._motion_dispatch_owner = threading.current_thread()
+        self._motion_dispatch_done.clear()
+        return True
+
+    def _drain_event_dispatch(self) -> None:
+        while True:
+            with self._lock:
+                if not self._motion_dispatch_queue:
+                    self._motion_dispatch_owner = None
+                    self._motion_dispatch_done.set()
+                    return
+                event, current_guard = self._motion_dispatch_queue.pop(0)
+                if current_guard is not None and not current_guard():
+                    continue
+            self._emit(event)
+
+    def _wait_for_motion_dispatch(self, timeout: float | None = None) -> bool:
         with self._lock:
-            if threading.current_thread() in self._motion_dispatch_threads:
-                return
+            if threading.current_thread() is self._motion_dispatch_owner:
+                return True
             done = self._motion_dispatch_done
-        done.wait()
+        return done.wait(timeout)
 
     def connect(self) -> int | None:
         """Start a fresh connection worker and return its generation."""
@@ -185,44 +219,60 @@ class MakcuService:
         snapshot_provider: Callable[[], Any] | None,
         duration_s: float | None,
     ) -> bool:
-        with self._lock:
-            if self._closed or not self._connected or self._controller is None:
-                return False
-            if self._motion_active:
-                return True
-            try:
-                duration = None if duration_s is None else float(duration_s)
-                if duration is not None and not math.isfinite(duration):
+        while True:
+            with self._lock:
+                if self._closed or not self._connected or self._controller is None:
                     return False
-                if duration is not None:
-                    duration = max(0.0, duration)
-            except (TypeError, ValueError, OverflowError):
-                return False
-            connection_generation = self._generation
-            expected_controller = self._controller
-            stop_event = threading.Event()
-            with self._motion_cancel_lock:
-                self._motion_generation += 1
-                motion_generation = self._motion_generation
-                self._motion_stop = stop_event
-                self._motion_stop_reasons[motion_generation] = None
-            self._motion_active = True
-            thread = threading.Thread(
-                target=self._motion_worker,
-                args=(
-                    motion_generation,
-                    connection_generation,
-                    stop_event,
-                    settings_provider,
-                    duration,
-                    mode,
-                    snapshot_provider,
-                    expected_controller,
-                ),
-                name=f"MakcuMotion-{motion_generation}",
-                daemon=True,
-            )
-            self._motion_thread = thread
+                if self._motion_active:
+                    return True
+                dispatch_owner = self._motion_dispatch_owner
+                if (
+                    dispatch_owner is not None
+                    and dispatch_owner is not threading.current_thread()
+                ):
+                    dispatch_done = self._motion_dispatch_done
+                else:
+                    # The owner is already inside the prior callback, so a
+                    # direct reentrant start has observed that terminal event.
+                    # Every other thread waits outside ``_lock`` and retries
+                    # this complete state check before allocating a generation.
+                    try:
+                        duration = (
+                            None if duration_s is None else float(duration_s)
+                        )
+                        if duration is not None and not math.isfinite(duration):
+                            return False
+                        if duration is not None:
+                            duration = max(0.0, duration)
+                    except (TypeError, ValueError, OverflowError):
+                        return False
+                    connection_generation = self._generation
+                    expected_controller = self._controller
+                    stop_event = threading.Event()
+                    with self._motion_cancel_lock:
+                        self._motion_generation += 1
+                        motion_generation = self._motion_generation
+                        self._motion_stop = stop_event
+                        self._motion_stop_reasons[motion_generation] = None
+                    self._motion_active = True
+                    thread = threading.Thread(
+                        target=self._motion_worker,
+                        args=(
+                            motion_generation,
+                            connection_generation,
+                            stop_event,
+                            settings_provider,
+                            duration,
+                            mode,
+                            snapshot_provider,
+                            expected_controller,
+                        ),
+                        name=f"MakcuMotion-{motion_generation}",
+                        daemon=True,
+                    )
+                    self._motion_thread = thread
+                    break
+            dispatch_done.wait()
         try:
             thread.start()
         except Exception:
@@ -268,10 +318,18 @@ class MakcuService:
 
     def join_motion(self, timeout: float | None = None) -> None:
         """Bounded lifecycle/testing helper; do not call this from the Tk thread."""
+        deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
         with self._lock:
             thread = self._motion_thread
         if thread is not None and thread is not threading.current_thread():
-            thread.join(timeout)
+            remaining = (
+                None if deadline is None else max(0.0, deadline - time.monotonic())
+            )
+            thread.join(remaining)
+        remaining = (
+            None if deadline is None else max(0.0, deadline - time.monotonic())
+        )
+        self._wait_for_motion_dispatch(remaining)
 
     def _motion_worker(
         self,
@@ -384,7 +442,7 @@ class MakcuService:
                 stop_event.wait(max(0.0, interval - (time.perf_counter() - tick_started)))
         finally:
             terminal_event: ServiceEvent | None = None
-            dispatch_thread = threading.current_thread()
+            should_dispatch = False
             with self._lock:
                 owns_motion_slot = (
                     motion_generation == self._motion_generation
@@ -415,18 +473,18 @@ class MakcuService:
                 elif terminal_current:
                     terminal_event = ServiceEvent("motion_stopped", reason)
                 if terminal_event is not None:
-                    self._motion_dispatch_count += 1
-                    self._motion_dispatch_threads.add(dispatch_thread)
-                    self._motion_dispatch_done.clear()
-            if terminal_event is not None:
-                try:
-                    self._emit(terminal_event)
-                finally:
-                    with self._lock:
-                        self._motion_dispatch_count -= 1
-                        self._motion_dispatch_threads.discard(dispatch_thread)
-                        if self._motion_dispatch_count == 0:
-                            self._motion_dispatch_done.set()
+                    should_dispatch = self._reserve_event_locked(
+                        terminal_event,
+                        lambda: (
+                            motion_generation == self._motion_generation
+                            and connection_generation == self._generation
+                            and expected_controller is self._controller
+                            and not self._closed
+                            and self._connected
+                        ),
+                    )
+            if should_dispatch:
+                self._drain_event_dispatch()
 
     def _setup_must_abort(self, generation: int) -> bool:
         with self._lock:
@@ -440,17 +498,26 @@ class MakcuService:
         try:
             controller = self._controller_factory(debug=False, auto_reconnect=True)
         except Exception as exc:
+            should_dispatch = False
             with self._lock:
                 current = generation == self._generation and not self._closed
                 if current:
                     self._controller = None
                     self._connected = False
-                    self._emit(
+                    should_dispatch = self._reserve_event_locked(
                         ServiceEvent(
                             "disconnected",
                             f"{type(exc).__name__}: {exc}",
-                        )
+                        ),
+                        lambda: (
+                            generation == self._generation
+                            and not self._closed
+                            and self._controller is None
+                            and not self._connected
+                        ),
                     )
+            if should_dispatch:
+                self._drain_event_dispatch()
             return
 
         try:
@@ -467,17 +534,26 @@ class MakcuService:
             # Setup failures are equivalent to a failed connection, but the
             # exact newly-created controller must still be cleaned up.
             self._disconnect_controller(controller)
+            should_dispatch = False
             with self._lock:
                 current = generation == self._generation and not self._closed
                 if current:
                     self._controller = None
                     self._connected = False
-                    self._emit(
+                    should_dispatch = self._reserve_event_locked(
                         ServiceEvent(
                             "disconnected",
                             f"{type(exc).__name__}: {exc}",
-                        )
+                        ),
+                        lambda: (
+                            generation == self._generation
+                            and not self._closed
+                            and self._controller is None
+                            and not self._connected
+                        ),
                     )
+            if should_dispatch:
+                self._drain_event_dispatch()
             return
 
         if self._setup_must_abort(generation):
@@ -497,6 +573,7 @@ class MakcuService:
         # A setup-time false signal either set the abort flag above or can only
         # arrive after this assignment, in which case _connection_changed()
         # owns the active-generation transition.
+        should_dispatch = False
         with self._lock:
             can_install = (
                 generation == self._generation
@@ -506,7 +583,18 @@ class MakcuService:
             if can_install:
                 self._controller = controller
                 self._connected = True
-                self._emit(ServiceEvent("connected", " | ".join(diagnostics) or None))
+                should_dispatch = self._reserve_event_locked(
+                    ServiceEvent("connected", " | ".join(diagnostics) or None),
+                    lambda: (
+                        generation == self._generation
+                        and not self._closed
+                        and controller is self._controller
+                        and self._connected
+                    ),
+                )
+
+        if should_dispatch:
+            self._drain_event_dispatch()
 
         if not can_install:
             self._disconnect_controller(controller)
@@ -515,7 +603,8 @@ class MakcuService:
     def _connection_changed(self, generation: int, connected: bool) -> None:
         connected = bool(connected)
         event: ServiceEvent | None = None
-        wait_for_motion = False
+        stop_for_disconnect = False
+        should_dispatch = False
         controller_present = False
         with self._lock:
             if generation != self._generation or self._closed:
@@ -527,28 +616,50 @@ class MakcuService:
                     if generation not in self._disconnect_notified:
                         self._disconnect_notified.add(generation)
                         event = ServiceEvent("disconnected")
+                        should_dispatch = self._reserve_event_locked(
+                            event,
+                            lambda: (
+                                generation == self._generation
+                                and not self._closed
+                                and not self._connected
+                            ),
+                        )
             elif connected:
                 if not self._connected:
                     self._connected = True
                     event = ServiceEvent("reconnected")
+                    should_dispatch = self._reserve_event_locked(
+                        event,
+                        lambda: (
+                            generation == self._generation
+                            and not self._closed
+                            and self._connected
+                        ),
+                    )
             else:
                 controller_present = True
                 was_connected = self._connected
-                wait_for_motion = was_connected and self._motion_active
-        if wait_for_motion:
+                self._connected = False
+                stop_for_disconnect = was_connected and self._motion_active
+        if stop_for_disconnect:
             self.stop_motion(reason="disconnected")
-            self.join_motion(1.0)
         if not connected and controller_present:
             with self._lock:
                 if generation != self._generation or self._closed:
                     return
-                self._connected = False
                 if was_connected and generation not in self._disconnect_notified:
                     self._disconnect_notified.add(generation)
                     event = ServiceEvent("disconnected")
-            self._wait_for_motion_dispatch()
-        if event is not None:
-            self._emit(event)
+                    should_dispatch = self._reserve_event_locked(
+                        event,
+                        lambda: (
+                            generation == self._generation
+                            and not self._closed
+                            and not self._connected
+                        ),
+                    )
+        if should_dispatch:
+            self._drain_event_dispatch()
 
     @staticmethod
     def _normalize_button(button: Any) -> str | None:
@@ -582,10 +693,16 @@ class MakcuService:
         name = self._normalize_button(button)
         if name is None:
             return
+        should_dispatch = False
         with self._lock:
             if generation != self._generation or self._closed:
                 return
-            self._emit(ServiceEvent("button", (name, bool(pressed))))
+            should_dispatch = self._reserve_event_locked(
+                ServiceEvent("button", (name, bool(pressed))),
+                lambda: generation == self._generation and not self._closed,
+            )
+        if should_dispatch:
+            self._drain_event_dispatch()
 
     def reconnect(self) -> int | None:
         """Invalidate the current generation, clean it up, and reconnect."""
@@ -611,6 +728,5 @@ class MakcuService:
             controller = self._controller
             self._controller = None
             self._connected = False
-        self._wait_for_motion_dispatch()
         if controller is not None:
             self._start_disconnect_worker(controller)
