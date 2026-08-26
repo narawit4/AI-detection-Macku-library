@@ -3525,9 +3525,6 @@ class JitterApp(tk.Tk):
         config = AppConfig(
             motion=self.get_motion_settings(),
             ai=self.get_ai_settings(),
-            # Task 7 removes this legacy schema field.  Until then preserve
-            # the loaded value without using it as runtime selection state.
-            mode=self.config.mode,
             trigger=self.trigger_var.get(),
             modifier=self.modifier_var.get(),
             hotkey_vk=self._current_hotkey_vk(),

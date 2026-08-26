@@ -407,7 +407,6 @@ class JitterLayoutTests(unittest.TestCase):
     def test_ai_controls_reflect_config_without_restoring_runtime_selection(self):
         self.app.close_app()
         app = self.make_app(config=AppConfig(
-            mode="ai_aim",
             ai=AimSettings(0.5, 0.6, 0.7, 30),
         ))
 
@@ -516,6 +515,42 @@ class JitterLayoutTests(unittest.TestCase):
         self.app._cancel_after("_save_after_id")
         self.app.save_config()
         self.assertEqual(self.store.saved[-1].theme, "dark")
+
+    def test_save_config_persists_only_settings_not_runtime_state(self):
+        self.app._replace_motion_snapshot(MotionSettings(4.0, 45.0, "Instant"))
+        self.app._replace_ai_snapshot(AimSettings(0.5, 0.6, 0.7, 30))
+        self.app.trigger_var.set("Right")
+        self.app.modifier_var.set("Mouse4")
+        self.app.hotkey_watcher.set_vk(65)
+        self.app.hotkey_name_var.set("A")
+        self.app.preset_var.set("Strong")
+        self.app.theme_var.set("dark")
+        self.app.sound_enabled_var.set(False)
+        self.app.sound_volume_var.set("35")
+        self.app.jitter_selected = True
+        self.app.ai_selected = True
+        self.app.master_armed = True
+        self.app.overlay_visible = True
+
+        self.app.save_config()
+
+        self.assertEqual(self.store.saved[-1], AppConfig(
+            motion=MotionSettings(4.0, 45.0, "Instant"),
+            ai=AimSettings(0.5, 0.6, 0.7, 30),
+            trigger="Right",
+            modifier="Mouse4",
+            hotkey_vk=65,
+            hotkey_name="A",
+            selected_preset="Strong",
+            theme="dark",
+            sound_enabled=False,
+            sound_volume=35,
+        ))
+        for name in (
+            "mode", "jitter_selected", "ai_selected", "master_armed",
+            "overlay_visible", "target", "detections", "fps", "provider",
+        ):
+            self.assertFalse(hasattr(self.store.saved[-1], name))
 
     def test_navigation_palette_api_tracks_the_active_theme(self):
         palette_builder = getattr(self.app, "_navigation_palette", None)
