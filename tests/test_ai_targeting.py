@@ -30,6 +30,15 @@ class AimSettingsTests(unittest.TestCase):
         })
         self.assertEqual(settings, AimSettings())
 
+    def test_mapping_rejects_boolean_numeric_values_using_defaults(self):
+        settings = aim_settings_from_mapping({
+            "confidence": True,
+            "aim_strength": False,
+            "smoothing": True,
+            "max_step": False,
+        })
+        self.assertEqual(settings, AimSettings())
+
     def test_max_step_is_integral_and_limits_are_exposed(self):
         settings = aim_settings_from_mapping({"max_step": "20.9"})
         self.assertEqual(settings.max_step, 20)

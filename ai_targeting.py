@@ -45,6 +45,8 @@ _DEFAULTS = AimSettings()
 
 def _bounded_number(raw: Any, default: float, key: str) -> float:
     try:
+        if isinstance(raw, bool):
+            raise TypeError
         value = float(raw)
         if not math.isfinite(value):
             raise ValueError
@@ -56,6 +58,8 @@ def _bounded_number(raw: Any, default: float, key: str) -> float:
 
 def _bounded_integer(raw: Any, default: int, key: str) -> int:
     try:
+        if isinstance(raw, bool):
+            raise TypeError
         value = float(raw)
         if not math.isfinite(value):
             raise ValueError
