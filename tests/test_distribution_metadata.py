@@ -13,6 +13,7 @@ from distribution_metadata import (
     build_plan,
     confirm_build,
     copy_release_materials,
+    discover_application_sources,
     execute_build_plan,
     parse_pinned_requirements,
     review_payload,
@@ -160,6 +161,17 @@ class ReleaseMaterialTests(unittest.TestCase):
 
 
 class BuildPlanTests(unittest.TestCase):
+    def test_source_discovery_ignores_nested_git_worktrees(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            live_source = root / "main.py"
+            nested_source = root / ".worktrees" / "feature" / "main.py"
+            nested_source.parent.mkdir(parents=True)
+            live_source.write_text("pass\n", encoding="utf-8")
+            nested_source.write_text("pass\n", encoding="utf-8")
+
+            self.assertEqual(discover_application_sources(root), (live_source,))
+
     def test_user_package_config_targets_exact_installed_directml_dll(self):
         from nuitka.Tracing import general
         from nuitka.utils.FileOperations import listDllFilesFromDirectory

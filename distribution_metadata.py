@@ -30,7 +30,8 @@ _NUITKA_PACKAGE_CONFIG_SHA256 = (
 _AI_RUNTIME_SELF_CHECK_ARGUMENT = "--ai-runtime-self-check"
 _RELEASE_MATERIALS = ("LICENSE", "THIRD_PARTY_NOTICES.md", "licenses")
 _EXCLUDED_SOURCE_PARTS = {
-    ".git", ".superpowers", "__pycache__", "build-output", "dist", "tests"
+    ".git", ".superpowers", ".worktrees", "__pycache__", "build-output",
+    "dist", "tests",
 }
 _PROHIBITED_SOURCE_TOKENS = {
     "training", "profile", "profiles", "tray", "ai_tracker"
