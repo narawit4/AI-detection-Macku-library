@@ -81,9 +81,10 @@ The Settings page can mute the hotkey ON/OFF cues, set their volume from
 Without a connected Makcu, the UI remains usable for configuration but no
 pointer movement can be sent. For a hardware check, connect the device before
 launching, confirm the status changes to Connected, hold the configured
-Trigger/Modifier, verify the up/down direction and the Soft, Balanced, and
-Strong pulse sizes and rates, press `Test 3s`, exercise the hotkey, press
-`STOP` between half-pulses, and verify that unplug/replug reconnects safely
+Trigger/Modifier, verify the diagonal up-right/down-left paired direction and
+the Soft, Balanced, and Strong pulse sizes and rates, press `Test 3s`,
+exercise the hotkey, press `STOP` between half-pulses, and verify that
+unplug/replug reconnects safely
 and closing the window shuts the service down.
 
 ## User data and diagnostics
@@ -99,7 +100,7 @@ by Git.
 ```powershell
 python -m py_compile main.py ui.py motion.py ai_targeting.py ai_detection.py ai_capture.py ai_service.py makcu_service.py hotkeys.py settings.py sound_service.py liquid_widgets.py
 python -m unittest discover -s tests -v
-python -c "import makcu, onnxruntime, dxcam, numpy"
+python -c "import makcu, serial, onnxruntime, dxcam, comtypes, numpy, pygame"
 python -c "from ai_detection import OnnxDetector, model_resource_path; print(OnnxDetector(model_resource_path()).provider)"
 Get-FileHash -Algorithm SHA256 models\all_games_320.onnx
 git diff --check

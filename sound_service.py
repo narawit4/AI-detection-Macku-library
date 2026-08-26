@@ -11,15 +11,27 @@ from typing import Any, Callable
 
 class _PygameBackend:
     def __init__(self, on_path: Path, off_path: Path) -> None:
-        import pygame
+        self._pygame = None
+        self._channel = None
+        self._sounds: dict[bool, Any] = {}
+        self._mixer_cleanup_needed = False
+        try:
+            import pygame
 
-        pygame.mixer.init()
-        self._pygame = pygame
-        self._channel = pygame.mixer.Channel(0)
-        self._sounds = {
-            True: pygame.mixer.Sound(str(on_path)),
-            False: pygame.mixer.Sound(str(off_path)),
-        }
+            self._pygame = pygame
+            self._mixer_cleanup_needed = True
+            pygame.mixer.init()
+            self._channel = pygame.mixer.Channel(0)
+            self._sounds = {
+                True: pygame.mixer.Sound(str(on_path)),
+                False: pygame.mixer.Sound(str(off_path)),
+            }
+        except Exception:
+            try:
+                self.close()
+            except Exception:
+                logging.exception("Could not clean up partial hotkey sound backend")
+            raise
 
     def play(self, enabled: bool) -> None:
         self._channel.play(self._sounds[bool(enabled)])
@@ -29,8 +41,24 @@ class _PygameBackend:
             sound.set_volume(max(0.0, min(1.0, float(volume))))
 
     def close(self) -> None:
-        self._channel.stop()
-        self._pygame.mixer.quit()
+        channel, self._channel = self._channel, None
+        pygame, self._pygame = self._pygame, None
+        cleanup_needed, self._mixer_cleanup_needed = self._mixer_cleanup_needed, False
+        self._sounds = {}
+        error = None
+        if channel is not None:
+            try:
+                channel.stop()
+            except Exception as exc:
+                error = exc
+        if pygame is not None and cleanup_needed:
+            try:
+                pygame.mixer.quit()
+            except Exception as exc:
+                if error is None:
+                    error = exc
+        if error is not None:
+            raise error
 
 
 class ToggleSoundPlayer:
@@ -50,6 +78,7 @@ class ToggleSoundPlayer:
         self._backend_factory = backend_factory or _PygameBackend
         self._queue: queue.Queue[tuple[bool, int] | object] = queue.Queue()
         self._closed = threading.Event()
+        self._close_lock = threading.Lock()
         self._settings_lock = threading.Lock()
         self._enabled = bool(enabled)
         self._volume = max(0, min(100, int(volume)))
@@ -73,11 +102,19 @@ class ToggleSoundPlayer:
             self._queue.put((bool(enabled), volume))
 
     def close(self) -> None:
-        if self._closed.is_set():
-            return
-        self._closed.set()
-        self._queue.put(self._CLOSE)
-        self._thread.join(timeout=1.0)
+        with self._close_lock:
+            if not self._closed.is_set():
+                self._closed.set()
+                self._queue.put(self._CLOSE)
+        if self._thread is not threading.current_thread():
+            self._thread.join(timeout=1.0)
+
+    @staticmethod
+    def _close_backend(backend: Any) -> None:
+        try:
+            backend.close()
+        except Exception:
+            logging.exception("Could not close hotkey sound player")
 
     def _run(self) -> None:
         backend = None
@@ -97,10 +134,9 @@ class ToggleSoundPlayer:
                     backend.play(bool(cue))
                 except Exception:
                     logging.exception("Could not play hotkey sound")
+                    if backend is not None:
+                        self._close_backend(backend)
                     backend = None
         finally:
             if backend is not None:
-                try:
-                    backend.close()
-                except Exception:
-                    logging.exception("Could not close hotkey sound player")
+                self._close_backend(backend)

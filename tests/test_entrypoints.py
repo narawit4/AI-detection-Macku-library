@@ -533,3 +533,13 @@ class EntryPointTests(unittest.TestCase):
         links = set(re.findall(r"\[[^]]+\]\(([^)]+)\)", readme))
         self.assertIn("THIRD_PARTY_NOTICES.md", links)
         self.assertIn("licenses/README.md", links)
+
+    def test_readme_matches_diagonal_motion_and_runtime_imports(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("up-right then down-left", readme)
+        self.assertNotIn("verify the up/down direction", readme)
+        self.assertIn(
+            'python -c "import makcu, serial, onnxruntime, dxcam, comtypes, '
+            'numpy, pygame"',
+            readme,
+        )
