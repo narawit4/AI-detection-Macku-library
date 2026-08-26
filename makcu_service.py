@@ -368,7 +368,13 @@ class MakcuService:
                 daemon=True,
             )
             self._health_thread = thread
-        thread.start()
+        try:
+            thread.start()
+        except Exception:
+            with self._lock:
+                if self._health_thread is thread:
+                    self._health_thread = None
+            raise
 
     def _health_worker(
         self,
@@ -550,6 +556,18 @@ class MakcuService:
             with self._lock:
                 self._invalidate_motion_locked(reason)
 
+    def cancel_motion(self, reason: str = "manual") -> None:
+        """Cancel uncommitted reports without waiting for device I/O.
+
+        A report that already passed the final check under ``_move_barrier``
+        is in flight and may finish after this method returns.  The stop event
+        prevents the worker from committing a subsequent report.
+        """
+        reason = str(reason or "manual")
+        self._signal_motion_cancellation(reason)
+        with self._lock:
+            self._invalidate_motion_locked(reason)
+
     def _signal_motion_cancellation(self, reason: str) -> None:
         """Wake the current motion generation without waiting for move()."""
         reason = str(reason or "manual")
@@ -693,6 +711,10 @@ class MakcuService:
                                     )
                                 break
                         try:
+                            # Passing the guarded state check commits this one
+                            # report as in flight.  Nonblocking cancellation may
+                            # return while it finishes, but cannot commit the
+                            # worker's next report.
                             controller.move(report_x, report_y)
                         except Exception as exc:
                             error_payload = f"{type(exc).__name__}: {exc}"
@@ -879,7 +901,6 @@ class MakcuService:
         # A setup-time false signal either set the abort flag above or can only
         # arrive after this assignment, in which case _connection_changed()
         # owns the active-generation transition.
-        should_dispatch = False
         with self._lock:
             can_install = (
                 generation == self._generation
@@ -889,6 +910,54 @@ class MakcuService:
             if can_install:
                 self._controller = controller
                 self._connected = True
+                installed_transition = self._connection_transition
+
+        if not can_install:
+            cleanup_proven = self._disconnect_controller(controller)
+            if not cleanup_proven:
+                self._retain_controller(controller)
+            return cleanup_proven
+
+        try:
+            self._start_health_worker(generation, controller)
+        except Exception:
+            LOGGER.exception("Makcu health worker could not start")
+            self._signal_motion_cancellation("disconnected")
+            should_dispatch = False
+            with self._lock:
+                if (
+                    generation == self._generation
+                    and controller is self._controller
+                ):
+                    self._invalidate_motion_locked("disconnected")
+                    should_dispatch = self._mark_connection_unavailable_locked(
+                        generation
+                    )
+            with self._move_barrier:
+                cleanup_proven = self._disconnect_controller(controller)
+            if cleanup_proven:
+                with self._lock:
+                    self._retained_controllers = [
+                        retained
+                        for retained in self._retained_controllers
+                        if retained is not controller
+                    ]
+            else:
+                self._retain_controller(controller)
+            if should_dispatch:
+                self._drain_event_dispatch()
+            return cleanup_proven
+
+        should_dispatch = False
+        with self._lock:
+            can_publish = (
+                generation == self._generation
+                and not self._closed
+                and controller is self._controller
+                and self._connected
+                and installed_transition == self._connection_transition
+            )
+            if can_publish:
                 should_dispatch = self._reserve_event_locked(
                     ServiceEvent("connected", " | ".join(diagnostics) or None),
                     lambda: (
@@ -896,19 +965,11 @@ class MakcuService:
                         and not self._closed
                         and controller is self._controller
                         and self._connected
+                        and installed_transition == self._connection_transition
                     ),
                 )
-
         if should_dispatch:
             self._drain_event_dispatch()
-
-        if not can_install:
-            cleanup_proven = self._disconnect_controller(controller)
-            if not cleanup_proven:
-                self._retain_controller(controller)
-            return cleanup_proven
-        else:
-            self._start_health_worker(generation, controller)
         return True
 
     def _connection_changed(self, generation: int, connected: bool) -> None:
@@ -939,6 +1000,7 @@ class MakcuService:
                 if not self._connected:
                     self._connected = True
                     self._connection_transition += 1
+                    connection_transition = self._connection_transition
                     self._disconnect_notified.discard(generation)
                     event = ServiceEvent("reconnected")
                     should_dispatch = self._reserve_event_locked(
@@ -947,6 +1009,8 @@ class MakcuService:
                             generation == self._generation
                             and not self._closed
                             and self._connected
+                            and connection_transition
+                            == self._connection_transition
                         ),
                     )
             else:
@@ -976,6 +1040,8 @@ class MakcuService:
                             generation == self._generation
                             and not self._closed
                             and not self._connected
+                            and disconnect_transition
+                            == self._connection_transition
                         ),
                     )
         if should_dispatch:
@@ -1015,11 +1081,21 @@ class MakcuService:
             return
         should_dispatch = False
         with self._lock:
-            if generation != self._generation or self._closed:
+            if (
+                generation != self._generation
+                or self._closed
+                or not self._connected
+            ):
                 return
+            connection_transition = self._connection_transition
             should_dispatch = self._reserve_event_locked(
                 ServiceEvent("button", (name, bool(pressed))),
-                lambda: generation == self._generation and not self._closed,
+                lambda: (
+                    generation == self._generation
+                    and not self._closed
+                    and self._connected
+                    and connection_transition == self._connection_transition
+                ),
             )
         if should_dispatch:
             self._drain_event_dispatch()

@@ -39,6 +39,7 @@ class StubService:
         self.motion_calls = []
         self.ai_motion_calls = []
         self.stop_reasons = []
+        self.cancel_reasons = []
         self.stop_hook = None
         self._motion_active = False
         self.motion_active_hook = None
@@ -134,6 +135,13 @@ class StubService:
     def stop_motion(self, reason="manual"):
         self.stopped += 1
         self.stop_reasons.append(reason)
+        if self.stop_hook is not None:
+            self.stop_hook(reason)
+
+    def cancel_motion(self, reason="manual"):
+        self.stopped += 1
+        self.stop_reasons.append(reason)
+        self.cancel_reasons.append(reason)
         if self.stop_hook is not None:
             self.stop_hook(reason)
 
@@ -3304,6 +3312,7 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.assertFalse(self.app.trigger_gate.active)
         self.assertEqual(self.app.runtime_state_var.get(), "DISABLED")
         self.assertEqual(self.ai.stop_calls[-1], "Stopped by user")
+        self.assertEqual(self.service.cancel_reasons[-1], "Stopped by user")
 
     def test_disconnect_performs_emergency_stop(self):
         self.service.connected = True
@@ -3370,6 +3379,7 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.app.close_app()
         self.assertEqual(self.app.hotkey_watcher.stopped, 1)
         self.assertGreaterEqual(self.service.stopped, 1)
+        self.assertEqual(self.service.cancel_reasons[-1], "Stopped on close")
         self.assertEqual(self.service.closed, 1)
         self.assertGreaterEqual(len(self.ai.stop_calls), 1)
         self.assertEqual(self.ai.closed, 1)

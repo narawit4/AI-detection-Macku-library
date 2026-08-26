@@ -2322,7 +2322,7 @@ class JitterApp(tk.Tk):
             self._retiring_motion_generation = retiring_source
         try:
             if stop_device_motion:
-                self.service.stop_motion(reason)
+                self.service.cancel_motion(reason)
         finally:
             self._motion_event_epoch += 1
 
