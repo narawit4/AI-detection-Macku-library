@@ -50,6 +50,7 @@ class StubService:
         self.active_motion_generation = None
         self.start_motion_hook = None
         self.start_ai_motion_hook = None
+        self.start_composite_motion_hook = None
 
     @property
     def motion_active(self):
@@ -152,14 +153,18 @@ class StubService:
             duration_s=duration_s,
         )
         self.composite_motion_calls.append(call)
-        if not self.connected:
-            return None
-        if self.motion_active:
-            return self.active_motion_generation
-        self.motion_generation += 1
-        self.active_motion_generation = self.motion_generation
-        self.motion_active = True
-        return self.active_motion_generation
+        source = None
+        if self.connected:
+            if self.motion_active:
+                source = self.active_motion_generation
+            else:
+                self.motion_generation += 1
+                source = self.motion_generation
+                self.active_motion_generation = source
+                self.motion_active = True
+        if self.start_composite_motion_hook is not None:
+            self.start_composite_motion_hook()
+        return source
 
     def stop_motion(self, reason="manual"):
         self.stopped += 1
@@ -286,6 +291,7 @@ class StubOverlay:
         self.cleared = 0
         self.rendered = []
         self.show_error = None
+        self.hide_error = None
         self.render_error = None
 
     def show(self):
@@ -303,6 +309,8 @@ class StubOverlay:
 
     def hide(self):
         self.hidden += 1
+        if self.hide_error is not None:
+            raise self.hide_error
 
     def close(self):
         self.closed += 1
@@ -1835,6 +1843,8 @@ class JitterRuntimeTests(JitterLayoutTests):
             MotionSources(True, True), gate_active=True
         )
         retiring = self.service.active_motion_generation
+        self.app.toggle_overlay()
+        self.overlay.hide_error = RuntimeError("clear failed")
 
         with self.assertLogs(level="ERROR"):
             self.app.handle_ai_event(
@@ -1844,6 +1854,7 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.assertTrue(self.app.jitter_selected)
         self.assertFalse(self.app.ai_selected)
         self.assertFalse(self.app.overlay_visible)
+        self.assertEqual(self.overlay.closed, 1)
         self.assertTrue(self.app.master_armed)
         self.assertEqual(self.service.cancel_reasons[-1], "ai_error")
         self.assertEqual(len(self.service.composite_motion_calls), 1)
@@ -1874,6 +1885,59 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.assertFalse(self.app.master_armed)
         self.assertEqual(self.app.runtime_state_var.get(), "DISABLED")
 
+    def test_overlay_only_ai_error_does_not_interrupt_jitter_motion(self):
+        self.prepare_armed_sources(
+            MotionSources(True, False), gate_active=True
+        )
+        generation = self.service.active_motion_generation
+        self.app.toggle_overlay()
+        self.overlay.hide_error = RuntimeError("clear failed")
+
+        with self.assertLogs(level="ERROR"):
+            self.app.handle_ai_event(
+                AiEvent("error", "RuntimeError: overlay detector failed")
+            )
+
+        self.assertFalse(self.app.overlay_visible)
+        self.assertEqual(self.overlay.closed, 1)
+        self.assertTrue(self.app.jitter_selected)
+        self.assertFalse(self.app.ai_selected)
+        self.assertTrue(self.app.master_armed)
+        self.assertTrue(self.app._normal_motion_started)
+        self.assertEqual(self.app._expected_motion_generation, generation)
+        self.assertEqual(self.service.active_motion_generation, generation)
+        self.assertNotIn("ai_error", self.service.cancel_reasons)
+        self.assertEqual(self.app.runtime_state_var.get(), "MOVING")
+
+    def test_overlay_only_ai_error_does_not_abort_jitter_test(self):
+        self.service.connected = True
+        self.app.toggle_jitter_source()
+        self.app.set_master(True)
+        self.app.start_test_run()
+        generation = self.service.active_motion_generation
+        self.app.toggle_overlay()
+
+        with self.assertLogs(level="ERROR"):
+            self.app.handle_ai_event(
+                AiEvent("error", "RuntimeError: overlay detector failed")
+            )
+
+        self.assertFalse(self.app.overlay_visible)
+        self.assertEqual(self.app._motion_mode, "test_jitter")
+        self.assertFalse(self.app.master_armed)
+        self.assertEqual(self.app._expected_motion_generation, generation)
+        self.assertEqual(self.service.active_motion_generation, generation)
+        self.assertNotIn("ai_error", self.service.cancel_reasons)
+        self.assertFalse(self.app.test_button._enabled)
+
+        self.service.motion_active = False
+        self.service.active_motion_generation = None
+        self.app.handle_service_event(ServiceEvent(
+            "motion_stopped", "duration_complete", generation
+        ))
+        self.assertTrue(self.app.master_armed)
+        self.assertEqual(self.app.runtime_state_var.get(), "ARMED")
+
     def test_disconnect_disarms_motion_but_keeps_overlay_demand(self):
         self.app.toggle_overlay()
         self.prepare_armed_sources(MotionSources(False, True))
@@ -1891,6 +1955,7 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.app.toggle_overlay()
         self.app.handle_ai_event(AiEvent("stopped", "worker ended"))
         self.ai.start_result = False
+        self.overlay.hide_error = RuntimeError("clear failed")
 
         with self.assertLogs(level="ERROR"):
             self.app.handle_service_event(
@@ -1899,7 +1964,31 @@ class JitterRuntimeTests(JitterLayoutTests):
 
         self.assertFalse(self.app.overlay_visible)
         self.assertEqual(self.overlay.hidden, 1)
+        self.assertEqual(self.overlay.closed, 1)
         self.assertFalse(self.app._ai_runtime_active)
+
+    def test_overlay_toggle_hide_failure_closes_native_overlay(self):
+        self.app.toggle_overlay()
+        self.overlay.hide_error = RuntimeError("clear failed")
+
+        with self.assertLogs(level="ERROR"):
+            self.app.toggle_overlay()
+
+        self.assertFalse(self.app.overlay_visible)
+        self.assertEqual(self.overlay.hidden, 1)
+        self.assertEqual(self.overlay.closed, 1)
+        self.assertEqual(self.ai.stop_calls[-1], "Overlay disabled")
+
+    def test_stop_hide_failure_closes_native_overlay(self):
+        self.app.toggle_overlay()
+        self.overlay.hide_error = RuntimeError("clear failed")
+
+        with self.assertLogs(level="ERROR"):
+            self.app.emergency_stop("Stopped by user")
+
+        self.assertFalse(self.app.overlay_visible)
+        self.assertEqual(self.overlay.hidden, 1)
+        self.assertEqual(self.overlay.closed, 1)
 
     def test_stop_hides_overlay_but_preserves_source_choices(self):
         self.prepare_armed_sources(MotionSources(True, True))
@@ -1955,6 +2044,19 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.assertFalse(self.app.master_armed)
         self.assertEqual(self.sounds.played, [True, False])
 
+    def test_two_legitimate_queued_hotkeys_preserve_toggle_parity(self):
+        self.service.connected = True
+        self.app.toggle_jitter_source()
+        self.app._cancel_after("_ui_pump_after_id")
+
+        self.app._hotkey_pressed()
+        self.app._hotkey_pressed()
+        self.drain_ui_queue()
+
+        self.assertFalse(self.app.master_armed)
+        self.assertEqual(self.app.runtime_state_var.get(), "DISABLED")
+        self.assertEqual(self.sounds.played, [True, False])
+
     def test_stale_queued_hotkey_cannot_rearm_after_stop(self):
         self.service.connected = True
         self.app.toggle_jitter_source()
@@ -1965,6 +2067,18 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.drain_ui_queue()
 
         self.assertFalse(self.app.master_armed)
+
+    def test_queued_hotkey_cannot_run_after_close(self):
+        self.service.connected = True
+        self.app.toggle_jitter_source()
+        self.app._cancel_after("_ui_pump_after_id")
+        self.app._hotkey_pressed()
+
+        self.app.close_app()
+        self.app._drain_ui_queue()
+
+        self.assertFalse(self.app.master_armed)
+        self.assertEqual(self.sounds.played, [])
 
     def test_test_run_uses_selected_source_matrix(self):
         for sources in (
@@ -2004,27 +2118,29 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.assertIn("Select Jitter or AI Aim", self.app.footer_var.get())
         self.assertEqual(self.service.composite_motion_calls, [])
 
-    def test_test_run_waits_for_exact_retiring_worker_and_ai_ready(self):
-        self.service.connected = True
-        self.app.toggle_jitter_source()
-        self.app.toggle_ai_source()
-        self.app.set_master(True)
-        self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
-        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+    def test_ai_test_ready_first_still_waits_for_exact_retiring_worker(self):
+        self.prepare_armed_sources(
+            MotionSources(True, False), gate_active=True
+        )
         retiring = self.service.active_motion_generation
+        self.app.toggle_ai_source()
 
         self.app.start_test_run()
-        self.assertEqual(self.service.cancel_reasons[-1], "test_run")
+        self.assertEqual(self.app._motion_mode, "test_combined_loading")
+        self.assertTrue(self.app._test_waiting_for_motion_stop)
+        self.assertFalse(self.app.master_armed)
+
+        self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        self.assertEqual(len(self.service.composite_motion_calls), 1)
         self.app.handle_service_event(ServiceEvent(
             "motion_stopped", "test_run", retiring + 100
         ))
         self.assertEqual(len(self.service.composite_motion_calls), 1)
 
-        self.service.motion_active = False
-        self.service.active_motion_generation = None
-        self.app.handle_service_event(ServiceEvent(
+        self.service.emit(ServiceEvent(
             "motion_stopped", "test_run", retiring
         ))
+        self.drain_ui_queue()
 
         self.assertEqual(len(self.service.composite_motion_calls), 2)
         self.assertEqual(
@@ -2036,6 +2152,36 @@ class JitterRuntimeTests(JitterLayoutTests):
             3.0,
         )
 
+    def test_ai_test_retiring_worker_first_still_waits_for_ready(self):
+        self.prepare_armed_sources(
+            MotionSources(True, False), gate_active=True
+        )
+        retiring = self.service.active_motion_generation
+        self.app.toggle_ai_source()
+
+        self.app.start_test_run()
+        self.service.emit(ServiceEvent(
+            "motion_stopped", "sources_changed", retiring
+        ))
+        self.drain_ui_queue()
+
+        self.assertEqual(len(self.service.composite_motion_calls), 1)
+        self.assertFalse(self.app._test_waiting_for_motion_stop)
+        self.assertEqual(self.app._motion_mode, "test_combined_loading")
+
+        self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+
+        self.assertEqual(len(self.service.composite_motion_calls), 2)
+        self.assertEqual(
+            self.service.composite_motion_calls[-1].sources,
+            MotionSources(True, True),
+        )
+        self.assertEqual(
+            self.service.composite_motion_calls[-1].duration_s,
+            3.0,
+        )
+        self.assertFalse(self.app.master_armed)
+
     def test_duration_complete_restores_prior_master_and_source_choices(self):
         self.service.connected = True
         self.app.toggle_jitter_source()
@@ -2043,6 +2189,8 @@ class JitterRuntimeTests(JitterLayoutTests):
         selected = self.app._selected_sources()
 
         self.app.start_test_run()
+        self.assertFalse(self.app.master_armed)
+        self.assertEqual(self.app.runtime_state_var.get(), "TESTING")
         generation = self.service.active_motion_generation
         self.service.motion_active = False
         self.service.active_motion_generation = None
@@ -2053,6 +2201,31 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.assertTrue(self.app.master_armed)
         self.assertEqual(self.app._selected_sources(), selected)
         self.assertIsNone(self.app._motion_mode)
+        self.assertEqual(self.app.runtime_state_var.get(), "ARMED")
+
+    def test_ai_test_suspends_master_while_loading_and_running(self):
+        self.service.connected = True
+        self.app.toggle_ai_source()
+        self.app.set_master(True)
+
+        self.app.start_test_run()
+
+        self.assertEqual(self.app._motion_mode, "test_ai_loading")
+        self.assertFalse(self.app.master_armed)
+        self.assertEqual(self.app.runtime_state_var.get(), "TESTING")
+
+        self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+
+        self.assertEqual(self.app._motion_mode, "test_ai")
+        self.assertFalse(self.app.master_armed)
+        self.assertEqual(self.app.runtime_state_var.get(), "TESTING")
+        generation = self.service.active_motion_generation
+        self.service.motion_active = False
+        self.service.active_motion_generation = None
+        self.app.handle_service_event(ServiceEvent(
+            "motion_stopped", "duration_complete", generation
+        ))
+        self.assertTrue(self.app.master_armed)
         self.assertEqual(self.app.runtime_state_var.get(), "ARMED")
 
     def test_test_run_keeps_master_off_when_it_started_disarmed(self):
@@ -2245,6 +2418,85 @@ class JitterRuntimeTests(JitterLayoutTests):
             self.service.composite_motion_calls[-1].duration_s, 3.0
         )
 
+    def test_reentrant_stop_terminal_during_test_handoff_starts_once(self):
+        self.prepare_armed_sources(
+            MotionSources(True, False), gate_active=True
+        )
+        retiring = self.service.active_motion_generation
+        self.service.stop_hook = lambda _reason: self.service.emit(
+            ServiceEvent("motion_stopped", "test_run", retiring)
+        )
+
+        self.app.start_test_run()
+        fresh = self.service.active_motion_generation
+
+        self.assertNotEqual(fresh, retiring)
+        self.assertEqual(len(self.service.composite_motion_calls), 2)
+        self.assertEqual(self.app._motion_mode, "test_jitter")
+        self.assertEqual(self.app._expected_motion_generation, fresh)
+        self.drain_ui_queue()
+        self.assertEqual(len(self.service.composite_motion_calls), 2)
+        self.assertEqual(self.app._expected_motion_generation, fresh)
+
+    def test_terminal_queued_during_retiring_worker_probe_starts_test_once(self):
+        self.prepare_armed_sources(
+            MotionSources(True, False), gate_active=True
+        )
+        retiring = self.service.active_motion_generation
+        self.app.handle_service_event(
+            ServiceEvent("button", ("Left", False))
+        )
+
+        def emit_terminal_during_probe():
+            self.service.motion_active_hook = None
+            self.service.emit(ServiceEvent(
+                "motion_stopped", "trigger_released", retiring
+            ))
+
+        self.service.motion_active_hook = emit_terminal_during_probe
+        self.app.start_test_run()
+
+        self.assertTrue(self.app._test_waiting_for_motion_stop)
+        self.assertEqual(len(self.service.composite_motion_calls), 1)
+        self.drain_ui_queue()
+        self.assertEqual(len(self.service.composite_motion_calls), 2)
+        self.assertEqual(self.app._motion_mode, "test_jitter")
+        self.assertEqual(
+            self.service.composite_motion_calls[-1].duration_s, 3.0
+        )
+
+    def test_stale_terminal_from_composite_start_hook_cannot_clear_fresh_worker(self):
+        self.prepare_armed_sources(
+            MotionSources(True, False), gate_active=True
+        )
+        retiring = self.service.active_motion_generation
+        self.app.handle_service_event(
+            ServiceEvent("button", ("Left", False))
+        )
+        self.app.handle_service_event(
+            ServiceEvent("button", ("Left", True))
+        )
+        hook_calls = []
+
+        def emit_stale_terminal():
+            hook_calls.append("called")
+            self.service.emit(ServiceEvent(
+                "motion_stopped", "late duplicate", retiring
+            ))
+
+        self.service.start_composite_motion_hook = emit_stale_terminal
+        self.service.emit(ServiceEvent(
+            "motion_stopped", "trigger_released", retiring
+        ))
+        self.drain_ui_queue()
+        fresh = self.service.active_motion_generation
+
+        self.assertEqual(hook_calls, ["called"])
+        self.assertNotEqual(fresh, retiring)
+        self.assertTrue(self.app._normal_motion_started)
+        self.assertEqual(self.app._expected_motion_generation, fresh)
+        self.assertEqual(self.app.runtime_state_var.get(), "MOVING")
+
     def test_binding_change_cancels_pending_test_handoff(self):
         self.prepare_armed_sources(
             MotionSources(True, False), gate_active=True
@@ -2255,12 +2507,15 @@ class JitterRuntimeTests(JitterLayoutTests):
         )
         self.app.start_test_run()
         self.assertIsNotNone(self.app._deferred_motion_action)
+        self.assertFalse(self.app.master_armed)
 
         self.app.trigger_var.set("Mouse4")
         self.app.on_bindings_changed()
 
         self.assertIsNone(self.app._motion_mode)
         self.assertIsNone(self.app._deferred_motion_action)
+        self.assertFalse(self.app.master_armed)
+        self.assertEqual(self.app.runtime_state_var.get(), "DISABLED")
         self.assertTrue(self.app.test_button._enabled)
         self.service.emit(ServiceEvent(
             "motion_stopped", "trigger_released", retiring

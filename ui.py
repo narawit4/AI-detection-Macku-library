@@ -2410,7 +2410,6 @@ class JitterApp(tk.Tk):
             self.trigger_gate.clear()
             self._stop_motion_runtime("Disabled by user")
             self._reconcile_ai_runtime("Master disabled")
-            self._advance_hotkey_epoch()
             self._set_runtime_state("disabled")
             self._render_runtime_controls()
             self.footer_var.set("Selected sources disabled")
@@ -2428,7 +2427,6 @@ class JitterApp(tk.Tk):
             self.footer_var.set("Makcu device is not connected")
             return
         self._motion_event_epoch += 1
-        self._advance_hotkey_epoch()
         self.master_armed = True
         self._motion_mode = None
         self._normal_motion_started = False
@@ -2524,19 +2522,27 @@ class JitterApp(tk.Tk):
             return
         self.overlay_visible = False
         self._cancel_after("_overlay_after_id")
+        self._hide_overlay_fail_closed(
+            "Detection overlay hide failed after AI error"
+        )
+
+    def _hide_overlay_fail_closed(self, failure_message: str) -> None:
         try:
             self.overlay.hide()
         except Exception:
-            logging.exception("Detection overlay hide failed after AI error")
+            logging.exception(failure_message)
+            try:
+                self.overlay.close()
+            except Exception:
+                logging.exception(
+                    "Detection overlay destruction failed after hide error"
+                )
 
     def toggle_overlay(self) -> None:
         if self.overlay_visible:
             self.overlay_visible = False
             self._cancel_after("_overlay_after_id")
-            try:
-                self.overlay.hide()
-            except Exception:
-                logging.exception("Detection overlay hide failed")
+            self._hide_overlay_fail_closed("Detection overlay hide failed")
             self._reconcile_ai_runtime("Overlay disabled")
             self._render_runtime_controls()
             self.footer_var.set("Overlay disabled")
@@ -2709,6 +2715,8 @@ class JitterApp(tk.Tk):
 
         self._deferred_motion_action = None
         self._test_restore_master = self.master_armed
+        self.master_armed = False
+        self.trigger_gate.clear()
         self._test_sources = sources
         self._test_generation += 1
         generation = self._test_generation
@@ -2813,10 +2821,9 @@ class JitterApp(tk.Tk):
         self.overlay_visible = False
         self._cancel_after("_overlay_after_id")
         if was_overlay_visible:
-            try:
-                self.overlay.hide()
-            except Exception:
-                logging.exception("Detection overlay hide failed during STOP")
+            self._hide_overlay_fail_closed(
+                "Detection overlay hide failed during STOP"
+            )
         self._normal_motion_started = False
         self._deferred_motion_action = None
         self._motion_mode = None
@@ -3071,6 +3078,36 @@ class JitterApp(tk.Tk):
             self.ai_fps_var.set(f"{rendered} FPS")
         elif kind == "error":
             logging.error("AI runtime error: %s", event.payload)
+            test_sources = self._test_sources
+            ai_motion_demand = (
+                (self.master_armed and self.ai_selected)
+                or (
+                    self._motion_mode in _TEST_MOTION_MODES
+                    and test_sources is not None
+                    and test_sources.ai
+                )
+            )
+            if not ai_motion_demand:
+                was_overlay_visible = self.overlay_visible
+                self.overlay_visible = False
+                self._cancel_after("_overlay_after_id")
+                if was_overlay_visible:
+                    self._hide_overlay_fail_closed(
+                        "Overlay hide failed after AI error"
+                    )
+                try:
+                    self._stop_ai_runtime("ai_error")
+                except Exception:
+                    logging.exception("AI runtime stop failed after error")
+                self._ai_ready = False
+                self._ai_provider = None
+                self._ai_runtime_active = False
+                self.ai_status_var.set("Error")
+                self.ai_fps_var.set("0 FPS")
+                self.ai_provider_var.set("No provider")
+                self._render_runtime_controls()
+                self.footer_var.set("Overlay stopped; AI detection failed")
+                return
             was_master_armed = self.master_armed
             was_test_run = self._motion_mode in _TEST_MOTION_MODES
             gate_active = self.trigger_gate.active
@@ -3085,10 +3122,9 @@ class JitterApp(tk.Tk):
             self.overlay_visible = False
             self._cancel_after("_overlay_after_id")
             if was_overlay_visible:
-                try:
-                    self.overlay.hide()
-                except Exception:
-                    logging.exception("Overlay hide failed after AI error")
+                self._hide_overlay_fail_closed(
+                    "Overlay hide failed after AI error"
+                )
             try:
                 self._stop_ai_runtime("ai_error")
             except Exception:
@@ -3292,7 +3328,7 @@ class JitterApp(tk.Tk):
         action = self._deferred_motion_action
         self._deferred_motion_action = None
         if action is not None and action.kind == "test":
-            self._restore_after_test()
+            self._restore_after_test(restore_master=False)
             self.footer_var.set("Bindings changed; Test Run canceled")
         self.trigger_gate.configure(trigger, modifier)
         if self._normal_motion_started:
