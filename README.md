@@ -8,9 +8,9 @@ pulse pairs have zero intended displacement; results vary with the receiving
 application's input processing. Choose a Trigger and optional Modifier, arm or
 stop movement, run a three-second test, and assign a global toggle hotkey.
 
-## Motion controls
+## Jitter motion controls
 
-The Motion page provides only these controls:
+In Jitter mode, the Motion page provides these controls:
 
 - **Pulse Size:** 1-8 px per half-pulse.
 - **Pulse Rate:** 10-60 complete pairs per second.
@@ -22,13 +22,37 @@ The preset selector offers `Soft` (1 px, 20 Hz, Smooth), `Balanced` (2 px,
 combination that does not exactly match a preset. Horizontal output is always
 zero.
 
+## AI Aim mode
+
+Choose `AI Aim` in the mode selector to use the fixed centered 320-by-320
+capture and the bundled `models/all_games_320.onnx` model. AI Aim prefers the
+nearest valid head detection; when no head is detected, it targets the upper
+portion of the nearest valid player detection. It does not support arbitrary
+models, training, overlays, or profiles.
+
+AI Aim exposes four controls on the Motion page:
+
+- **Confidence:** minimum accepted detection confidence, from 0.05 to 0.95.
+- **Aim Strength:** movement scaling, from 0.05 to 2.00.
+- **Smoothing:** interpolation strength, from 0.00 to 0.95.
+- **Max Step:** maximum Makcu movement per update, from 1 to 127 counts.
+
+Selecting AI Aim does not move the pointer. Enable arms capture and inference;
+movement still requires the selected Trigger and optional Modifier. Status
+shows `Ready (DirectML)` when DirectML is active or `Ready (CPU)` when the
+explicit CPU fallback is in use. `STOP`, disable, disconnect, mode change, and
+shutdown cancel AI inference and movement immediately. Trigger or Modifier
+release stops movement while the armed AI capture remains ready.
+
 ## Requirements
 
 - Windows 10 or newer
 - Python 3.11+ with Tkinter installed
 - A supported Makcu device and its USB driver for hardware operation
+- A DirectML-capable Windows system for preferred AI inference; CPU fallback
+  is available
 
-Install the only runtime package from a PowerShell prompt in this folder:
+Install the pinned runtime packages from a PowerShell prompt in this folder:
 
 ```powershell
 python -m pip install -r requirements.txt
@@ -69,11 +93,24 @@ by Git.
 ## Verification
 
 ```powershell
-python -m py_compile main.py ui.py motion.py makcu_service.py hotkeys.py settings.py liquid_widgets.py
+python -m py_compile main.py ui.py motion.py ai_targeting.py ai_detection.py ai_capture.py ai_service.py makcu_service.py hotkeys.py settings.py liquid_widgets.py
 python -m unittest discover -s tests -v
-python -c "import makcu"
+python -c "import makcu, onnxruntime, dxcam, numpy"
+python -c "from ai_detection import OnnxDetector, model_resource_path; print(OnnxDetector(model_resource_path()).provider)"
+Get-FileHash -Algorithm SHA256 models\all_games_320.onnx
 git diff --check
 ```
+
+The approved model SHA-256 is
+`6B9157D6419F9DBC40D2DCECCC33A3387078C86F1C5872EDA544B174FF48499C`.
+
+## License and source availability
+
+Jitter and the bundled model are distributed under the GNU Affero General
+Public License version 3; see `LICENSE` and `THIRD_PARTY_NOTICES.md`. Every
+distributed executable or release must provide access alongside it to the
+complete corresponding Jitter source for that exact version, including build
+scripts and distribution metadata. A binary-only release is not sufficient.
 
 ## Explicit packaging
 
@@ -87,4 +124,6 @@ gen.bat
 The script installs Nuitka and its build helpers, runs the checks above, and
 creates `build-output\Jitter.exe`; Nuitka output is recorded in
 `build-output\build.log`. Use `gen.bat --help` to inspect this behavior without
-installing dependencies or starting a build.
+installing dependencies or starting a build. Publishing that executable also
+requires publishing or linking the matching complete source as described
+above.
