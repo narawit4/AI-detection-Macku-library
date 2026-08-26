@@ -74,6 +74,18 @@ class BlockingAimEngine:
         return 3, 0
 
 
+class BlockingFailingAimEngine:
+    def __init__(self):
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def step(self, _snapshot, _settings, _now):
+        self.entered.set()
+        if not self.release.wait(1.0):
+            raise TimeoutError("test did not release failing AI engine")
+        raise RuntimeError("obsolete AI failure")
+
+
 class StopAfterFirstWait:
     def __init__(self):
         self.timeouts = []
@@ -234,20 +246,37 @@ class MakcuMovementTests(unittest.TestCase):
         self.assertEqual(controller.moves, [])
 
     def test_ai_motion_rejects_disconnected_service_and_invalid_duration(self):
+        class OverflowDuration:
+            def __float__(self):
+                raise OverflowError("duration overflow")
+
         disconnected = MakcuService(lambda _event: None)
         self.addCleanup(disconnected.close)
         self.assertFalse(
             disconnected.start_ai_motion(lambda: None, AimSettings)
         )
 
-        service, _controller, _events = self.connected_service()
-        for invalid_duration in (object(), "not-a-duration"):
+        invalid_durations = (
+            object(),
+            "not-a-duration",
+            float("inf"),
+            float("-inf"),
+            float("nan"),
+            OverflowDuration(),
+        )
+        for invalid_duration in invalid_durations:
             with self.subTest(duration=invalid_duration):
-                self.assertFalse(
-                    service.start_ai_motion(
+                service, _controller, _events = self.connected_service()
+                try:
+                    accepted = service.start_ai_motion(
                         lambda: None, AimSettings, invalid_duration
                     )
-                )
+                except Exception as exc:
+                    self.fail(f"invalid duration raised {type(exc).__name__}: {exc}")
+                finally:
+                    service.stop_motion("test_cleanup")
+                    service.join_motion(1.0)
+                self.assertFalse(accepted)
 
     def test_ai_motion_is_mutually_exclusive_with_jitter_motion(self):
         ai_engine = BlockingAimEngine()
@@ -280,6 +309,34 @@ class MakcuMovementTests(unittest.TestCase):
         service.join_motion(1.0)
 
         self.assertFalse(service.motion_active)
+        self.assertEqual(controller.moves, [])
+        self.assertEqual(
+            events[-1], ServiceEvent("motion_stopped", "duration_complete")
+        )
+
+    def test_ai_duration_crossed_during_blocked_step_prevents_move(self):
+        engine = BlockingAimEngine()
+        deadline_crossed = threading.Event()
+        target = TargetSnapshot(1, 0.0, "head", 170, 160)
+        service, controller, events = self.connected_service(
+            aim_engine_factory=lambda: engine
+        )
+        self.addCleanup(engine.release.set)
+
+        def clock():
+            return 1.0 if deadline_crossed.is_set() else 0.0
+
+        with mock.patch("makcu_service.time.perf_counter", side_effect=clock):
+            self.assertTrue(
+                service.start_ai_motion(
+                    lambda: target, AimSettings, duration_s=0.5
+                )
+            )
+            self.assertTrue(engine.entered.wait(1.0))
+            deadline_crossed.set()
+            engine.release.set()
+            service.join_motion(1.0)
+
         self.assertEqual(controller.moves, [])
         self.assertEqual(
             events[-1], ServiceEvent("motion_stopped", "duration_complete")
@@ -392,6 +449,49 @@ class MakcuMovementTests(unittest.TestCase):
         self.assertEqual(controller.moves, [])
         self.assertFalse(service.connected)
         self.assertTrue(wait_until(lambda: controller.disconnected))
+
+    def test_close_suppresses_stale_ai_error_event(self):
+        engine = BlockingFailingAimEngine()
+        target = TargetSnapshot(1, time.perf_counter(), "head", 170, 160)
+        service, _controller, events = self.connected_service(
+            aim_engine_factory=lambda: engine
+        )
+        self.addCleanup(engine.release.set)
+        self.assertTrue(service.start_ai_motion(lambda: target, AimSettings))
+        self.assertTrue(engine.entered.wait(1.0))
+
+        service.close()
+        events_after_close = len(events)
+        engine.release.set()
+        service.join_motion(1.0)
+
+        self.assertEqual(events[events_after_close:], [])
+
+    def test_reconnect_suppresses_stale_ai_error_event(self):
+        engine = BlockingFailingAimEngine()
+        old = FakeController()
+        fresh = FakeController()
+        controllers = iter((old, fresh))
+        events = []
+        service = MakcuService(
+            events.append,
+            controller_factory=lambda **_kwargs: next(controllers),
+            aim_engine_factory=lambda: engine,
+        )
+        self.addCleanup(engine.release.set)
+        self.addCleanup(service.close)
+        service._connect_worker(service._begin_connection())
+        target = TargetSnapshot(1, time.perf_counter(), "head", 170, 160)
+        self.assertTrue(service.start_ai_motion(lambda: target, AimSettings))
+        self.assertTrue(engine.entered.wait(1.0))
+
+        service.reconnect()
+        self.assertTrue(wait_until(lambda: service.controller is fresh))
+        events_after_reconnect = len(events)
+        engine.release.set()
+        service.join_motion(1.0)
+
+        self.assertEqual(events[events_after_reconnect:], [])
 
     def test_ai_worker_polls_at_240_hz(self):
         engine = FakeAimEngine()

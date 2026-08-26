@@ -7,6 +7,7 @@ main thread.
 """
 
 from dataclasses import dataclass
+import math
 import threading
 import time
 from typing import Any, Callable
@@ -178,10 +179,15 @@ class MakcuService:
             if self._motion_active:
                 return True
             try:
-                duration = None if duration_s is None else max(0.0, float(duration_s))
-            except (TypeError, ValueError):
+                duration = None if duration_s is None else float(duration_s)
+                if duration is not None and not math.isfinite(duration):
+                    return False
+                if duration is not None:
+                    duration = max(0.0, duration)
+            except (TypeError, ValueError, OverflowError):
                 return False
             connection_generation = self._generation
+            expected_controller = self._controller
             stop_event = threading.Event()
             with self._motion_cancel_lock:
                 self._motion_generation += 1
@@ -199,6 +205,7 @@ class MakcuService:
                     duration,
                     mode,
                     snapshot_provider,
+                    expected_controller,
                 ),
                 name=f"MakcuMotion-{motion_generation}",
                 daemon=True,
@@ -263,12 +270,16 @@ class MakcuService:
         duration_s: float | None,
         mode: str = "jitter",
         snapshot_provider: Callable[[], Any] | None = None,
+        expected_controller: Any | None = None,
     ) -> None:
         engine: Any | None = None
         reason: str | None = None
         error_payload: str | None = None
         started = time.perf_counter()
         previous_tick = started
+        if expected_controller is None:
+            with self._lock:
+                expected_controller = self._controller
         try:
             try:
                 engine_factory = (
@@ -323,6 +334,12 @@ class MakcuService:
                     # report for this generation.
                     with self._lock:
                         if (
+                            duration_s is not None
+                            and max(0.0, time.perf_counter() - started) >= duration_s
+                        ):
+                            reason = "duration_complete"
+                            break
+                        if (
                             stop_event.is_set()
                             or motion_generation != self._motion_generation
                             or connection_generation != self._generation
@@ -355,27 +372,33 @@ class MakcuService:
                 stop_event.wait(max(0.0, interval - (time.perf_counter() - tick_started)))
         finally:
             with self._lock:
-                current = (
+                owns_motion_slot = (
                     motion_generation == self._motion_generation
                     and self._motion_thread is threading.current_thread()
+                )
+                terminal_current = (
+                    owns_motion_slot
+                    and connection_generation == self._generation
+                    and expected_controller is self._controller
+                    and not self._closed
                 )
                 with self._motion_cancel_lock:
                     explicit_reason = self._motion_stop_reasons.pop(
                         motion_generation, None
                     )
-                if current:
+                if owns_motion_slot:
                     self._motion_active = False
                     self._motion_thread = None
                 if reason is None:
                     reason = explicit_reason
-                if reason is None and not current:
+                if reason is None and not terminal_current:
                     reason = "disconnected"
                 if reason is None:
                     reason = "manual"
-            if error_payload is not None:
-                self._emit(ServiceEvent("motion_error", error_payload))
-            elif current:
-                self._emit(ServiceEvent("motion_stopped", reason))
+                if error_payload is not None and terminal_current:
+                    self._emit(ServiceEvent("motion_error", error_payload))
+                elif terminal_current:
+                    self._emit(ServiceEvent("motion_stopped", reason))
 
     def _setup_must_abort(self, generation: int) -> bool:
         with self._lock:
