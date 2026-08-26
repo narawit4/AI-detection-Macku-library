@@ -1,5 +1,42 @@
 {
   "schema_version": 1,
+  "runtime_inventory": [
+    {
+      "import_root": "makcu",
+      "distribution": "makcu",
+      "required_by": "Jitter"
+    },
+    {
+      "import_root": "serial",
+      "distribution": "pyserial",
+      "required_by": "makcu==2.3.1"
+    },
+    {
+      "import_root": "pygame",
+      "distribution": "pygame-ce",
+      "required_by": "sound_service.py when distributed"
+    },
+    {
+      "import_root": "onnxruntime",
+      "distribution": "onnxruntime-directml",
+      "required_by": "Jitter AI detection"
+    },
+    {
+      "import_root": "dxcam",
+      "distribution": "dxcam",
+      "required_by": "Jitter AI capture"
+    },
+    {
+      "import_root": "comtypes",
+      "distribution": "comtypes",
+      "required_by": "dxcam==0.3.0"
+    },
+    {
+      "import_root": "numpy",
+      "distribution": "numpy",
+      "required_by": "Jitter AI runtime"
+    }
+  ],
   "packages": [
     {
       "name": "makcu",
@@ -211,6 +248,46 @@
       "source": {
         "url": "https://files.pythonhosted.org/packages/de/b7/b3d3e3fa42f347ac4b37fd639634935b4eefff1d5d61bdf72a6d8b906919/dxcam-0.3.0.tar.gz",
         "sha256": "D524DA45ADF70E044865E7D4E9098E655D6734951781155DDA50C1292E20D8BD",
+        "required_with_binary": false
+      }
+    },
+    {
+      "name": "pyserial",
+      "version": "3.5",
+      "license": "BSD-3-Clause",
+      "copyright": "Copyright (c) 2001-2020 Chris Liechti <cliechti@gmx.net>",
+      "homepage": "https://github.com/pyserial/pyserial",
+      "metadata_provenance": "Installed pyserial-3.5.dist-info/METADATA: Name pyserial, Version 3.5, BSD license classifier; runtime import confirmed in makcu 2.3.1.",
+      "license_files": [
+        {
+          "path": "licenses/pyserial-3.5/LICENSE.txt",
+          "sha256": "F91CB9813DE6A5B142B8F7F2DEDE630B5134160AEDAEAF55F4D6A7E2593CA3F3",
+          "provenance": "PyPI pyserial 3.5 source distribution: LICENSE.txt"
+        }
+      ],
+      "source": {
+        "url": "https://files.pythonhosted.org/packages/1e/7d/ae3f0a63f41e4d2f6cb66a5b57197850f919f59e558159a4dd3a818f5082/pyserial-3.5.tar.gz",
+        "sha256": "3C77E014170DFFFBD816E6FFC205E9842EFB10BE9F58EC16D3E8675B4925CDDB",
+        "required_with_binary": false
+      }
+    },
+    {
+      "name": "comtypes",
+      "version": "1.4.16",
+      "license": "MIT",
+      "copyright": "Copyright (c) 2006-2013 Thomas Heller; Copyright (c) 2014 Comtypes Developers",
+      "homepage": "https://github.com/enthought/comtypes",
+      "metadata_provenance": "Installed comtypes-1.4.16.dist-info/METADATA: Name comtypes, Version 1.4.16, License-Expression MIT; runtime import confirmed in DXCam 0.3.0.",
+      "license_files": [
+        {
+          "path": "licenses/comtypes-1.4.16/LICENSE.txt",
+          "sha256": "3B1767F010980B46926B23BF0AFCE5D72F3359EE5E2B27BACA71B9B4209AB383",
+          "provenance": "Installed comtypes-1.4.16.dist-info/licenses/LICENSE.txt"
+        }
+      ],
+      "source": {
+        "url": "https://files.pythonhosted.org/packages/c6/2a/65274c13327f637ec13af8d39f2cf579d9ebe7a0e683696b5f05236d2805/comtypes-1.4.16.tar.gz",
+        "sha256": "CD66D1ADD01265CFACE4DF51BA1E31CD1657E04463C281C802E737E79E1BA93C",
         "required_with_binary": false
       }
     }

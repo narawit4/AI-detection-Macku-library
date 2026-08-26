@@ -135,8 +135,8 @@ After implementation changes, run:
 ```powershell
 python -m py_compile main.py ui.py motion.py ai_targeting.py ai_detection.py ai_capture.py ai_service.py makcu_service.py hotkeys.py settings.py sound_service.py liquid_widgets.py distribution_metadata.py
 python -m unittest discover -s tests -v
-python -c "import makcu, onnxruntime, dxcam, numpy"
-python distribution_metadata.py --review-json
+python -c "import makcu, serial, onnxruntime, dxcam, comtypes, numpy"
+gen.bat --review-json
 ```
 
 Hardware-dependent changes additionally require a connected Makcu device to

@@ -8,6 +8,7 @@ from distribution_metadata import (
     copy_release_materials,
     parse_pinned_requirements,
     validate_license_manifest,
+    validate_runtime_inventory,
 )
 
 
@@ -38,7 +39,10 @@ class RequirementMetadataTests(unittest.TestCase):
         record_versions = {record.name: record.version for record in records}
         self.assertEqual(
             set(record_versions),
-            {"makcu", "pygame-ce", "numpy", "onnxruntime-directml", "dxcam"},
+            {
+                "makcu", "pygame-ce", "numpy", "onnxruntime-directml", "dxcam",
+                "pyserial", "comtypes",
+            },
         )
         for item in requirements:
             self.assertEqual(record_versions[item.name], item.version)
@@ -73,6 +77,10 @@ class RequirementMetadataTests(unittest.TestCase):
                 "FB0AF774B4D7CFFC5B9D046F2AAEADE2F37DF2F80ABF8033C95DFFFCC77A8866",
             "licenses/dxcam-0.3.0/LICENSE":
                 "4FE6BAEE928B96D2CF0F6A238275ACFD86182CDAEC6E8146654F34CF08C1C9B3",
+            "licenses/pyserial-3.5/LICENSE.txt":
+                "F91CB9813DE6A5B142B8F7F2DEDE630B5134160AEDAEAF55F4D6A7E2593CA3F3",
+            "licenses/comtypes-1.4.16/LICENSE.txt":
+                "3B1767F010980B46926B23BF0AFCE5D72F3359EE5E2B27BACA71B9B4209AB383",
             "licenses/sources/makcu-2.3.1.tar.gz":
                 "DA94880094DA55E83FDD8E2BB7CD16D4621E46A92839E36BFB8DF3ABFCECE7F5",
             "licenses/sources/pygame_ce-2.5.6.tar.gz":
@@ -81,6 +89,37 @@ class RequirementMetadataTests(unittest.TestCase):
         for relative, expected_hash in expected_hashes.items():
             actual_hash = hashlib.sha256((ROOT / relative).read_bytes()).hexdigest().upper()
             self.assertEqual(actual_hash, expected_hash, relative)
+
+    def test_runtime_inventory_requires_every_import_root_to_be_pinned_and_licensed(self):
+        requirements = parse_pinned_requirements(
+            "makcu==2.3.1\npyserial==3.5\ndxcam==0.3.0\ncomtypes==1.4.16\n"
+        )
+        packages = {
+            "makcu": "2.3.1",
+            "pyserial": "3.5",
+            "dxcam": "0.3.0",
+            "comtypes": "1.4.16",
+        }
+        inventory = [
+            {"import_root": "makcu", "distribution": "makcu", "required_by": "Jitter"},
+            {"import_root": "serial", "distribution": "pyserial", "required_by": "makcu==2.3.1"},
+            {"import_root": "dxcam", "distribution": "dxcam", "required_by": "Jitter"},
+            {"import_root": "comtypes", "distribution": "comtypes", "required_by": "dxcam==0.3.0"},
+        ]
+
+        validated = validate_runtime_inventory(
+            inventory, requirements, packages, {"makcu", "serial", "dxcam", "comtypes"}
+        )
+        self.assertEqual(
+            {(item.import_root, item.distribution) for item in validated},
+            {("makcu", "makcu"), ("serial", "pyserial"),
+             ("dxcam", "dxcam"), ("comtypes", "comtypes")},
+        )
+
+        with self.assertRaisesRegex(ValueError, "missing"):
+            validate_runtime_inventory(
+                inventory, requirements, packages, {"makcu", "serial", "missing"}
+            )
 
 
 class ReleaseMaterialTests(unittest.TestCase):

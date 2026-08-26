@@ -3,6 +3,8 @@ import hashlib
 import json
 import re
 import subprocess
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -82,6 +84,8 @@ class EntryPointTests(unittest.TestCase):
                 "onnxruntime-directml": "==1.24.4",
                 "dxcam": "==0.3.0",
                 "numpy": "==2.5.2",
+                "pyserial": "==3.5",
+                "comtypes": "==1.4.16",
             },
         )
         for forbidden in (
@@ -127,15 +131,40 @@ class EntryPointTests(unittest.TestCase):
         )
         self.assertEqual(reviewed.returncode, 0, reviewed.stdout + reviewed.stderr)
         payload = json.loads(reviewed.stdout)
-        self.assertTrue(
-            {"ai_capture.py", "ai_detection.py", "ai_targeting.py", "ai_service.py"}
-            <= set(payload["compile_targets"])
+        expected_compile_targets = {
+            "main.py", "ui.py", "motion.py", "ai_targeting.py", "ai_detection.py",
+            "ai_capture.py", "ai_service.py", "makcu_service.py", "hotkeys.py",
+            "settings.py", "liquid_widgets.py", "distribution_metadata.py",
+        }
+        expected_runtime_imports = {
+            "makcu", "serial", "onnxruntime", "dxcam", "comtypes", "numpy",
+        }
+        expected_data_options = {
+            "--include-data-dir=models=models",
+            "--include-data-dir=licenses=licenses",
+        }
+        sound_is_present = (
+            (ROOT / "sound_service.py").is_file() and (ROOT / "sound").is_dir()
         )
-        self.assertIn("--include-data-dir=models=models", payload["nuitka_data_options"])
-        self.assertIn("--include-data-dir=licenses=licenses", payload["nuitka_data_options"])
+        if sound_is_present:
+            expected_compile_targets.add("sound_service.py")
+            expected_runtime_imports.add("pygame")
+            expected_data_options.add("--include-data-dir=sound=sound")
+        self.assertEqual(set(payload["compile_targets"]), expected_compile_targets)
+        self.assertEqual(set(payload["runtime_imports"]), expected_runtime_imports)
+        self.assertEqual(set(payload["nuitka_data_options"]), expected_data_options)
         self.assertEqual(
             set(payload["release_materials"]),
             {"LICENSE", "THIRD_PARTY_NOTICES.md", "licenses"},
+        )
+        self.assertEqual(
+            {item["import_root"]: item["distribution"] for item in payload["runtime_inventory"]},
+            {
+                "makcu": "makcu", "serial": "pyserial",
+                "onnxruntime": "onnxruntime-directml", "dxcam": "dxcam",
+                "comtypes": "comtypes", "numpy": "numpy",
+                **({"pygame": "pygame-ce"} if sound_is_present else {}),
+            },
         )
         after = tuple(
             (path.exists(), path.stat().st_mtime_ns if path.exists() else None)
@@ -144,16 +173,44 @@ class EntryPointTests(unittest.TestCase):
         self.assertEqual(after, before)
 
     def test_gen_rejects_unknown_options_without_building(self):
-        output = ROOT / "build-output" / "Jitter.exe"
-        before = (output.exists(), output.stat().st_mtime_ns if output.exists() else None)
-        completed = subprocess.run(
-            ["cmd.exe", "/d", "/c", str(ROOT / "gen.bat"), "--not-a-build-mode"],
-            cwd=ROOT, capture_output=True, text=True, timeout=10,
+        invalid_vectors = (
+            ("--not-a-build-mode",),
+            ("-h",),
+            ("foo&echo INJECTED",),
+            ('foo"bar',),
+            ("", "--review-json"),
+            ("--help", "extra"),
+            ("--review-json", "extra"),
         )
-        self.assertEqual(completed.returncode, 2)
-        self.assertIn("unknown option", completed.stderr.lower())
-        after = (output.exists(), output.stat().st_mtime_ns if output.exists() else None)
-        self.assertEqual(after, before)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            script = root / "gen.bat"
+            script.write_bytes((ROOT / "gen.bat").read_bytes())
+            (root / "distribution_metadata.py").write_bytes(
+                (ROOT / "distribution_metadata.py").read_bytes()
+            )
+            (root / "python.cmd").write_text(
+                "@echo off\r\n"
+                "if \"%~2\"==\"--classify-gen-invocation\" "
+                f'\"{sys.executable}\" %*\r\n'
+                "if errorlevel 1 exit /b %errorlevel%\r\n"
+                "exit /b 97\r\n",
+                encoding="utf-8",
+            )
+            invalid_vectors = (*invalid_vectors, (str(script),))
+            for arguments in invalid_vectors:
+                with self.subTest(arguments=arguments):
+                    completed = subprocess.run(
+                        ["cmd.exe", "/d", "/c", str(script), *arguments],
+                        cwd=root, capture_output=True, text=True, timeout=10,
+                    )
+                    self.assertEqual(
+                        completed.returncode, 2, completed.stdout + completed.stderr
+                    )
+                    self.assertNotIn(
+                        "injected", (completed.stdout + completed.stderr).lower()
+                    )
+                    self.assertFalse((root / "build-output").exists())
 
     def test_source_tree_does_not_import_or_define_removed_stacks(self):
         forbidden_imports = {
@@ -161,7 +218,12 @@ class EntryPointTests(unittest.TestCase):
             "mss", "customtkinter", "pystray", "pil",
         }
         imported_roots = set()
-        for path in ROOT.glob("*.py"):
+        source_paths = [
+            path for path in ROOT.rglob("*.py")
+            if not ({"tests", ".superpowers", "build-output", "__pycache__"}
+                    & set(path.relative_to(ROOT).parts))
+        ]
+        for path in source_paths:
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
             for node in ast.walk(tree):
                 if isinstance(node, ast.Import):
@@ -170,11 +232,14 @@ class EntryPointTests(unittest.TestCase):
                     imported_roots.add(node.module.split(".", 1)[0].lower())
         self.assertTrue(imported_roots.isdisjoint(forbidden_imports), imported_roots & forbidden_imports)
 
-        prohibited_features = {"training", "profile", "overlay", "tray", "ai_tracker"}
+        prohibited_features = {
+            "training", "profile", "profiles", "overlay", "overlays", "tray",
+            "ai_tracker",
+        }
         source_tokens = {
             token
-            for path in ROOT.glob("*.py")
-            for part in (*path.parts, path.stem)
+            for path in source_paths
+            for part in (*path.relative_to(ROOT).parts, path.stem)
             for token in re.split(r"[-_.]+", part.lower())
         }
         self.assertTrue(

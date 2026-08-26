@@ -36,3 +36,11 @@ it is not a runtime dependency and is not part of the published source tree.
   instructions in `licenses/onnxruntime-directml-1.24.4/ThirdPartyNotices.txt`.
 - **DXCam 0.3.0** — MIT — exact copyright and license notice in
   `licenses/dxcam-0.3.0/LICENSE`.
+- **pyserial 3.5** — BSD-3-Clause — required by makcu and imported as
+  `serial`; its exact binary-redistribution notice is in
+  `licenses/pyserial-3.5/LICENSE.txt`. Its optional `hidapi` extra is not used
+  or bundled.
+- **comtypes 1.4.16** — MIT — required by DXCam; its exact copyright and
+  license notice is in `licenses/comtypes-1.4.16/LICENSE.txt`. It is pure
+  Python and uses Windows' system COM/DXGI/D3D interfaces rather than shipping
+  those operating-system libraries.

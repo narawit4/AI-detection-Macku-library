@@ -35,6 +35,13 @@ class LicenseRecord:
     source_archive: Path | None
 
 
+@dataclass(frozen=True)
+class RuntimeImportRecord:
+    import_root: str
+    distribution: str
+    required_by: str
+
+
 def normalize_distribution_name(name: str) -> str:
     normalized = _NAME_SEPARATOR.sub("-", name.strip()).lower()
     if not normalized:
@@ -155,6 +162,65 @@ def validate_license_manifest(
     return tuple(records)
 
 
+def validate_runtime_inventory(
+    inventory: object,
+    requirements: Iterable[PinnedRequirement],
+    package_versions: Mapping[str, str],
+    runtime_imports: Iterable[str],
+) -> tuple[RuntimeImportRecord, ...]:
+    if not isinstance(inventory, list) or not inventory:
+        raise ValueError("runtime inventory must be a non-empty list")
+    requirement_versions = {
+        requirement.name: requirement.version for requirement in requirements
+    }
+    by_root = {}
+    for item in inventory:
+        if not isinstance(item, dict):
+            raise ValueError("runtime inventory item must be an object")
+        import_root = item.get("import_root")
+        distribution = item.get("distribution")
+        required_by = item.get("required_by")
+        if not isinstance(import_root, str) or not re.fullmatch(
+            r"[A-Za-z_][A-Za-z0-9_]*", import_root
+        ):
+            raise ValueError("runtime inventory has an invalid import root")
+        if import_root in by_root:
+            raise ValueError(f"duplicate runtime import root: {import_root}")
+        if not isinstance(distribution, str) or not distribution.strip():
+            raise ValueError(f"runtime import {import_root} has no distribution")
+        if not isinstance(required_by, str) or not required_by.strip():
+            raise ValueError(f"runtime import {import_root} has no required_by")
+        by_root[import_root] = RuntimeImportRecord(
+            import_root,
+            normalize_distribution_name(distribution),
+            required_by,
+        )
+
+    selected = []
+    seen_roots = set()
+    for import_root in runtime_imports:
+        if import_root in seen_roots:
+            raise ValueError(f"duplicate packaged runtime import: {import_root}")
+        seen_roots.add(import_root)
+        record = by_root.get(import_root)
+        if record is None:
+            raise ValueError(f"runtime import has no inventory record: {import_root}")
+        pinned_version = requirement_versions.get(record.distribution)
+        licensed_version = package_versions.get(record.distribution)
+        if pinned_version is None:
+            raise ValueError(
+                f"runtime import {import_root} distribution is not pinned: "
+                f"{record.distribution}"
+            )
+        if licensed_version != pinned_version:
+            raise ValueError(
+                f"runtime import {import_root} distribution is not licensed at "
+                f"{record.distribution}=={pinned_version}"
+            )
+        selected.append(record)
+    return tuple(selected)
+
+
 def _environment_tokens(environ: Mapping[str, str], name: str) -> list[str]:
     value = environ.get(name, "")
     tokens = value.split()
@@ -172,13 +238,21 @@ def review_payload(
     manifest_path = root / "licenses" / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     records = validate_license_manifest(manifest, root, requirements)
+    compile_targets = _environment_tokens(
+        environ, "JITTER_PACKAGE_COMPILE_TARGETS"
+    )
+    runtime_imports = _environment_tokens(environ, "JITTER_PACKAGE_RUNTIME_IMPORTS")
+    if "sound_service.py" in compile_targets and "pygame" not in runtime_imports:
+        runtime_imports.append("pygame")
+    inventory = validate_runtime_inventory(
+        manifest.get("runtime_inventory"),
+        requirements,
+        {record.name: record.version for record in records},
+        runtime_imports,
+    )
     return {
-        "compile_targets": _environment_tokens(
-            environ, "JITTER_PACKAGE_COMPILE_TARGETS"
-        ),
-        "runtime_imports": _environment_tokens(
-            environ, "JITTER_PACKAGE_RUNTIME_IMPORTS"
-        ),
+        "compile_targets": compile_targets,
+        "runtime_imports": runtime_imports,
         "nuitka_data_options": _environment_tokens(
             environ, "JITTER_PACKAGE_NUITKA_DATA_OPTIONS"
         ),
@@ -192,7 +266,56 @@ def review_payload(
         "licensed_packages": [
             {"name": record.name, "version": record.version} for record in records
         ],
+        "runtime_inventory": [
+            {
+                "import_root": record.import_root,
+                "distribution": record.distribution,
+                "required_by": record.required_by,
+            }
+            for record in inventory
+        ],
     }
+
+
+def classify_gen_invocation(
+    command_line: str,
+    script_path: Path | str,
+) -> int:
+    if os.name != "nt":
+        raise RuntimeError("gen.bat invocation classification requires Windows")
+    import ctypes
+    from ctypes import wintypes
+
+    argument_count = ctypes.c_int()
+    command_line_to_argv = ctypes.windll.shell32.CommandLineToArgvW
+    command_line_to_argv.argtypes = [
+        wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_int)
+    ]
+    command_line_to_argv.restype = ctypes.POINTER(wintypes.LPWSTR)
+    pointer = command_line_to_argv(command_line, ctypes.byref(argument_count))
+    if not pointer:
+        return 2
+    try:
+        arguments = [pointer[index] for index in range(argument_count.value)]
+    finally:
+        ctypes.windll.kernel32.LocalFree(pointer)
+
+    expected_script = os.path.normcase(os.path.abspath(script_path))
+    script_index = None
+    for index, argument in enumerate(arguments):
+        if os.path.normcase(os.path.abspath(argument)) == expected_script:
+            script_index = index
+            break
+    if script_index is None:
+        return 2
+    batch_arguments = arguments[script_index + 1:]
+    if batch_arguments == []:
+        return 0
+    if batch_arguments == ["--help"]:
+        return 10
+    if batch_arguments == ["--review-json"]:
+        return 11
+    return 2
 
 
 def copy_release_materials(
@@ -227,7 +350,13 @@ def main(argv: list[str] | None = None) -> int:
     action = parser.add_mutually_exclusive_group(required=True)
     action.add_argument("--review-json", action="store_true")
     action.add_argument("--copy-release-materials", metavar="OUTPUT_DIR")
+    action.add_argument("--classify-gen-invocation", action="store_true")
     args = parser.parse_args(argv)
+    if args.classify_gen_invocation:
+        return classify_gen_invocation(
+            os.environ.get("JITTER_GEN_COMMAND_LINE", ""),
+            os.environ.get("JITTER_GEN_SCRIPT", ""),
+        )
     if args.review_json:
         print(json.dumps(review_payload(), sort_keys=True))
     else:

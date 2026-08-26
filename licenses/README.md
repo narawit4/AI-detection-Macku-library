@@ -24,10 +24,12 @@ component. In particular:
   needed for recipients to modify and relink/recombine the library when LGPL
   section 6 requires them. A source archive by itself is not a blanket claim of
   compliance for every one-file packaging method.
-- NumPy, DXCam, and ONNX Runtime require preservation of their copyright and
-  license notices. ONNX Runtime's exact `ThirdPartyNotices.txt` includes terms
-  and source instructions for components bundled by Microsoft; those
-  instructions remain applicable.
+- NumPy, DXCam, pyserial, comtypes, and ONNX Runtime require preservation of
+  their copyright and license notices. ONNX Runtime's exact
+  `ThirdPartyNotices.txt` includes terms and source instructions for components
+  bundled by Microsoft; those instructions remain applicable. pyserial's
+  optional `hidapi` extra is not selected, and comtypes uses Windows system
+  interfaces rather than redistributing COM, DXGI, or D3D system libraries.
 
 For an online release, direct source archives next to the executable are the
 preferred option. Equivalent-access links may be used only when the applicable
