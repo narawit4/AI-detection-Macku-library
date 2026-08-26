@@ -33,6 +33,20 @@ class TargetSnapshot:
 
 
 @dataclass(frozen=True)
+class DetectionFrameSnapshot:
+    sequence: int
+    captured_at: float
+    detections: tuple[Detection, ...]
+    selected_index: int | None
+
+
+@dataclass(frozen=True)
+class DetectionAnalysis:
+    target: TargetSnapshot | None
+    frame: DetectionFrameSnapshot
+
+
+@dataclass(frozen=True)
 class AimSettings:
     confidence: float = 0.35
     aim_strength: float = 0.35
@@ -104,6 +118,58 @@ def _aim_point(detection: Detection) -> tuple[str, float, float] | None:
     return None
 
 
+def analyze_detections(
+    detections: Iterable[Detection],
+    settings: AimSettings,
+    *,
+    sequence: int,
+    captured_at: float,
+    previous: TargetSnapshot | None = None,
+) -> DetectionAnalysis:
+    accepted = tuple(
+        detection
+        for detection in detections
+        if detection.confidence >= settings.confidence
+        and _aim_point(detection) is not None
+    )
+    candidates = [
+        (index, point)
+        for index, detection in enumerate(accepted)
+        if (point := _aim_point(detection)) is not None
+    ]
+    heads = [item for item in candidates if item[1][0] == "head"]
+    candidates = heads or [item for item in candidates if item[1][0] == "player"]
+    selected_index = None
+    target = None
+    if candidates:
+        target_class = candidates[0][1][0]
+        origin = (160.0, 160.0)
+        if previous is not None and previous.target_class == target_class:
+            associated = [
+                item for item in candidates
+                if math.hypot(
+                    item[1][1] - previous.aim_x,
+                    item[1][2] - previous.aim_y,
+                ) <= 48.0
+            ]
+            if associated:
+                candidates = associated
+                origin = (previous.aim_x, previous.aim_y)
+        selected_index, selected = min(
+            candidates,
+            key=lambda item: math.hypot(
+                item[1][1] - origin[0], item[1][2] - origin[1]
+            ),
+        )
+        target = TargetSnapshot(sequence, captured_at, *selected)
+    return DetectionAnalysis(
+        target=target,
+        frame=DetectionFrameSnapshot(
+            sequence, captured_at, accepted, selected_index
+        ),
+    )
+
+
 def select_target(
     detections: Iterable[Detection],
     settings: AimSettings,
@@ -112,34 +178,13 @@ def select_target(
     captured_at: float,
     previous: TargetSnapshot | None = None,
 ) -> TargetSnapshot | None:
-    candidates = [
-        point
-        for detection in detections
-        if detection.confidence >= settings.confidence
-        if (point := _aim_point(detection)) is not None
-    ]
-    heads = [candidate for candidate in candidates if candidate[0] == "head"]
-    candidates = heads or [candidate for candidate in candidates if candidate[0] == "player"]
-    if not candidates:
-        return None
-
-    if previous is not None and previous.target_class == candidates[0][0]:
-        associated = [
-            candidate for candidate in candidates
-            if math.hypot(candidate[1] - previous.aim_x, candidate[2] - previous.aim_y) <= 48.0
-        ]
-        if associated:
-            candidates = associated
-            origin = (previous.aim_x, previous.aim_y)
-        else:
-            origin = (160.0, 160.0)
-    else:
-        origin = (160.0, 160.0)
-
-    selected = min(candidates, key=lambda candidate: math.hypot(
-        candidate[1] - origin[0], candidate[2] - origin[1]
-    ))
-    return TargetSnapshot(sequence, captured_at, *selected)
+    return analyze_detections(
+        detections,
+        settings,
+        sequence=sequence,
+        captured_at=captured_at,
+        previous=previous,
+    ).target
 
 
 class AimMovementEngine:

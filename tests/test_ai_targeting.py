@@ -1,14 +1,17 @@
 import math
 import unittest
+from dataclasses import FrozenInstanceError
 
 from ai_targeting import (
     AIM_LIMITS,
     AimSettings,
     Detection,
+    DetectionFrameSnapshot,
     TargetSnapshot,
     AimMovementEngine,
     aim_settings_from_mapping,
     aim_settings_to_mapping,
+    analyze_detections,
     select_target,
 )
 
@@ -63,6 +66,37 @@ class AimSettingsTests(unittest.TestCase):
 
 
 class TargetSelectionTests(unittest.TestCase):
+    def test_analysis_filters_confidence_and_preserves_selected_box_index(self):
+        low = Detection(1, 2, 10, 20, 0.20, 7)
+        player = Detection(20, 30, 60, 130, 0.80, 0)
+        head = Detection(140, 140, 180, 180, 0.90, 7)
+
+        result = analyze_detections(
+            (low, player, head),
+            AimSettings(confidence=0.35),
+            sequence=4,
+            captured_at=10.0,
+        )
+
+        self.assertEqual(result.frame, DetectionFrameSnapshot(
+            sequence=4,
+            captured_at=10.0,
+            detections=(player, head),
+            selected_index=1,
+        ))
+        self.assertIsNotNone(result.target)
+        self.assertEqual(result.target.target_class, "head")
+
+    def test_detection_frame_is_deeply_immutable_and_empty_analysis_is_publishable(self):
+        result = analyze_detections(
+            (), AimSettings(), sequence=9, captured_at=20.0
+        )
+        self.assertIsNone(result.target)
+        self.assertEqual(result.frame.detections, ())
+        self.assertIsNone(result.frame.selected_index)
+        with self.assertRaises(FrozenInstanceError):
+            result.frame.sequence = 10
+
     def test_head_has_priority_over_nearer_player(self):
         detections = (
             Detection(150, 140, 170, 200, 0.90, 0),
