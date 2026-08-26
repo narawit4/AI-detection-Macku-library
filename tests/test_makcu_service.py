@@ -17,6 +17,7 @@ class FakeController:
         self.monitoring = False
         self.disconnected = False
         self.moves = []
+        self.connected = True
 
     def on_connection_change(self, callback):
         self.connection_callback = callback
@@ -38,6 +39,9 @@ class FakeController:
 
     def disconnect(self):
         self.disconnected = True
+
+    def is_connected(self):
+        return self.connected
 
 
 class RecordingEngine:
@@ -110,6 +114,20 @@ def wait_until(predicate, timeout=1.0):
 
 
 class MakcuConnectionTests(unittest.TestCase):
+    def test_physical_transport_loss_emits_disconnected(self):
+        events = []
+        controller = FakeController()
+        service = MakcuService(events.append, controller_factory=lambda **_kwargs: controller)
+        self.addCleanup(service.close)
+
+        service._connect_worker(service._begin_connection())
+        controller.connected = False
+
+        self.assertTrue(wait_until(
+            lambda: any(event.kind == "disconnected" for event in events)
+        ))
+        self.assertFalse(service.connected)
+
     def test_button_names_cover_the_supported_buttons(self):
         self.assertEqual(
             [BUTTON_NAMES[button] for button in MouseButton],
@@ -1117,7 +1135,7 @@ class MakcuMovementTests(unittest.TestCase):
 
         self.assertEqual(stop_event.timeouts, [1 / 240])
 
-    def test_paired_pulse_worker_sends_vertical_reports_and_stop_prevents_next_half(self):
+    def test_paired_pulse_worker_sends_diagonal_reports_and_stop_prevents_next_half(self):
         service, controller, _events = self.connected_service(use_default_engine=True)
         self.assertTrue(
             service.start_motion(lambda: MotionSettings(2, 20, "Instant"))
@@ -1128,7 +1146,8 @@ class MakcuMovementTests(unittest.TestCase):
         time.sleep(0.06)
         self.assertEqual(controller.moves, moves_after_stop)
         self.assertTrue(
-            all(x == 0 and abs(y) <= 2 for x, y in moves_after_stop)
+            all(x > 0 and y < 0 and abs(x) <= 2 and abs(y) <= 2
+                for x, y in moves_after_stop)
         )
 
     def test_worker_waits_one_half_pulse_interval(self):
@@ -1146,10 +1165,10 @@ class MakcuMovementTests(unittest.TestCase):
                 motion_generation,
                 connection_generation,
                 stop_event,
-                lambda: MotionSettings(2, 20, "Instant"),
+                lambda: MotionSettings(2, 120, "Instant"),
                 None,
             )
-        self.assertEqual(stop_event.timeouts, [0.025])
+        self.assertEqual(stop_event.timeouts, [1 / 240])
 
     def test_stop_signals_while_move_is_blocked_and_serializes_its_return(self):
         class GatedController(FakeController):

@@ -1,4 +1,5 @@
 from dataclasses import FrozenInstanceError
+import math
 import unittest
 
 from motion import (
@@ -13,10 +14,10 @@ from motion import (
 
 class MotionSettingsTests(unittest.TestCase):
     def test_defaults_match_balanced_paired_pulse(self):
-        self.assertEqual(MotionSettings(), MotionSettings(2.0, 30.0, "Smooth"))
+        self.assertEqual(MotionSettings(), MotionSettings(2.0, 60.0, "Smooth"))
         self.assertEqual(
             motion_settings_to_mapping(MotionSettings()),
-            {"pulse_size_px": "2", "pulse_rate_hz": "30", "ramp_mode": "Smooth"},
+            {"pulse_size_px": "2", "pulse_rate_hz": "60", "ramp_mode": "Smooth"},
         )
 
     def test_motion_settings_snapshot_is_immutable(self):
@@ -30,7 +31,7 @@ class MotionSettingsTests(unittest.TestCase):
             "pulse_rate_hz": "-4",
             "ramp_mode": "Unknown",
         })
-        self.assertEqual(settings, MotionSettings(8.0, 10.0, "Smooth"))
+        self.assertEqual(settings, MotionSettings(8.0, 20.0, "Smooth"))
 
     def test_huge_integer_values_use_safe_defaults_instead_of_overflowing(self):
         huge_integer = 10**10000
@@ -43,9 +44,9 @@ class MotionSettingsTests(unittest.TestCase):
     def test_presets_are_exact_and_round_trip(self):
         self.assertEqual(tuple(MOTION_PRESETS), ("Soft", "Balanced", "Strong"))
         expected = {
-            "Soft": MotionSettings(1.0, 20.0, "Smooth"),
-            "Balanced": MotionSettings(2.0, 30.0, "Smooth"),
-            "Strong": MotionSettings(4.0, 45.0, "Instant"),
+            "Soft": MotionSettings(1.0, 30.0, "Smooth"),
+            "Balanced": MotionSettings(2.0, 60.0, "Smooth"),
+            "Strong": MotionSettings(4.0, 100.0, "Instant"),
         }
         for name, want in expected.items():
             got = motion_settings_from_mapping(MOTION_PRESETS[name])
@@ -61,14 +62,17 @@ class PairedPulseEngineTests(unittest.TestCase):
         engine = PairedPulseEngine()
         settings = MotionSettings(2.0, 10.0, "Instant")
         reports = [engine.step(settings, 0.05, elapsed) for elapsed in (0.0, 0.05, 0.10, 0.15)]
-        self.assertEqual(reports, [(0, -2), (0, 2), (0, 2), (0, -2)])
+        self.assertEqual(reports, [(1, -1), (-1, 1), (-1, 1), (1, -1)])
         self.assertEqual(tuple(map(sum, zip(*reports))), (0, 0))
 
-    def test_many_complete_pairs_never_emit_horizontal_or_net_drift(self):
+    def test_many_complete_pairs_follow_axis_forty_five_degrees_right_of_vertical(self):
         engine = PairedPulseEngine()
         settings = MotionSettings(3.0, 20.0, "Instant")
         reports = [engine.step(settings, 0.025, index * 0.025) for index in range(400)]
-        self.assertTrue(all(x == 0 for x, _y in reports))
+        horizontal = sum(abs(x) for x, _y in reports)
+        vertical = sum(abs(y) for _x, y in reports)
+        self.assertAlmostEqual(horizontal / vertical, 1.0, delta=0.02)
+        self.assertEqual(sum(x for x, _y in reports), 0)
         self.assertEqual(sum(y for _x, y in reports), 0)
 
     def test_smooth_ramp_has_exact_early_fractional_residual_sequence(self):
@@ -80,24 +84,24 @@ class PairedPulseEngineTests(unittest.TestCase):
             [
                 (0, 0), (0, 0),
                 (0, 0), (0, 0),
-                (0, -1), (0, 1),
-                (0, 1), (0, -1),
-                (0, -2), (0, 2),
+                (0, 0), (0, 0),
+                (-1, 1), (1, -1),
+                (2, -2), (-2, 2),
             ],
         )
 
     def test_late_step_discards_missed_half_pulses(self):
         engine = PairedPulseEngine()
         settings = MotionSettings(2.0, 10.0, "Instant")
-        self.assertEqual(engine.step(settings, 0.05, 0.0), (0, -2))
-        self.assertEqual(engine.step(settings, 0.1, 1.0), (0, 2))
+        self.assertEqual(engine.step(settings, 0.05, 0.0), (1, -1))
+        self.assertEqual(engine.step(settings, 0.1, 1.0), (-1, 1))
 
     def test_reset_starts_a_fresh_up_down_pair(self):
         engine = PairedPulseEngine()
         settings = MotionSettings(2.0, 30.0, "Instant")
         engine.step(settings, 1 / 60, 0.0)
         engine.reset()
-        self.assertEqual(engine.step(settings, 1 / 60, 0.0), (0, -2))
+        self.assertEqual(engine.step(settings, 1 / 60, 0.0), (1, -1))
 
 
 class TriggerGateTests(unittest.TestCase):

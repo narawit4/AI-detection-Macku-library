@@ -7,25 +7,26 @@ from typing import Any, Mapping
 
 MOTION_DEFAULTS = {
     "pulse_size_px": "2",
-    "pulse_rate_hz": "30",
+    "pulse_rate_hz": "60",
     "ramp_mode": "Smooth",
 }
 MOTION_LIMITS = {
     "pulse_size_px": (1.0, 8.0),
-    "pulse_rate_hz": (10.0, 60.0),
+    "pulse_rate_hz": (20.0, 120.0),
 }
 RAMP_MODES = ("Instant", "Smooth")
+PULSE_AXIS_DEGREES = 45.0
 MOTION_PRESETS = {
-    "Soft": {"pulse_size_px": "1", "pulse_rate_hz": "20", "ramp_mode": "Smooth"},
-    "Balanced": {"pulse_size_px": "2", "pulse_rate_hz": "30", "ramp_mode": "Smooth"},
-    "Strong": {"pulse_size_px": "4", "pulse_rate_hz": "45", "ramp_mode": "Instant"},
+    "Soft": {"pulse_size_px": "1", "pulse_rate_hz": "30", "ramp_mode": "Smooth"},
+    "Balanced": {"pulse_size_px": "2", "pulse_rate_hz": "60", "ramp_mode": "Smooth"},
+    "Strong": {"pulse_size_px": "4", "pulse_rate_hz": "100", "ramp_mode": "Instant"},
 }
 
 
 @dataclass(frozen=True)
 class MotionSettings:
     pulse_size_px: float = 2.0
-    pulse_rate_hz: float = 30.0
+    pulse_rate_hz: float = 60.0
     ramp_mode: str = "Smooth"
 
 
@@ -73,14 +74,18 @@ def motion_settings_to_mapping(settings: MotionSettings) -> dict[str, str]:
 @dataclass
 class PairedPulseEngine:
     half_pulse_index: int = 0
-    magnitude_residual: float = 0.0
-    current_pair_size: int = 0
+    residual_x: float = 0.0
+    residual_y: float = 0.0
+    current_pair_x: int = 0
+    current_pair_y: int = 0
     next_due_elapsed: float = 0.0
 
     def reset(self) -> None:
         self.half_pulse_index = 0
-        self.magnitude_residual = 0.0
-        self.current_pair_size = 0
+        self.residual_x = 0.0
+        self.residual_y = 0.0
+        self.current_pair_x = 0
+        self.current_pair_y = 0
         self.next_due_elapsed = 0.0
 
     def step(self, settings: MotionSettings, dt: float, elapsed: float) -> tuple[int, int]:
@@ -94,13 +99,19 @@ class PairedPulseEngine:
             ramp = 1.0
             if settings.ramp_mode == "Smooth":
                 ramp = min(1.0, elapsed / 0.150)
-            magnitude = settings.pulse_size_px * ramp + self.magnitude_residual
-            self.current_pair_size = math.trunc(magnitude)
-            self.magnitude_residual = magnitude - self.current_pair_size
-        report_y = max(-8, min(8, int(direction * self.current_pair_size)))
+            magnitude = settings.pulse_size_px * ramp
+            angle = math.radians(PULSE_AXIS_DEGREES)
+            total_x = magnitude * math.sin(angle) + self.residual_x
+            total_y = magnitude * math.cos(angle) + self.residual_y
+            self.current_pair_x = math.trunc(total_x)
+            self.current_pair_y = math.trunc(total_y)
+            self.residual_x = total_x - self.current_pair_x
+            self.residual_y = total_y - self.current_pair_y
+        report_x = max(-8, min(8, int(-direction * self.current_pair_x)))
+        report_y = max(-8, min(8, int(direction * self.current_pair_y)))
         self.half_pulse_index += 1
         self.next_due_elapsed = elapsed + interval
-        return 0, report_y
+        return report_x, report_y
 
 
 @dataclass

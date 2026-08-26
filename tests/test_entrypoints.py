@@ -265,6 +265,7 @@ class EntryPointTests(unittest.TestCase):
             requirements,
             {
                 "makcu": "==2.3.1",
+                "pygame-ce": "==2.5.6",
                 "onnxruntime-directml": "==1.24.4",
                 "dxcam": "==0.3.0",
                 "numpy": "==2.5.2",

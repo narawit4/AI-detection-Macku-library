@@ -1,10 +1,12 @@
 # Jitter
 
 Jitter is a small Windows-only Tkinter controller for a Makcu USB device. It
-has a fixed-size English Liquid Split Console with Control and Motion pages.
-It sends vertical paired pulses: one equal pair moves up then down, and the
-following equal pair moves down then up; this two-pair order repeats. Complete
-pulse pairs have zero intended displacement; results vary with the receiving
+has a fixed-size English Liquid Split Console with Control, Motion, and
+Settings pages.
+It sends paired pulses on an axis tilted 45 degrees to the right of vertical:
+one equal pair moves up-right then down-left, and the following equal pair
+moves down-left then up-right; this two-pair order repeats. Complete pulse
+pairs have zero intended displacement; results vary with the receiving
 application's input processing. Choose a Trigger and optional Modifier, arm or
 stop movement, run a three-second test, and assign a global toggle hotkey.
 
@@ -13,14 +15,14 @@ stop movement, run a three-second test, and assign a global toggle hotkey.
 In Jitter mode, the Motion page provides these controls:
 
 - **Pulse Size:** 1-8 px per half-pulse.
-- **Pulse Rate:** 10-60 complete pairs per second.
+- **Pulse Rate:** 20-120 complete pairs per second.
 - **Ramp Mode:** `Instant` starts at the selected size; `Smooth` reaches it
   over the opening 150 ms.
 
-The preset selector offers `Soft` (1 px, 20 Hz, Smooth), `Balanced` (2 px,
-30 Hz, Smooth), and `Strong` (4 px, 45 Hz, Instant). `Custom` indicates a
-combination that does not exactly match a preset. Horizontal output is always
-zero.
+The preset selector offers `Soft` (1 px, 30 Hz, Smooth), `Balanced` (2 px,
+60 Hz, Smooth), and `Strong` (4 px, 100 Hz, Instant). `Custom` indicates a
+combination that does not exactly match a preset. Horizontal and vertical
+components are equal in magnitude along the 45-degree pulse axis.
 
 ## AI Aim mode
 
@@ -73,6 +75,8 @@ gate and requires a connected Makcu. `STOP` immediately cancels movement and
 test runs, including between paired half-pulses. Disconnect, hotkey disable,
 Trigger release, and closing the window also signal an immediate stop. The
 global hotkey (default `-`) toggles the enabled state once per press.
+The Settings page can mute the hotkey ON/OFF cues, set their volume from
+0–100, and preview either cue without changing the armed state.
 
 Without a connected Makcu, the UI remains usable for configuration but no
 pointer movement can be sent. For a hardware check, connect the device before
@@ -93,7 +97,7 @@ by Git.
 ## Verification
 
 ```powershell
-python -m py_compile main.py ui.py motion.py ai_targeting.py ai_detection.py ai_capture.py ai_service.py makcu_service.py hotkeys.py settings.py liquid_widgets.py
+python -m py_compile main.py ui.py motion.py ai_targeting.py ai_detection.py ai_capture.py ai_service.py makcu_service.py hotkeys.py settings.py sound_service.py liquid_widgets.py
 python -m unittest discover -s tests -v
 python -c "import makcu, onnxruntime, dxcam, numpy"
 python -c "from ai_detection import OnnxDetector, model_resource_path; print(OnnxDetector(model_resource_path()).provider)"

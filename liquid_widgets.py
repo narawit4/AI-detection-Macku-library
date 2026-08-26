@@ -530,7 +530,9 @@ class LiquidSlider(tk.Canvas):
         self._redraw()
 
     def _rail_bounds(self) -> tuple[float, float]:
-        width = max(self.winfo_width(), self.winfo_reqwidth())
+        width = self.winfo_width()
+        if width <= 1:
+            width = self.winfo_reqwidth()
         return (
             float(self.RAIL_INSET),
             float(max(self.RAIL_INSET, width - self.RAIL_INSET)),

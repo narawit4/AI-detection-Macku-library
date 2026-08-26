@@ -76,6 +76,7 @@ class MakcuService:
         self._motion_generation = 0
         self._motion_stop = threading.Event()
         self._motion_thread: threading.Thread | None = None
+        self._health_thread: threading.Thread | None = None
         self._motion_active = False
         self._motion_stop_reasons: dict[int, str | None] = {}
 
@@ -179,6 +180,33 @@ class MakcuService:
             daemon=True,
         )
         thread.start()
+
+    def _start_health_worker(self, generation: int, controller: Any) -> None:
+        thread = threading.Thread(
+            target=self._health_worker,
+            args=(generation, controller),
+            name=f"MakcuHealth-{generation}",
+            daemon=True,
+        )
+        with self._lock:
+            self._health_thread = thread
+        thread.start()
+
+    def _health_worker(self, generation: int, controller: Any) -> None:
+        while True:
+            time.sleep(0.1)
+            with self._lock:
+                if (self._closed or generation != self._generation
+                        or controller is not self._controller
+                        or not self._connected):
+                    return
+            try:
+                connected = bool(controller.is_connected())
+            except Exception:
+                connected = False
+            if not connected:
+                self._connection_changed(generation, False)
+                return
 
     def _start_disconnect_worker(self, controller: Any) -> None:
         thread = threading.Thread(
@@ -476,7 +504,7 @@ class MakcuService:
                     try:
                         settings_rate = float(settings.pulse_rate_hz)
                         interval = 1.0 / (
-                            max(10.0, min(60.0, settings_rate)) * 2.0
+                            max(20.0, min(120.0, settings_rate)) * 2.0
                         )
                     except Exception as exc:
                         error_payload = f"{type(exc).__name__}: {exc}"
@@ -648,6 +676,8 @@ class MakcuService:
 
         if not can_install:
             self._disconnect_controller(controller)
+        else:
+            self._start_health_worker(generation, controller)
         return
 
     def _connection_changed(self, generation: int, connected: bool) -> None:

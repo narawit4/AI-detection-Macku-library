@@ -42,6 +42,8 @@ class AppConfig:
     # used when the current values do not match a named preset.
     selected_preset: str = "Balanced"
     theme: str = "light"
+    sound_enabled: bool = True
+    sound_volume: int = 70
 
 
 @dataclass(frozen=True)
@@ -162,6 +164,12 @@ class ConfigStore:
         theme = document.get("theme", "light")
         if theme not in VALID_THEMES:
             theme = "light"
+        sound_enabled = document.get("sound_enabled", True)
+        if not isinstance(sound_enabled, bool):
+            sound_enabled = True
+        sound_volume = _safe_int(
+            document.get("sound_volume", 70), 70, 0, 100
+        )
         if schema in (1, 2):
             mode = "jitter"
             ai = AimSettings()
@@ -194,6 +202,8 @@ class ConfigStore:
             hotkey_name=hotkey_name,
             selected_preset=selected_preset,
             theme=theme,
+            sound_enabled=sound_enabled,
+            sound_volume=sound_volume,
         )
         return LoadOutcome(config)
 
@@ -212,6 +222,11 @@ class ConfigStore:
             "hotkey_name": config.hotkey_name if isinstance(config.hotkey_name, str) else "-",
             "selected_preset": config.selected_preset if isinstance(config.selected_preset, str) and config.selected_preset else "Custom",
             "theme": config.theme if config.theme in VALID_THEMES else "light",
+            "sound_enabled": (
+                config.sound_enabled
+                if isinstance(config.sound_enabled, bool) else True
+            ),
+            "sound_volume": _safe_int(config.sound_volume, 70, 0, 100),
         }
         temporary = Path(str(self.path) + ".tmp")
         backup = Path(str(self.path) + ".bak")

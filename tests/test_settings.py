@@ -89,6 +89,8 @@ class ConfigStoreTests(unittest.TestCase):
         self.assertEqual(outcome.config.modifier, "None")
         self.assertEqual(outcome.config.selected_preset, "Balanced")
         self.assertEqual(outcome.config.theme, "light")
+        self.assertTrue(outcome.config.sound_enabled)
+        self.assertEqual(outcome.config.sound_volume, 70)
         self.assertTrue(outcome.save_allowed)
 
     def test_schema_three_round_trip_saves_only_paired_pulse_motion(self):
@@ -98,6 +100,8 @@ class ConfigStoreTests(unittest.TestCase):
             config = AppConfig(
                 motion=MotionSettings(4.0, 45.0, "Instant"),
                 selected_preset="Strong",
+                sound_enabled=False,
+                sound_volume=35,
             )
             store.save(config)
             document = json.loads(path.read_text(encoding="utf-8"))
@@ -207,6 +211,23 @@ class ConfigStoreTests(unittest.TestCase):
             }), encoding="utf-8")
             config = ConfigStore(path).load().config
         self.assertEqual(config.ai, AimSettings(0.35, 1.25, 0.65, 30))
+
+    def test_invalid_sound_settings_use_safe_defaults_and_clamp_volume(self):
+        cases = (
+            ({"sound_enabled": "yes", "sound_volume": "loud"}, True, 70),
+            ({"sound_enabled": False, "sound_volume": -5}, False, 0),
+            ({"sound_enabled": True, "sound_volume": 999}, True, 100),
+        )
+        for document, expected_enabled, expected_volume in cases:
+            with self.subTest(document=document), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "config.json"
+                path.write_text(json.dumps({
+                    "schema_version": 2,
+                    **document,
+                }), encoding="utf-8")
+                config = ConfigStore(path).load().config
+            self.assertEqual(config.sound_enabled, expected_enabled)
+            self.assertEqual(config.sound_volume, expected_volume)
 
     def test_invalid_theme_uses_safe_light_default(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -322,7 +343,7 @@ class ConfigStoreTests(unittest.TestCase):
                 "selected_preset": "Strong Shake",
             }), encoding="utf-8")
             config = ConfigStore(path).load().config
-        self.assertEqual(config.motion, MotionSettings(2.0, 60.0, "Smooth"))
+        self.assertEqual(config.motion, MotionSettings(2.0, 120.0, "Smooth"))
         self.assertEqual(config.trigger, "Left")
         self.assertEqual(config.modifier, "None")
         self.assertEqual(config.hotkey_vk, 255)

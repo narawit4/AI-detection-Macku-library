@@ -105,6 +105,32 @@ class LiquidSliderValueTests(_SliderTestCase):
 
 
 class LiquidSliderInteractionTests(_SliderTestCase):
+    def test_narrow_slider_keeps_rail_and_thumb_inside_canvas(self):
+        container = tk.Frame(self.root, width=140, height=40)
+        container.pack_propagate(False)
+        container.pack()
+        slider = self.slider_type(
+            container,
+            from_=0,
+            to=100,
+            resolution=1,
+            width=220,
+            height=34,
+        )
+        slider.pack(fill="x")
+        self.root.deiconify()
+        self.root.update()
+        self.assertLess(slider.winfo_width(), slider.winfo_reqwidth())
+
+        slider.set(100)
+        slider._redraw()
+        for tag in ("rail", "thumb"):
+            with self.subTest(tag=tag):
+                bounds = slider.bbox(tag)
+                self.assertIsNotNone(bounds)
+                self.assertGreaterEqual(bounds[0], 0)
+                self.assertLessEqual(bounds[2], slider.winfo_width())
+
     def test_pointer_click_and_drag_emit_snapped_values(self):
         emitted = []
         slider = self.make_slider(command=emitted.append)
