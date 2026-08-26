@@ -394,6 +394,24 @@ class MakcuMovementTests(unittest.TestCase):
         self.assertFalse(service.connected)
         self.assertEqual(events[-1], ServiceEvent("disconnected"))
 
+    def test_disconnect_timeout_suppresses_late_ai_error_event(self):
+        engine = BlockingFailingAimEngine()
+        target = TargetSnapshot(1, time.perf_counter(), "head", 170, 160)
+        service, _controller, events = self.connected_service(
+            aim_engine_factory=lambda: engine
+        )
+        self.addCleanup(engine.release.set)
+        self.assertTrue(service.start_ai_motion(lambda: target, AimSettings))
+        self.assertTrue(engine.entered.wait(1.0))
+
+        with mock.patch.object(service, "join_motion", return_value=None):
+            service._connection_changed(service.connection_generation, False)
+        events_after_disconnect = len(events)
+        engine.release.set()
+        service.join_motion(1.0)
+
+        self.assertEqual(events[events_after_disconnect:], [])
+
     def test_ai_controller_exception_emits_motion_error(self):
         class FailingController(FakeController):
             def move(self, _x, _y):
@@ -431,6 +449,52 @@ class MakcuMovementTests(unittest.TestCase):
         self.assertEqual(
             events[-1], ServiceEvent("motion_stopped", "ai_disabled")
         )
+
+    def test_terminal_callback_does_not_hold_service_state_lock(self):
+        callback_entered = threading.Event()
+        reader_started = threading.Event()
+        reader_finished = threading.Event()
+        callback_observed_reader = threading.Event()
+        callback_finished = threading.Event()
+        reader_threads = []
+        service = None
+
+        def sink(event):
+            if event.kind != "motion_stopped":
+                return
+            callback_entered.set()
+
+            def read_property():
+                reader_started.set()
+                service.connected
+                reader_finished.set()
+
+            reader = threading.Thread(target=read_property)
+            reader_threads.append(reader)
+            reader.start()
+            if reader_started.wait(1.0) and reader_finished.wait(1.0):
+                callback_observed_reader.set()
+            callback_finished.set()
+
+        controller = FakeController()
+        service = MakcuService(
+            sink,
+            controller_factory=lambda **_kwargs: controller,
+            aim_engine_factory=FakeAimEngine,
+        )
+        self.addCleanup(service.close)
+        service._connect_worker(service._begin_connection())
+
+        self.assertTrue(
+            service.start_ai_motion(lambda: None, AimSettings, duration_s=0)
+        )
+        self.assertTrue(callback_entered.wait(1.0))
+        self.assertTrue(callback_finished.wait(2.0))
+        service.join_motion(2.0)
+        for reader in reader_threads:
+            reader.join(1.0)
+
+        self.assertTrue(callback_observed_reader.is_set())
 
     def test_close_during_ai_motion_cancels_before_disconnect(self):
         engine = BlockingAimEngine()

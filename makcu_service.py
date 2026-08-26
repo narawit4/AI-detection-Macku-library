@@ -62,6 +62,10 @@ class MakcuService:
         self._setup_disconnected: set[int] = set()
         self._disconnect_notified: set[int] = set()
         self._motion_cancel_lock = threading.Lock()
+        self._motion_dispatch_done = threading.Event()
+        self._motion_dispatch_done.set()
+        self._motion_dispatch_threads: set[threading.Thread] = set()
+        self._motion_dispatch_count = 0
         self._motion_generation = 0
         self._motion_stop = threading.Event()
         self._motion_thread: threading.Thread | None = None
@@ -104,8 +108,16 @@ class MakcuService:
             self._connected = False
             self._setup_disconnected.discard(generation)
             self._disconnect_notified.discard(generation)
+        self._wait_for_motion_dispatch()
         self._emit(ServiceEvent("connecting"))
         return generation
+
+    def _wait_for_motion_dispatch(self) -> None:
+        with self._lock:
+            if threading.current_thread() in self._motion_dispatch_threads:
+                return
+            done = self._motion_dispatch_done
+        done.wait()
 
     def connect(self) -> int | None:
         """Start a fresh connection worker and return its generation."""
@@ -371,6 +383,8 @@ class MakcuService:
                         break
                 stop_event.wait(max(0.0, interval - (time.perf_counter() - tick_started)))
         finally:
+            terminal_event: ServiceEvent | None = None
+            dispatch_thread = threading.current_thread()
             with self._lock:
                 owns_motion_slot = (
                     motion_generation == self._motion_generation
@@ -381,6 +395,7 @@ class MakcuService:
                     and connection_generation == self._generation
                     and expected_controller is self._controller
                     and not self._closed
+                    and self._connected
                 )
                 with self._motion_cancel_lock:
                     explicit_reason = self._motion_stop_reasons.pop(
@@ -396,9 +411,22 @@ class MakcuService:
                 if reason is None:
                     reason = "manual"
                 if error_payload is not None and terminal_current:
-                    self._emit(ServiceEvent("motion_error", error_payload))
+                    terminal_event = ServiceEvent("motion_error", error_payload)
                 elif terminal_current:
-                    self._emit(ServiceEvent("motion_stopped", reason))
+                    terminal_event = ServiceEvent("motion_stopped", reason)
+                if terminal_event is not None:
+                    self._motion_dispatch_count += 1
+                    self._motion_dispatch_threads.add(dispatch_thread)
+                    self._motion_dispatch_done.clear()
+            if terminal_event is not None:
+                try:
+                    self._emit(terminal_event)
+                finally:
+                    with self._lock:
+                        self._motion_dispatch_count -= 1
+                        self._motion_dispatch_threads.discard(dispatch_thread)
+                        if self._motion_dispatch_count == 0:
+                            self._motion_dispatch_done.set()
 
     def _setup_must_abort(self, generation: int) -> bool:
         with self._lock:
@@ -518,6 +546,7 @@ class MakcuService:
                 if was_connected and generation not in self._disconnect_notified:
                     self._disconnect_notified.add(generation)
                     event = ServiceEvent("disconnected")
+            self._wait_for_motion_dispatch()
         if event is not None:
             self._emit(event)
 
@@ -582,5 +611,6 @@ class MakcuService:
             controller = self._controller
             self._controller = None
             self._connected = False
+        self._wait_for_motion_dispatch()
         if controller is not None:
             self._start_disconnect_worker(controller)
