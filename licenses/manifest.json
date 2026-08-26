@@ -1,0 +1,218 @@
+{
+  "schema_version": 1,
+  "packages": [
+    {
+      "name": "makcu",
+      "version": "2.3.1",
+      "license": "GPL-3.0",
+      "copyright": "SleepyTotem; see the exact upstream source archive for contributor notices.",
+      "homepage": "https://github.com/SleepyTotem/makcu-py-lib",
+      "metadata_provenance": "Installed makcu-2.3.1.dist-info/METADATA: Name makcu, Version 2.3.1, GPLv3 classifier.",
+      "license_files": [
+        {
+          "path": "licenses/makcu-2.3.1/LICENSE",
+          "sha256": "230184F60BAE2FEAF244F10A8BAC053C8FF33A183BCC365B4D8B876D2B7F4809",
+          "provenance": "makcu 2.3.1 installed distribution metadata: makcu-2.3.1.dist-info/licenses/LICENSE"
+        }
+      ],
+      "source": {
+        "url": "https://pypi.org/project/makcu/2.3.1/#files",
+        "required_with_binary": true,
+        "archive": {
+          "path": "licenses/sources/makcu-2.3.1.tar.gz",
+          "sha256": "DA94880094DA55E83FDD8E2BB7CD16D4621E46A92839E36BFB8DF3ABFCECE7F5",
+          "provenance": "PyPI makcu 2.3.1 source distribution"
+        }
+      }
+    },
+    {
+      "name": "pygame-ce",
+      "version": "2.5.6",
+      "license": "LGPL-2.1",
+      "copyright": "pygame-ce community contributors; see the exact upstream source archive.",
+      "homepage": "https://github.com/pygame-community/pygame-ce",
+      "metadata_provenance": "Installed pygame_ce-2.5.6.dist-info/METADATA: Name pygame-ce, Version 2.5.6, License LGPL v2.1.",
+      "license_files": [
+        {
+          "path": "licenses/pygame-ce-2.5.6/LGPL-2.1.txt",
+          "sha256": "885A03F54B157961236F46843E79972ABFCD6890B6CBB368BC7ECA328FF95A12",
+          "provenance": "pygame-ce 2.5.6 installed distribution: pygame/docs/generated/LGPL.txt"
+        },
+        {
+          "path": "licenses/pygame-ce-2.5.6/third-party/LICENSE.FLAC.txt",
+          "sha256": "349B7BDBF2DE10E1303FC3E8AA81F944FD2832FE40270E1B805E20B1B131187C",
+          "provenance": "PyPI pygame-ce 2.5.6 sdist: docs/licenses/LICENSE.FLAC.txt"
+        },
+        {
+          "path": "licenses/pygame-ce-2.5.6/third-party/LICENSE.fluidsynth.txt",
+          "sha256": "9B872A8A070B8AD329C4BD380FB1BF0000F564C75023EC8E1E6803F15364B9E9",
+          "provenance": "PyPI pygame-ce 2.5.6 sdist: docs/licenses/LICENSE.fluidsynth.txt"
+        },
+        {
+          "path": "licenses/pygame-ce-2.5.6/third-party/LICENSE.freetype.txt",
+          "sha256": "650737EC7589C35600DE73B0DB88DAFB314F7E32E7E3CF38D0C87CEB1A7ED31B",
+          "provenance": "PyPI pygame-ce 2.5.6 sdist: docs/licenses/LICENSE.freetype.txt"
+        },
+        {
+          "path": "licenses/pygame-ce-2.5.6/third-party/LICENSE.jpeg.txt",
+          "sha256": "2899A194CC43AF0CFBEFF33CDECFAD20DE8BBF784155B0CD0217D27C37609A28",
+          "provenance": "PyPI pygame-ce 2.5.6 sdist: docs/licenses/LICENSE.jpeg.txt"
+        },
+        {
+          "path": "licenses/pygame-ce-2.5.6/third-party/LICENSE.modplug.txt",
+          "sha256": "B64D05522976D26E870BFBBF701E5A89CC5E2AB8FBDE677E24F07DDAF0DAC7C1",
+          "provenance": "PyPI pygame-ce 2.5.6 sdist: docs/licenses/LICENSE.modplug.txt"
+        },
+        {
+          "path": "licenses/pygame-ce-2.5.6/third-party/LICENSE.mpg123.txt",
+          "sha256": "892CD7E1C0B23374C8A82C244F64C30297C1FEADA0143CFDD9F6A25F445B0DD6",
+          "provenance": "PyPI pygame-ce 2.5.6 sdist: docs/licenses/LICENSE.mpg123.txt"
+        },
+        {
+          "path": "licenses/pygame-ce-2.5.6/third-party/LICENSE.numpy.txt",
+          "sha256": "FAAA516B85DBF609B0296918D61924E3145C9D2B8D91EA5BE93E7BA073A78AA1",
+          "provenance": "PyPI pygame-ce 2.5.6 sdist: docs/licenses/LICENSE.numpy.txt"
+        },
+        {
+          "path": "licenses/pygame-ce-2.5.6/third-party/LICENSE.ogg-vorbis.txt",
+          "sha256": "776B6F6AB87AFA263D534AD4061B6180149DE0FED90E2E18E1592992922327CE",
+          "provenance": "PyPI pygame-ce 2.5.6 sdist: docs/licenses/LICENSE.ogg-vorbis.txt"
+        },
+        {
+          "path": "licenses/pygame-ce-2.5.6/third-party/LICENSE.opus.txt",
+          "sha256": "FDE149F902D124A8C02A218527C440EE2FAB6884323F180061B1405FB06AF60E",
+          "provenance": "PyPI pygame-ce 2.5.6 sdist: docs/licenses/LICENSE.opus.txt"
+        },
+        {
+          "path": "licenses/pygame-ce-2.5.6/third-party/LICENSE.opusfile.txt",
+          "sha256": "54E125C8250361407B34322E0F328F6BDF7FD30CD4F2941A321E47B41F9C159D",
+          "provenance": "PyPI pygame-ce 2.5.6 sdist: docs/licenses/LICENSE.opusfile.txt"
+        },
+        {
+          "path": "licenses/pygame-ce-2.5.6/third-party/LICENSE.png.txt",
+          "sha256": "0AD3BFEE8BE10E5519949E7AF492E36BC349376B75FBEB412229A5967E3E9434",
+          "provenance": "PyPI pygame-ce 2.5.6 sdist: docs/licenses/LICENSE.png.txt"
+        },
+        {
+          "path": "licenses/pygame-ce-2.5.6/third-party/LICENSE.portmidi.txt",
+          "sha256": "EB5D0724B2AE76A94AE804C44B3D6CFAACA822B7D42907AEFA9256CB93DB6FE0",
+          "provenance": "PyPI pygame-ce 2.5.6 sdist: docs/licenses/LICENSE.portmidi.txt"
+        },
+        {
+          "path": "licenses/pygame-ce-2.5.6/third-party/LICENSE.sdl_gfx.txt",
+          "sha256": "63744690FA28ECF2A9DEDACAFB08D1209031E7EFF1820430D952264F678A1BCF",
+          "provenance": "PyPI pygame-ce 2.5.6 sdist: docs/licenses/LICENSE.sdl_gfx.txt"
+        },
+        {
+          "path": "licenses/pygame-ce-2.5.6/third-party/LICENSE.sdl2.txt",
+          "sha256": "AE4DF3759A726538607B84C00AB8F8A5567D9F38AD5397486EB9B5C5F626CAEF",
+          "provenance": "PyPI pygame-ce 2.5.6 sdist: docs/licenses/LICENSE.sdl2.txt"
+        },
+        {
+          "path": "licenses/pygame-ce-2.5.6/third-party/LICENSE.sdl2_image.txt",
+          "sha256": "45079362E2230154205413A6940544CA94E3479CCF76205C71C4F542A6815D25",
+          "provenance": "PyPI pygame-ce 2.5.6 sdist: docs/licenses/LICENSE.sdl2_image.txt"
+        },
+        {
+          "path": "licenses/pygame-ce-2.5.6/third-party/LICENSE.sdl2_mixer.txt",
+          "sha256": "113727180E7956CB9718B03B41DA85B63EA54743A33047071A623BF672895A10",
+          "provenance": "PyPI pygame-ce 2.5.6 sdist: docs/licenses/LICENSE.sdl2_mixer.txt"
+        },
+        {
+          "path": "licenses/pygame-ce-2.5.6/third-party/LICENSE.sse2neon-h.txt",
+          "sha256": "ADA11C843D252C0B70837629AC7A54A525ECB7D8C0932EBCCF863C55DBD32CB1",
+          "provenance": "PyPI pygame-ce 2.5.6 sdist: docs/licenses/LICENSE.sse2neon-h.txt"
+        },
+        {
+          "path": "licenses/pygame-ce-2.5.6/third-party/LICENSE.tiff.txt",
+          "sha256": "8EEAB3915F97F6F7B62A8008BF77E7AC3BFBB034B04D93CD63AAFA10B2DD6614",
+          "provenance": "PyPI pygame-ce 2.5.6 sdist: docs/licenses/LICENSE.tiff.txt"
+        },
+        {
+          "path": "licenses/pygame-ce-2.5.6/third-party/LICENSE.webp.txt",
+          "sha256": "17C029A902AD45A199DFE8E3A1C39305AB28D302B0703360C4A27351A4673DCB",
+          "provenance": "PyPI pygame-ce 2.5.6 sdist: docs/licenses/LICENSE.webp.txt"
+        },
+        {
+          "path": "licenses/pygame-ce-2.5.6/third-party/LICENSE.zlib.txt",
+          "sha256": "31010E0BC26DF3001C7BB3C1B7A7094A8972BF6D37A5D0C59D3D3C98FBFAF463",
+          "provenance": "PyPI pygame-ce 2.5.6 sdist: docs/licenses/LICENSE.zlib.txt"
+        }
+      ],
+      "source": {
+        "url": "https://pypi.org/project/pygame-ce/2.5.6/#files",
+        "required_with_binary": true,
+        "relinking_materials_required": true,
+        "archive": {
+          "path": "licenses/sources/pygame_ce-2.5.6.tar.gz",
+          "sha256": "D3D019309D1E76FD19978B01753E8576BD76C66411AC7A4885785F95E68DC261",
+          "provenance": "PyPI pygame-ce 2.5.6 source distribution"
+        }
+      }
+    },
+    {
+      "name": "numpy",
+      "version": "2.5.2",
+      "license": "BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0",
+      "copyright": "Copyright (c) 2005-2025, NumPy Developers, plus bundled-component notices.",
+      "homepage": "https://github.com/numpy/numpy",
+      "metadata_provenance": "Installed numpy-2.5.2.dist-info/METADATA: Name numpy, Version 2.5.2, License-Expression recorded here.",
+      "license_files": [
+        {
+          "path": "licenses/numpy-2.5.2/LICENSE.txt",
+          "sha256": "A804DFF0EAD9FADC5293456410BCBFC32BF024BE9C4513459663FB7B442D2341",
+          "provenance": "NumPy 2.5.2 installed distribution metadata: numpy-2.5.2.dist-info/licenses/LICENSE.txt"
+        }
+      ],
+      "source": {
+        "url": "https://files.pythonhosted.org/packages/9a/80/db0b4559e57ec36362bedbb05530a87fafbcb6067708c946967a41d449e7/numpy-2.5.2.tar.gz",
+        "sha256": "D482D171C406AE88C5B19CAD3B6A1C4C5209F886AB74BC44C2C865C23F52D860",
+        "required_with_binary": false
+      }
+    },
+    {
+      "name": "onnxruntime-directml",
+      "version": "1.24.4",
+      "license": "MIT with bundled third-party terms",
+      "copyright": "Copyright (c) Microsoft Corporation, plus ThirdPartyNotices.txt contributors.",
+      "homepage": "https://github.com/microsoft/onnxruntime/releases/tag/v1.24.4",
+      "metadata_provenance": "Installed onnxruntime_directml-1.24.4.dist-info/METADATA: Name onnxruntime-directml, Version 1.24.4, MIT License.",
+      "license_files": [
+        {
+          "path": "licenses/onnxruntime-directml-1.24.4/LICENSE",
+          "sha256": "C250D6278F0B47A6439FB7592B08B58A55EB9F535AA49A1DB63211C3F982B674",
+          "provenance": "onnxruntime-directml 1.24.4 installed distribution: onnxruntime/LICENSE"
+        },
+        {
+          "path": "licenses/onnxruntime-directml-1.24.4/ThirdPartyNotices.txt",
+          "sha256": "FB0AF774B4D7CFFC5B9D046F2AAEADE2F37DF2F80ABF8033C95DFFFCC77A8866",
+          "provenance": "onnxruntime-directml 1.24.4 installed distribution: onnxruntime/ThirdPartyNotices.txt"
+        }
+      ],
+      "source": {
+        "url": "https://github.com/microsoft/onnxruntime/tree/v1.24.4",
+        "required_with_binary": false
+      }
+    },
+    {
+      "name": "dxcam",
+      "version": "0.3.0",
+      "license": "MIT",
+      "copyright": "Copyright (c) 2022 Rain",
+      "homepage": "https://github.com/ra1nty/DXcam",
+      "metadata_provenance": "Installed dxcam-0.3.0.dist-info/METADATA: Name dxcam, Version 0.3.0, License-Expression MIT.",
+      "license_files": [
+        {
+          "path": "licenses/dxcam-0.3.0/LICENSE",
+          "sha256": "4FE6BAEE928B96D2CF0F6A238275ACFD86182CDAEC6E8146654F34CF08C1C9B3",
+          "provenance": "DXCam 0.3.0 installed distribution metadata: dxcam-0.3.0.dist-info/licenses/LICENSE"
+        }
+      ],
+      "source": {
+        "url": "https://files.pythonhosted.org/packages/de/b7/b3d3e3fa42f347ac4b37fd639634935b4eefff1d5d61bdf72a6d8b906919/dxcam-0.3.0.tar.gz",
+        "sha256": "D524DA45ADF70E044865E7D4E9098E655D6734951781155DDA50C1292E20D8BD",
+        "required_with_binary": false
+      }
+    }
+  ]
+}

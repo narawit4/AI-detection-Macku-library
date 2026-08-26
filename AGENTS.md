@@ -24,10 +24,13 @@ profiles, overlays, tray behavior, or other upstream features.
 - `ai_detection.py`: fixed-contract ONNX Runtime detector.
 - `ai_capture.py`: centered DXCam capture wrapper.
 - `ai_service.py`: generation-safe capture and inference worker.
+- `distribution_metadata.py`: validates and copies packaged release materials.
 - `makcu_service.py`: Makcu connection, callbacks, movement, and cleanup.
 - `hotkeys.py`: Windows global-hotkey polling.
 - `settings.py`: independent schema-aware atomic configuration.
 - `models/all_games_320.onnx`: approved fixed AI Aim model resource.
+- `licenses/`: exact dependency notices, provenance manifest, and required
+  GPL/LGPL source archives.
 - `tests/`: hardware-free unit and integration-style tests.
 - `run_gui.bat`: source launcher.
 - `gen.bat`: explicit on-demand Nuitka packaging.
@@ -118,6 +121,9 @@ with the supported Windows Python installation.
   `app.log` as source.
 - Do not run Nuitka after ordinary feature changes. Package only when the user
   explicitly requests it or asks to run `gen.bat`.
+- A binary release must include `LICENSE`, `THIRD_PARTY_NOTICES.md`, and the
+  complete `licenses/` directory beside the executable. Follow
+  `licenses/README.md`; Jitter source alone does not satisfy every dependency.
 - Do not add alternate AI models, training, profiles, overlays, tray, Pillow,
   Pystray, Torch, Ultralytics, OpenCV, or other unapproved ML dependencies
   without an explicit new design decision.
@@ -127,9 +133,10 @@ with the supported Windows Python installation.
 After implementation changes, run:
 
 ```powershell
-python -m py_compile main.py ui.py motion.py ai_targeting.py ai_detection.py ai_capture.py ai_service.py makcu_service.py hotkeys.py settings.py sound_service.py liquid_widgets.py
+python -m py_compile main.py ui.py motion.py ai_targeting.py ai_detection.py ai_capture.py ai_service.py makcu_service.py hotkeys.py settings.py sound_service.py liquid_widgets.py distribution_metadata.py
 python -m unittest discover -s tests -v
 python -c "import makcu, onnxruntime, dxcam, numpy"
+python distribution_metadata.py --review-json
 ```
 
 Hardware-dependent changes additionally require a connected Makcu device to

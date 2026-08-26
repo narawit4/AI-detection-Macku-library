@@ -107,10 +107,17 @@ The approved model SHA-256 is
 ## License and source availability
 
 Jitter and the bundled model are distributed under the GNU Affero General
-Public License version 3; see `LICENSE` and `THIRD_PARTY_NOTICES.md`. Every
-distributed executable or release must provide access alongside it to the
-complete corresponding Jitter source for that exact version, including build
-scripts and distribution metadata. A binary-only release is not sufficient.
+Public License version 3. Every distributed executable or release must provide
+access alongside it to the complete corresponding Jitter source for that exact
+version, including build scripts and distribution metadata. A binary-only
+release is not sufficient.
+
+Bundled dependencies have separate obligations. Every release must include the
+[third-party notices](THIRD_PARTY_NOTICES.md) and the complete
+[release licensing checklist](licenses/README.md), including the exact license
+files and GPL/LGPL source archives recorded in `licenses/manifest.json`, beside
+the executable. Jitter's source alone does not satisfy every bundled
+component's notice, corresponding-source, or relinking requirements.
 
 ## Explicit packaging
 
@@ -125,5 +132,7 @@ The script installs Nuitka and its build helpers, runs the checks above, and
 creates `build-output\Jitter.exe`; Nuitka output is recorded in
 `build-output\build.log`. Use `gen.bat --help` to inspect this behavior without
 installing dependencies or starting a build. Publishing that executable also
-requires publishing or linking the matching complete source as described
-above.
+requires publishing or linking the matching complete source and all release
+licensing materials described above. `gen.bat --review-json` exposes the
+validated compile targets, imports, data options, and release materials without
+installing dependencies or starting a build.
