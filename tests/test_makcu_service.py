@@ -554,6 +554,81 @@ class MakcuMovementTests(unittest.TestCase):
         self.assertEqual(start_results, [True])
         self.assertTrue(start_observed_terminal.is_set())
 
+    def test_stop_invalidates_start_waiting_for_terminal_dispatch(self):
+        class MoveObservedController(FakeController):
+            def __init__(self):
+                super().__init__()
+                self.move_observed = threading.Event()
+
+            def move(self, x, y):
+                super().move(x, y)
+                self.move_observed.set()
+
+        terminal_entered = threading.Event()
+        release_terminal = threading.Event()
+        dispatch_wait_entered = threading.Event()
+        start_returned = threading.Event()
+        start_results = []
+        engine = BlockingAimEngine()
+
+        def sink(event):
+            if event.kind != "motion_stopped" or terminal_entered.is_set():
+                return
+            terminal_entered.set()
+            release_terminal.wait(1.0)
+
+        controller = MoveObservedController()
+        service = MakcuService(
+            sink,
+            controller_factory=lambda **_kwargs: controller,
+            aim_engine_factory=lambda: engine,
+        )
+        self.addCleanup(engine.release.set)
+        self.addCleanup(service.close)
+        service._connect_worker(service._begin_connection())
+        target = TargetSnapshot(1, time.perf_counter(), "head", 170, 160)
+        self.assertTrue(
+            service.start_ai_motion(lambda: None, AimSettings, duration_s=0)
+        )
+        self.assertTrue(terminal_entered.wait(1.0))
+        real_dispatch_wait = service._motion_dispatch_done.wait
+
+        def observed_dispatch_wait(timeout=None):
+            dispatch_wait_entered.set()
+            return real_dispatch_wait(timeout)
+
+        def start_next_motion():
+            start_results.append(
+                service.start_ai_motion(lambda: target, AimSettings)
+            )
+            start_returned.set()
+
+        starter = threading.Thread(target=start_next_motion)
+        with mock.patch.object(
+            service._motion_dispatch_done,
+            "wait",
+            side_effect=observed_dispatch_wait,
+        ):
+            starter.start()
+            try:
+                self.assertTrue(dispatch_wait_entered.wait(1.0))
+                service.stop_motion("manual")
+                engine.release.set()
+                release_terminal.set()
+                self.assertTrue(start_returned.wait(1.0))
+                if start_results == [True]:
+                    self.assertTrue(controller.move_observed.wait(1.0))
+                    service.stop_motion("test_cleanup")
+                service.join_motion(1.0)
+            finally:
+                release_terminal.set()
+                engine.release.set()
+                service.stop_motion("test_cleanup")
+                starter.join(1.0)
+                service.join_motion(1.0)
+
+        self.assertEqual((start_results, controller.moves), ([False], []))
+
     def test_terminal_callback_can_start_next_motion_directly(self):
         callback_finished = threading.Event()
         reentrant_attempted = threading.Event()

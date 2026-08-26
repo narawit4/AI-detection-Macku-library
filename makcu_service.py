@@ -68,6 +68,7 @@ class MakcuService:
         self._motion_dispatch_queue: list[
             tuple[ServiceEvent, Callable[[], bool] | None]
         ] = []
+        self._motion_start_cancel_epoch = 0
         self._motion_generation = 0
         self._motion_stop = threading.Event()
         self._motion_thread: threading.Thread | None = None
@@ -219,9 +220,15 @@ class MakcuService:
         snapshot_provider: Callable[[], Any] | None,
         duration_s: float | None,
     ) -> bool:
+        start_cancel_epoch: int | None = None
         while True:
             with self._lock:
                 if self._closed or not self._connected or self._controller is None:
+                    return False
+                if (
+                    start_cancel_epoch is not None
+                    and start_cancel_epoch != self._motion_start_cancel_epoch
+                ):
                     return False
                 if self._motion_active:
                     return True
@@ -230,6 +237,8 @@ class MakcuService:
                     dispatch_owner is not None
                     and dispatch_owner is not threading.current_thread()
                 ):
+                    if start_cancel_epoch is None:
+                        start_cancel_epoch = self._motion_start_cancel_epoch
                     dispatch_done = self._motion_dispatch_done
                 else:
                     # The owner is already inside the prior callback, so a
@@ -308,6 +317,11 @@ class MakcuService:
         # returns.  Re-signal and re-record in case start_motion installed a
         # new generation between the lock-free snapshot and this barrier.
         with self._lock:
+            # Invalidate every non-owner start already waiting for terminal
+            # dispatch, even when the previous worker has released its slot.
+            # Python integers are unbounded, so this monotonic epoch cannot
+            # wrap around to make an obsolete waiter current again.
+            self._motion_start_cancel_epoch += 1
             if not self._motion_active:
                 return
             with self._motion_cancel_lock:
