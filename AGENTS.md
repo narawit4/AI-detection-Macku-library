@@ -87,6 +87,13 @@ with the supported Windows Python installation.
 - The optional overlay starts off and is independent of source selection. It
   is a centered 320-by-320 red detection view that must be click-through and
   excluded from capture.
+- STOP immediately cancels movement, hides the overlay, and ends its inference
+  demand. Disable, disconnect, and source changes immediately cancel movement;
+  AI inference continues only while the visible independent overlay requires
+  it. Shutdown ends both movement and inference.
+- An AI runtime error hides the overlay and deselects AI Aim. With Jitter still
+  selected under Master, continue or restart Jitter through the same gate;
+  an AI-only failure disarms Master.
 - `Test 3s` uses the production engine for the sources selected at test start,
   bypasses Trigger temporarily, requires Makcu, and remains immediately
   interruptible by STOP or disconnect.

@@ -48,14 +48,20 @@ AI Aim exposes four controls on the Motion page:
 Selecting AI Aim does not move the pointer. Master arms capture and inference;
 movement still requires the selected Trigger and optional Modifier. Status
 shows `Ready (DirectML)` when DirectML is active or `Ready (CPU)` when the
-explicit CPU fallback is in use. `STOP`, disable, disconnect, source change,
-and shutdown cancel AI inference and movement immediately. Trigger or Modifier
+explicit CPU fallback is in use. `STOP` immediately cancels movement, hides the
+Overlay, and ends its inference demand. Disable, disconnect, and source change
+immediately cancel movement; inference remains active when the independent
+visible Overlay still requires it. Shutdown ends both. Trigger or Modifier
 release stops movement while the armed AI capture remains ready.
 
 The independent `Overlay` control starts off. When enabled, it draws red
 detection boxes in a centered 320-by-320, click-through window that is excluded
 from capture. Overlay viewing does not require AI Aim to be selected for
 movement; it starts the approved detection runtime only while needed.
+
+An AI runtime error fails closed by hiding the Overlay and deselecting AI Aim.
+If Jitter remains selected under Master, Jitter continues or restarts through
+the same gate; an AI-only failure disarms Master.
 
 ## Requirements
 
