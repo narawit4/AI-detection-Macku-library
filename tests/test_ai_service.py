@@ -294,6 +294,7 @@ class AiServiceTests(unittest.TestCase):
         self.assertEqual(service.status, "error")
         self.assertIsNone(service.provider)
         self.assertIsNone(service.latest_snapshot())
+        self.assertIsNone(service.latest_detection_snapshot())
         self.assertEqual(
             [event for event in events if event.kind == "error"],
             [AiEvent("error", "RuntimeError: AI service failed")],
@@ -365,6 +366,26 @@ class AiServiceTests(unittest.TestCase):
         self.assertEqual(service.latest_snapshot().sequence, 2)
         self.assertIn(AiEvent("ready", "DmlExecutionProvider"), events)
 
+    def test_worker_atomically_publishes_target_and_detection_frame(self):
+        head = Detection(150, 150, 170, 170, 0.9, 7)
+        service = AiService(
+            lambda _event: None,
+            detector_factory=lambda _path: SequenceDetector([(head,)]),
+            capture_factory=lambda: FakeCapture([object()]),
+        )
+        self.addCleanup(service.close)
+
+        service.start(AimSettings)
+
+        self.assertTrue(wait_until(
+            lambda: service.latest_detection_snapshot() is not None
+        ))
+        target = service.latest_snapshot()
+        frame = service.latest_detection_snapshot()
+        self.assertEqual(target.sequence, frame.sequence)
+        self.assertEqual(frame.detections, (head,))
+        self.assertEqual(frame.selected_index, 0)
+
     def test_stop_invalidates_late_inference_result(self):
         detector = BlockingDetector()
         service = AiService(
@@ -381,6 +402,7 @@ class AiServiceTests(unittest.TestCase):
 
         self.assertTrue(wait_until(lambda: not service.running))
         self.assertIsNone(service.latest_snapshot())
+        self.assertIsNone(service.latest_detection_snapshot())
 
     def test_public_state_tracks_provider_and_stop(self):
         ready = threading.Event()
@@ -532,6 +554,7 @@ class AiServiceTests(unittest.TestCase):
         self.assertNotIn("secret model location", errors[0])
         self.assertIn("secret model location", "\n".join(logs.output))
         self.assertIsNone(service.latest_snapshot())
+        self.assertIsNone(service.latest_detection_snapshot())
 
     def test_capture_start_error_closes_capture_exactly_once(self):
         capture = CountingCapture(start_error=OSError("desktop unavailable"))
@@ -554,14 +577,20 @@ class AiServiceTests(unittest.TestCase):
             ["OSError: AI service failed"],
         )
 
-    def test_inference_error_clears_target_and_closes_capture(self):
-        capture = CountingCapture([object()])
+    def test_inference_error_clears_target_and_detection_frame(self):
+        capture = CountingCapture([object(), object()])
         events = []
 
         class FailingDetector:
             provider = "CPUExecutionProvider"
 
+            def __init__(self):
+                self.calls = 0
+
             def detect(self, _frame):
+                self.calls += 1
+                if self.calls == 1:
+                    return (Detection(150, 150, 170, 170, 0.9, 7),)
                 raise ValueError("raw inference diagnostic")
 
         service = AiService(
@@ -577,6 +606,7 @@ class AiServiceTests(unittest.TestCase):
 
         self.assertEqual(service.status, "error")
         self.assertIsNone(service.latest_snapshot())
+        self.assertIsNone(service.latest_detection_snapshot())
         self.assertEqual(capture.close_calls, 1)
         error = next(event for event in events if event.kind == "error")
         self.assertEqual(error.payload, "ValueError: AI service failed")
@@ -707,6 +737,7 @@ class AiServiceTests(unittest.TestCase):
         self.assertFalse(service.running)
         self.assertEqual(service.status, "stopped")
         self.assertIsNone(service.latest_snapshot())
+        self.assertIsNone(service.latest_detection_snapshot())
 
     def test_stop_orders_stopped_after_an_inflight_worker_event(self):
         fps_entered = threading.Event()
@@ -858,6 +889,10 @@ class AiServiceTests(unittest.TestCase):
 
         self.assertTrue(old_capture.closed.wait(1.0))
         self.assertEqual(service.latest_snapshot().aim_x, 35.0)
+        self.assertEqual(
+            service.latest_detection_snapshot().detections,
+            (Detection(30, 30, 40, 40, 0.9, 7),),
+        )
         self.assertEqual(old_capture.close_calls, 1)
 
 

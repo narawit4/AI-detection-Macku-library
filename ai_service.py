@@ -10,7 +10,12 @@ from typing import Any
 
 from ai_capture import DxcamCapture
 from ai_detection import OnnxDetector, model_resource_path
-from ai_targeting import AimSettings, TargetSnapshot, select_target
+from ai_targeting import (
+    AimSettings,
+    DetectionFrameSnapshot,
+    TargetSnapshot,
+    analyze_detections,
+)
 
 
 LOGGER = logging.getLogger(__name__)
@@ -45,6 +50,7 @@ class AiService:
         self._running = False
         self._closed = False
         self._latest: TargetSnapshot | None = None
+        self._latest_detection: DetectionFrameSnapshot | None = None
         self._status = "stopped"
         self._provider: str | None = None
 
@@ -67,6 +73,14 @@ class AiService:
         with self._lock:
             return self._latest
 
+    def latest_detection_snapshot(self) -> DetectionFrameSnapshot | None:
+        with self._lock:
+            return self._latest_detection
+
+    def _clear_snapshots_locked(self) -> None:
+        self._latest = None
+        self._latest_detection = None
+
     def start(self, settings_provider: Callable[[], AimSettings]) -> int | None:
         with self._lock:
             if self._closed:
@@ -78,7 +92,7 @@ class AiService:
             stop_event = threading.Event()
             self._stop_event = stop_event
             self._running = True
-            self._latest = None
+            self._clear_snapshots_locked()
             self._status = "loading"
             self._provider = None
 
@@ -101,7 +115,7 @@ class AiService:
                 self._generation += 1
                 failure_generation = self._generation
                 self._running = False
-                self._latest = None
+                self._clear_snapshots_locked()
                 self._status = "error"
                 self._provider = None
                 self._stop_event = None
@@ -141,7 +155,7 @@ class AiService:
                 self._generation += 1
                 stopped_generation = self._generation
                 self._running = False
-                self._latest = None
+                self._clear_snapshots_locked()
                 self._status = "stopped"
                 self._provider = None
                 self._stop_event = None
@@ -164,7 +178,7 @@ class AiService:
                 self._closed = True
                 self._generation += 1
                 self._running = False
-                self._latest = None
+                self._clear_snapshots_locked()
                 self._status = "stopped"
                 self._provider = None
                 self._stop_event = None
@@ -259,10 +273,9 @@ class AiService:
                     stop_event.wait(0.001)
                     continue
                 captured_at = self._clock()
-                detections = detector.detect(frame)
                 sequence += 1
-                selected = select_target(
-                    detections,
+                analysis = analyze_detections(
+                    detector.detect(frame),
                     settings_provider(),
                     sequence=sequence,
                     captured_at=captured_at,
@@ -273,8 +286,9 @@ class AiService:
                 with self._lock:
                     if not self._is_current_locked(generation, stop_event):
                         return
-                    self._latest = selected
-                previous = selected
+                    self._latest = analysis.target
+                    self._latest_detection = analysis.frame
+                previous = analysis.target
                 completed_inferences += 1
                 now = self._clock()
                 elapsed = now - fps_started_at
@@ -322,7 +336,7 @@ class AiService:
         with self._lock:
             if not self._is_current_locked(generation, stop_event):
                 return
-            self._latest = None
+            self._clear_snapshots_locked()
             self._status = "error"
             self._provider = None
         self._emit_current(
