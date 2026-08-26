@@ -3,10 +3,81 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from ai_targeting import AimSettings
 from motion import MotionSettings
-from settings import AppConfig, ConfigStore, SCHEMA_VERSION
+import settings as settings_module
+from settings import AppConfig, ConfigStore, SCHEMA_VERSION, runtime_base_dir
+
+
+class RuntimeBaseDirTests(unittest.TestCase):
+    def test_source_mode_uses_module_directory_despite_packaging_inputs(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            settings_module.os.environ,
+            {"NUITKA_ONEFILE_DIRECTORY": directory},
+        ), patch.object(
+            settings_module.sys,
+            "argv",
+            [str(Path(directory) / "Jitter.exe")],
+        ):
+            self.assertEqual(
+                runtime_base_dir(),
+                Path(settings_module.__file__).resolve().parent,
+            )
+
+    def test_nuitka_standalone_and_onefile_use_containing_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            containing_dir = Path(directory) / "release"
+            for onefile in (False, True):
+                marker = SimpleNamespace(
+                    containing_dir=str(containing_dir),
+                    standalone=True,
+                    onefile=onefile,
+                )
+                with self.subTest(onefile=onefile), patch.object(
+                    settings_module,
+                    "__compiled__",
+                    marker,
+                    create=True,
+                ), patch.object(
+                    settings_module.sys,
+                    "argv",
+                    [str(Path(directory) / "elsewhere" / "Jitter.exe")],
+                ):
+                    self.assertEqual(
+                        runtime_base_dir(), containing_dir.resolve()
+                    )
+
+    def test_malformed_compiled_marker_falls_back_to_executable_argument(self):
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / "release" / "Jitter.exe"
+            for marker in (object(), SimpleNamespace(containing_dir=None)):
+                with self.subTest(marker=marker), patch.object(
+                    settings_module,
+                    "__compiled__",
+                    marker,
+                    create=True,
+                ), patch.object(
+                    settings_module.sys,
+                    "argv",
+                    [str(executable)],
+                ):
+                    self.assertEqual(runtime_base_dir(), executable.resolve().parent)
+
+    def test_malformed_compiled_paths_fall_back_safely_to_source_directory(self):
+        marker = SimpleNamespace(containing_dir=object())
+        with patch.object(
+            settings_module,
+            "__compiled__",
+            marker,
+            create=True,
+        ), patch.object(settings_module.sys, "argv", [None]):
+            self.assertEqual(
+                runtime_base_dir(),
+                Path(settings_module.__file__).resolve().parent,
+            )
 
 
 class ConfigStoreTests(unittest.TestCase):
@@ -115,12 +186,12 @@ class ConfigStoreTests(unittest.TestCase):
                 "ai": {
                     "confidence": -1,
                     "aim_strength": 10,
-                    "smoothing": "0.25",
+                    "smoothing": "9",
                     "max_step": 999,
                 },
             }), encoding="utf-8")
             config = ConfigStore(path).load().config
-        self.assertEqual(config.ai, AimSettings(0.0, 2.0, 0.25, 127))
+        self.assertEqual(config.ai, AimSettings(0.05, 2.0, 0.95, 127))
 
     def test_schema_three_boolean_ai_values_use_field_defaults(self):
         with tempfile.TemporaryDirectory() as directory:

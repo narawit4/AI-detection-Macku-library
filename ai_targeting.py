@@ -6,9 +6,9 @@ from typing import Any, Iterable, Mapping
 
 
 AIM_LIMITS: dict[str, tuple[float, float]] = {
-    "confidence": (0.0, 1.0),
-    "aim_strength": (0.0, 2.0),
-    "smoothing": (0.0, 1.0),
+    "confidence": (0.05, 0.95),
+    "aim_strength": (0.05, 2.0),
+    "smoothing": (0.0, 0.95),
     "max_step": (1.0, 127.0),
 }
 

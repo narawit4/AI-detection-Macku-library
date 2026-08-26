@@ -54,18 +54,33 @@ class LoadOutcome:
 def runtime_base_dir() -> Path:
     """Return the directory that should hold this app's user data.
 
-    Nuitka one-file exposes its extracted/runtime directory through
-    ``NUITKA_ONEFILE_DIRECTORY``.  A frozen executable otherwise uses the
-    executable's directory; source runs use the directory containing this
-    module.  No EverFall paths are consulted.
+    Nuitka exposes the directory of its containing binary through the
+    ``__compiled__`` marker.  If that marker is incomplete, the original
+    executable argument is the compiled-mode fallback.  Source runs always use
+    the directory containing this module.  No EverFall paths are consulted.
     """
 
-    onefile_dir = os.environ.get("NUITKA_ONEFILE_DIRECTORY")
-    if onefile_dir:
-        return Path(onefile_dir).resolve()
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
-    return Path(__file__).resolve().parent
+    source_dir = Path(__file__).resolve().parent
+    try:
+        compiled = __compiled__
+    except NameError:
+        return source_dir
+
+    try:
+        containing_dir = getattr(compiled, "containing_dir")
+        if not os.fspath(containing_dir):
+            raise ValueError
+        return Path(containing_dir).resolve()
+    except (AttributeError, TypeError, ValueError, OSError, RuntimeError):
+        pass
+
+    try:
+        executable = sys.argv[0]
+        if not os.fspath(executable):
+            raise ValueError
+        return Path(executable).resolve().parent
+    except (IndexError, TypeError, ValueError, OSError, RuntimeError):
+        return source_dir
 
 
 def _safe_int(raw: Any, default: int, low: int, high: int) -> int:

@@ -14,13 +14,21 @@ from ai_targeting import (
 
 
 class AimSettingsTests(unittest.TestCase):
+    def test_canonical_limits_match_approved_ui_and_config_contract(self):
+        self.assertEqual(AIM_LIMITS, {
+            "confidence": (0.05, 0.95),
+            "aim_strength": (0.05, 2.0),
+            "smoothing": (0.0, 0.95),
+            "max_step": (1.0, 127.0),
+        })
+
     def test_mapping_clamps_non_finite_and_out_of_range_values(self):
         settings = aim_settings_from_mapping({
-            "confidence": "nan", "aim_strength": "9",
-            "smoothing": "-1", "max_step": "999",
+            "confidence": "-4", "aim_strength": "-1",
+            "smoothing": "1", "max_step": "999",
         })
         self.assertEqual(settings, AimSettings(
-            confidence=0.35, aim_strength=2.0, smoothing=0.0, max_step=127,
+            confidence=0.05, aim_strength=0.05, smoothing=0.95, max_step=127,
         ))
 
     def test_mapping_rejects_invalid_values_using_defaults(self):
