@@ -26,6 +26,7 @@ WS_EX_LAYERED = 0x00080000
 WS_EX_NOACTIVATE = 0x08000000
 
 _GWL_EXSTYLE = -20
+_GA_ROOT = 2
 _REQUIRED_EXTENDED_STYLES = (
     WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_NOACTIVATE
 )
@@ -84,6 +85,8 @@ class Win32OverlayAdapter:
                 long_ptr,
             ]
             user32.SetWindowLongPtrW.restype = long_ptr
+            user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+            user32.GetAncestor.restype = wintypes.HWND
             user32.SetWindowDisplayAffinity.argtypes = [
                 wintypes.HWND,
                 wintypes.DWORD,
@@ -94,6 +97,12 @@ class Win32OverlayAdapter:
         self._set_last_error = set_last_error
 
     def configure(self, hwnd: int) -> None:
+        self._set_last_error(0)
+        root_hwnd = self._user32.GetAncestor(hwnd, _GA_ROOT)
+        if not root_hwnd:
+            raise self._failure("GetAncestor", self._get_last_error())
+        hwnd = int(root_hwnd)
+
         self._set_last_error(0)
         existing_styles = self._user32.GetWindowLongPtrW(hwnd, _GWL_EXSTYLE)
         error = self._get_last_error()

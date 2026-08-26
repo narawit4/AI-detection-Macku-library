@@ -56,8 +56,9 @@ class OverlayProjectionTests(unittest.TestCase):
 
 
 class FakeNativeApi:
-    def __init__(self, *, style=0x1000):
+    def __init__(self, *, style=0x1000, root_hwnd=1234):
         self.style = style
+        self.root_hwnd = root_hwnd
         self.error = 0
         self.calls = []
         self.get_result = style
@@ -66,6 +67,10 @@ class FakeNativeApi:
         self.get_error = 0
         self.set_error = 0
         self.affinity_error = 0
+
+    def GetAncestor(self, hwnd, flags):
+        self.calls.append(("get-root", hwnd, flags))
+        return self.root_hwnd
 
     def GetWindowLongPtrW(self, hwnd, index):
         self.calls.append(("get-style", hwnd, index))
@@ -112,9 +117,32 @@ class Win32OverlayAdapterTests(unittest.TestCase):
         self.assertEqual(
             api.calls,
             [
+                ("get-root", 1234, 2),
                 ("get-style", 1234, -20),
                 ("set-style", 1234, -20, expected_styles),
                 ("set-affinity", 1234, WDA_EXCLUDEFROMCAPTURE),
+            ],
+        )
+
+    def test_configure_resolves_tk_child_to_top_level_before_native_setup(self):
+        api = FakeNativeApi(style=0x1000, root_hwnd=5678)
+
+        self.make_adapter(api).configure(1234)
+
+        expected_styles = (
+            0x1000
+            | WS_EX_TRANSPARENT
+            | WS_EX_TOOLWINDOW
+            | WS_EX_LAYERED
+            | WS_EX_NOACTIVATE
+        )
+        self.assertEqual(
+            api.calls,
+            [
+                ("get-root", 1234, 2),
+                ("get-style", 5678, -20),
+                ("set-style", 5678, -20, expected_styles),
+                ("set-affinity", 5678, WDA_EXCLUDEFROMCAPTURE),
             ],
         )
 
@@ -128,7 +156,10 @@ class Win32OverlayAdapterTests(unittest.TestCase):
         ):
             self.make_adapter(api).configure(1234)
 
-        self.assertEqual(api.calls, [("get-style", 1234, -20)])
+        self.assertEqual(
+            api.calls,
+            [("get-root", 1234, 2), ("get-style", 1234, -20)],
+        )
 
     def test_zero_set_style_with_last_error_fails_before_capture_exclusion(self):
         api = FakeNativeApi()
@@ -140,7 +171,10 @@ class Win32OverlayAdapterTests(unittest.TestCase):
         ):
             self.make_adapter(api).configure(1234)
 
-        self.assertEqual([call[0] for call in api.calls], ["get-style", "set-style"])
+        self.assertEqual(
+            [call[0] for call in api.calls],
+            ["get-root", "get-style", "set-style"],
+        )
 
     def test_false_capture_exclusion_result_fails_closed(self):
         api = FakeNativeApi()
