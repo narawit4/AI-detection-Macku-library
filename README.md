@@ -100,7 +100,7 @@ by Git.
 ```powershell
 python -m py_compile main.py ui.py motion.py ai_targeting.py ai_detection.py ai_capture.py ai_service.py makcu_service.py hotkeys.py settings.py sound_service.py liquid_widgets.py
 python -m unittest discover -s tests -v
-python -c "import makcu, serial, onnxruntime, dxcam, comtypes, numpy, pygame"
+python -c "import makcu, serial, pygame, onnxruntime, dxcam, comtypes, numpy"
 python -c "from ai_detection import OnnxDetector, model_resource_path; print(OnnxDetector(model_resource_path()).provider)"
 Get-FileHash -Algorithm SHA256 models\all_games_320.onnx
 git diff --check

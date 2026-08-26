@@ -140,6 +140,7 @@ class ToggleSoundPlayerTests(unittest.TestCase):
 
     def test_configuration_failure_closes_backend_before_discarding_it(self):
         closed = threading.Event()
+        calls = {"play": 0}
 
         class Backend:
             closed_calls = 0
@@ -148,7 +149,7 @@ class ToggleSoundPlayerTests(unittest.TestCase):
                 raise RuntimeError("configuration failed")
 
             def play(self, enabled):
-                self.fail("play must not run after configuration failure")
+                calls["play"] += 1
 
             def close(self):
                 self.closed_calls += 1
@@ -162,6 +163,7 @@ class ToggleSoundPlayerTests(unittest.TestCase):
             player.play(True)
             self.assertTrue(closed.wait(1))
         self.assertEqual(backend.closed_calls, 1)
+        self.assertEqual(calls["play"], 0)
         self.assertIn("Could not play hotkey sound", logs.output[0])
         player.close()
         self.assertEqual(backend.closed_calls, 1)
@@ -217,10 +219,49 @@ class ToggleSoundPlayerTests(unittest.TestCase):
 
         self.assertEqual(calls, ["init", "quit"])
 
+    def test_pygame_close_logs_secondary_cleanup_failure(self):
+        calls = []
+
+        class Channel:
+            def stop(self):
+                calls.append("stop")
+                raise RuntimeError("channel stop failed")
+
+        class Mixer:
+            def init(self):
+                calls.append("init")
+
+            def Channel(self, index):
+                calls.append(("channel", index))
+                return Channel()
+
+            def Sound(self, path):
+                calls.append(("sound", path))
+                return SimpleNamespace(set_volume=lambda _volume: None)
+
+            def quit(self):
+                calls.append("quit")
+                raise RuntimeError("mixer quit failed")
+
+        pygame = SimpleNamespace(mixer=Mixer())
+        with mock.patch.dict(sys.modules, {"pygame": pygame}):
+            backend = _PygameBackend(Path("ON.ogg"), Path("OFF.ogg"))
+            with self.assertLogs(level="ERROR") as logs:
+                with self.assertRaisesRegex(RuntimeError, "channel stop failed"):
+                    backend.close()
+
+        self.assertEqual(
+            calls,
+            ["init", ("channel", 0), ("sound", "ON.ogg"),
+             ("sound", "OFF.ogg"), "stop", "quit"],
+        )
+        self.assertIn("Could not quit hotkey sound mixer", logs.output[0])
+
     def test_close_failure_is_contained_and_next_cue_recovers(self):
-        close_attempted = threading.Event()
+        close_logged = threading.Event()
         recovered_played = threading.Event()
         backends = []
+        log_messages = []
 
         class FailedBackend:
             def set_volume(self, volume):
@@ -230,7 +271,6 @@ class ToggleSoundPlayerTests(unittest.TestCase):
                 raise RuntimeError("playback failed")
 
             def close(self):
-                close_attempted.set()
                 raise RuntimeError("close failed")
 
         class RecoveredBackend:
@@ -251,16 +291,23 @@ class ToggleSoundPlayerTests(unittest.TestCase):
             return backend
 
         player = ToggleSoundPlayer(Path("sound"), backend_factory=factory)
-        with self.assertLogs(level="ERROR") as logs:
+
+        def record_log(message, *args, **kwargs):
+            log_messages.append(message)
+            if message == "Could not close hotkey sound player":
+                close_logged.set()
+
+        with mock.patch("sound_service.logging.exception", side_effect=record_log):
             player.play(True)
-            self.assertTrue(close_attempted.wait(1))
+            self.assertTrue(close_logged.wait(1))
         player.play(False)
         self.assertTrue(recovered_played.wait(1))
         player.close()
         self.assertEqual(backends[1].closed_calls, 1)
-        self.assertEqual(len(logs.output), 2)
-        self.assertIn("Could not play hotkey sound", logs.output[0])
-        self.assertIn("Could not close hotkey sound player", logs.output[1])
+        self.assertEqual(
+            log_messages,
+            ["Could not play hotkey sound", "Could not close hotkey sound player"],
+        )
 
     def test_concurrent_and_second_close_close_backend_once(self):
         played = threading.Event()

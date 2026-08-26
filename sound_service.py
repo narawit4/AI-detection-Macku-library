@@ -57,6 +57,8 @@ class _PygameBackend:
             except Exception as exc:
                 if error is None:
                     error = exc
+                else:
+                    logging.exception("Could not quit hotkey sound mixer")
         if error is not None:
             raise error
 
