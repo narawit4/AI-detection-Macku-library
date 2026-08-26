@@ -314,6 +314,151 @@ class MakcuMovementTests(unittest.TestCase):
             events[-1], ServiceEvent("motion_stopped", "duration_complete")
         )
 
+    def test_jitter_and_ai_duration_terminals_carry_the_returned_source(self):
+        for mode in ("jitter", "ai"):
+            with self.subTest(mode=mode):
+                service, _controller, events = self.connected_service()
+                events.clear()
+
+                if mode == "ai":
+                    start_with_source = getattr(
+                        service,
+                        "start_ai_motion_source",
+                        None,
+                    )
+                    self.assertIsNotNone(start_with_source)
+                    source = start_with_source(
+                        lambda: None,
+                        AimSettings,
+                        duration_s=0,
+                    )
+                else:
+                    start_with_source = getattr(
+                        service,
+                        "start_motion_source",
+                        None,
+                    )
+                    self.assertIsNotNone(start_with_source)
+                    source = start_with_source(
+                        lambda: MotionSettings(),
+                        duration_s=0,
+                    )
+                service.join_motion(1.0)
+
+                self.assertIs(type(source), int)
+                self.assertGreater(source, 0)
+                self.assertEqual(events[-1].kind, "motion_stopped")
+                self.assertEqual(events[-1].payload, "duration_complete")
+                self.assertEqual(
+                    getattr(events[-1], "motion_generation", None),
+                    source,
+                )
+
+    def test_reentrant_same_reason_motion_starts_keep_distinct_sources(self):
+        for mode in ("jitter", "ai"):
+            with self.subTest(mode=mode):
+                terminal_events = []
+                reentrant_sources = []
+                two_terminals = threading.Event()
+                controller = FakeController()
+                service = None
+
+                def start_timed_motion():
+                    if mode == "ai":
+                        start_with_source = getattr(
+                            service,
+                            "start_ai_motion_source",
+                            None,
+                        )
+                        self.assertIsNotNone(start_with_source)
+                        return start_with_source(
+                            lambda: None,
+                            AimSettings,
+                            duration_s=0,
+                        )
+                    start_with_source = getattr(
+                        service,
+                        "start_motion_source",
+                        None,
+                    )
+                    self.assertIsNotNone(start_with_source)
+                    return start_with_source(
+                        lambda: MotionSettings(),
+                        duration_s=0,
+                    )
+
+                def sink(event):
+                    if (
+                        event.kind != "motion_stopped"
+                        or event.payload != "duration_complete"
+                    ):
+                        return
+                    terminal_events.append(event)
+                    if len(terminal_events) == 1:
+                        reentrant_sources.append(start_timed_motion())
+                    if len(terminal_events) == 2:
+                        two_terminals.set()
+
+                service = MakcuService(
+                    sink,
+                    controller_factory=lambda **_kwargs: controller,
+                    engine_factory=RecordingEngine,
+                    aim_engine_factory=FakeAimEngine,
+                )
+                self.addCleanup(service.close)
+                service._connect_worker(service._begin_connection())
+
+                first_source = start_timed_motion()
+                self.assertTrue(two_terminals.wait(1.0))
+                service.join_motion(1.0)
+
+                self.assertEqual(len(reentrant_sources), 1)
+                second_source = reentrant_sources[0]
+                self.assertIs(type(first_source), int)
+                self.assertIs(type(second_source), int)
+                self.assertNotEqual(first_source, second_source)
+                self.assertEqual(
+                    [
+                        getattr(event, "motion_generation", None)
+                        for event in terminal_events
+                    ],
+                    [first_source, second_source],
+                )
+
+    def test_jitter_and_ai_motion_errors_carry_the_returned_source(self):
+        for mode in ("jitter", "ai"):
+            with self.subTest(mode=mode):
+                service, _controller, events = self.connected_service()
+                events.clear()
+
+                def fail():
+                    raise RuntimeError(f"{mode} source failure")
+
+                if mode == "ai":
+                    start_with_source = getattr(
+                        service,
+                        "start_ai_motion_source",
+                        None,
+                    )
+                    self.assertIsNotNone(start_with_source)
+                    source = start_with_source(fail, AimSettings)
+                else:
+                    start_with_source = getattr(
+                        service,
+                        "start_motion_source",
+                        None,
+                    )
+                    self.assertIsNotNone(start_with_source)
+                    source = start_with_source(fail)
+                service.join_motion(1.0)
+
+                self.assertIs(type(source), int)
+                self.assertEqual(events[-1].kind, "motion_error")
+                self.assertEqual(
+                    getattr(events[-1], "motion_generation", None),
+                    source,
+                )
+
     def test_ai_duration_crossed_during_blocked_step_prevents_move(self):
         engine = BlockingAimEngine()
         deadline_crossed = threading.Event()

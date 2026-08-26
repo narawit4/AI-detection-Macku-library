@@ -6,7 +6,7 @@ the application layer is responsible for marshalling those values to Tk's
 main thread.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import math
 import threading
 import time
@@ -33,6 +33,10 @@ BUTTON_NAMES = {
 class ServiceEvent:
     kind: str
     payload: Any = None
+    # Motion terminal/error events carry the generation reserved for their
+    # originating worker.  ``compare=False`` keeps equality compatible with
+    # existing consumers that compare only the historical kind/payload pair.
+    motion_generation: int | None = field(default=None, compare=False)
 
 
 class MakcuService:
@@ -198,6 +202,14 @@ class MakcuService:
         duration_s: float | None = None,
     ) -> bool:
         """Start one interruptible movement worker for the active controller."""
+        return self.start_motion_source(settings_provider, duration_s) is not None
+
+    def start_motion_source(
+        self,
+        settings_provider: Callable[[], Any],
+        duration_s: float | None = None,
+    ) -> int | None:
+        """Start motion and return its reserved source generation, if accepted."""
         return self._start_motion_job(
             "jitter", settings_provider, None, duration_s
         )
@@ -209,6 +221,22 @@ class MakcuService:
         duration_s: float | None = None,
     ) -> bool:
         """Start AI target movement through the active controller."""
+        return (
+            self.start_ai_motion_source(
+                snapshot_provider,
+                settings_provider,
+                duration_s,
+            )
+            is not None
+        )
+
+    def start_ai_motion_source(
+        self,
+        snapshot_provider: Callable[[], TargetSnapshot | None],
+        settings_provider: Callable[[], AimSettings],
+        duration_s: float | None = None,
+    ) -> int | None:
+        """Start AI motion and return its source generation, if accepted."""
         return self._start_motion_job(
             "ai", settings_provider, snapshot_provider, duration_s
         )
@@ -219,19 +247,19 @@ class MakcuService:
         settings_provider: Callable[[], Any],
         snapshot_provider: Callable[[], Any] | None,
         duration_s: float | None,
-    ) -> bool:
+    ) -> int | None:
         start_cancel_epoch: int | None = None
         while True:
             with self._lock:
                 if self._closed or not self._connected or self._controller is None:
-                    return False
+                    return None
                 if (
                     start_cancel_epoch is not None
                     and start_cancel_epoch != self._motion_start_cancel_epoch
                 ):
-                    return False
+                    return None
                 if self._motion_active:
-                    return True
+                    return self._motion_generation
                 dispatch_owner = self._motion_dispatch_owner
                 if (
                     dispatch_owner is not None
@@ -250,11 +278,11 @@ class MakcuService:
                             None if duration_s is None else float(duration_s)
                         )
                         if duration is not None and not math.isfinite(duration):
-                            return False
+                            return None
                         if duration is not None:
                             duration = max(0.0, duration)
                     except (TypeError, ValueError, OverflowError):
-                        return False
+                        return None
                     connection_generation = self._generation
                     expected_controller = self._controller
                     stop_event = threading.Event()
@@ -291,8 +319,8 @@ class MakcuService:
                     self._motion_thread = None
                     with self._motion_cancel_lock:
                         self._motion_stop_reasons.pop(motion_generation, None)
-            return False
-        return True
+            return None
+        return motion_generation
 
     def stop_motion(self, reason: str = "manual") -> None:
         """Signal cancellation immediately, then serialize the stop return."""
@@ -483,9 +511,17 @@ class MakcuService:
                 if reason is None:
                     reason = "manual"
                 if error_payload is not None and terminal_current:
-                    terminal_event = ServiceEvent("motion_error", error_payload)
+                    terminal_event = ServiceEvent(
+                        "motion_error",
+                        error_payload,
+                        motion_generation,
+                    )
                 elif terminal_current:
-                    terminal_event = ServiceEvent("motion_stopped", reason)
+                    terminal_event = ServiceEvent(
+                        "motion_stopped",
+                        reason,
+                        motion_generation,
+                    )
                 if terminal_event is not None:
                     should_dispatch = self._reserve_event_locked(
                         terminal_event,
