@@ -12,6 +12,9 @@ AIM_LIMITS: dict[str, tuple[float, float]] = {
     "max_step": (1.0, 127.0),
 }
 
+RESPONSE_CURVE_X = (0.0, 0.25, 0.5, 0.75, 1.0)
+DEFAULT_RESPONSE_CURVE = (0.0, 0.12, 0.35, 0.68, 1.0)
+
 
 @dataclass(frozen=True)
 class Detection:
@@ -119,6 +122,7 @@ class AimSettings:
     aim_strength: float = 0.35
     smoothing: float = 0.65
     max_step: int = 20
+    response_curve: tuple[float, float, float, float, float] = DEFAULT_RESPONSE_CURVE
 
 
 _DEFAULTS = AimSettings()
@@ -150,6 +154,32 @@ def _bounded_integer(raw: Any, default: int, key: str) -> int:
     return int(max(low, min(high, value)))
 
 
+def validated_response_curve(raw: Any) -> tuple[float, float, float, float, float]:
+    if isinstance(raw, (str, bytes)):
+        return DEFAULT_RESPONSE_CURVE
+    try:
+        values = tuple(raw)
+    except TypeError:
+        return DEFAULT_RESPONSE_CURVE
+    if len(values) != len(RESPONSE_CURVE_X):
+        return DEFAULT_RESPONSE_CURVE
+    try:
+        if any(isinstance(value, bool) for value in values):
+            raise TypeError
+        curve = tuple(float(value) for value in values)
+        if not all(math.isfinite(value) for value in curve):
+            raise ValueError
+    except (TypeError, ValueError, OverflowError):
+        return DEFAULT_RESPONSE_CURVE
+    if (
+        curve[0] != 0.0
+        or any(value < 0.0 or value > 1.0 for value in curve)
+        or any(current < previous for previous, current in zip(curve, curve[1:]))
+    ):
+        return DEFAULT_RESPONSE_CURVE
+    return curve[0], curve[1], curve[2], curve[3], curve[4]
+
+
 def aim_settings_from_mapping(raw: Mapping[str, Any] | None) -> AimSettings:
     values = dict(raw or {})
     return AimSettings(
@@ -157,6 +187,7 @@ def aim_settings_from_mapping(raw: Mapping[str, Any] | None) -> AimSettings:
         aim_strength=_bounded_number(values.get("aim_strength"), _DEFAULTS.aim_strength, "aim_strength"),
         smoothing=_bounded_number(values.get("smoothing"), _DEFAULTS.smoothing, "smoothing"),
         max_step=_bounded_integer(values.get("max_step"), _DEFAULTS.max_step, "max_step"),
+        response_curve=validated_response_curve(values.get("response_curve")),
     )
 
 
@@ -164,13 +195,100 @@ def _compact(value: float) -> str:
     return str(int(value)) if value.is_integer() else str(value)
 
 
-def aim_settings_to_mapping(settings: AimSettings) -> dict[str, str]:
+def aim_settings_to_mapping(settings: AimSettings) -> dict[str, str | list[str]]:
     return {
         "confidence": _compact(settings.confidence),
         "aim_strength": _compact(settings.aim_strength),
         "smoothing": _compact(settings.smoothing),
         "max_step": str(settings.max_step),
+        "response_curve": [_compact(value) for value in settings.response_curve],
     }
+
+
+def response_curve_value(
+    curve: tuple[float, ...], normalized_distance: float
+) -> float:
+    """Evaluate a validated response curve with monotone cubic interpolation."""
+    try:
+        x = float(normalized_distance)
+    except (TypeError, ValueError, OverflowError):
+        x = 0.0
+    if not math.isfinite(x):
+        x = 0.0
+    x = max(RESPONSE_CURVE_X[0], min(RESPONSE_CURVE_X[-1], x))
+
+    values = validated_response_curve(curve)
+    secants = tuple(
+        (right - left) / (x_right - x_left)
+        for left, right, x_left, x_right in zip(
+            values,
+            values[1:],
+            RESPONSE_CURVE_X,
+            RESPONSE_CURVE_X[1:],
+        )
+    )
+    tangents = [0.0] * len(values)
+    tangents[0] = _endpoint_tangent(
+        secants[0], secants[1], RESPONSE_CURVE_X[1] - RESPONSE_CURVE_X[0],
+        RESPONSE_CURVE_X[2] - RESPONSE_CURVE_X[1],
+    )
+    tangents[-1] = _endpoint_tangent(
+        secants[-1], secants[-2], RESPONSE_CURVE_X[-1] - RESPONSE_CURVE_X[-2],
+        RESPONSE_CURVE_X[-2] - RESPONSE_CURVE_X[-3],
+    )
+    for index in range(1, len(values) - 1):
+        left = secants[index - 1]
+        right = secants[index]
+        if left == 0.0 or right == 0.0 or left * right < 0.0:
+            tangents[index] = 0.0
+        else:
+            left_width = RESPONSE_CURVE_X[index] - RESPONSE_CURVE_X[index - 1]
+            right_width = RESPONSE_CURVE_X[index + 1] - RESPONSE_CURVE_X[index]
+            first_weight = 2.0 * right_width + left_width
+            second_weight = right_width + 2.0 * left_width
+            tangents[index] = (first_weight + second_weight) / (
+                first_weight / left + second_weight / right
+            )
+
+    segment = min(
+        len(RESPONSE_CURVE_X) - 2,
+        next(
+            index
+            for index in range(len(RESPONSE_CURVE_X) - 1)
+            if x <= RESPONSE_CURVE_X[index + 1]
+        ),
+    )
+    left_x = RESPONSE_CURVE_X[segment]
+    width = RESPONSE_CURVE_X[segment + 1] - left_x
+    t = (x - left_x) / width
+    t_squared = t * t
+    t_cubed = t_squared * t
+    value = (
+        (2.0 * t_cubed - 3.0 * t_squared + 1.0) * values[segment]
+        + (t_cubed - 2.0 * t_squared + t) * width * tangents[segment]
+        + (-2.0 * t_cubed + 3.0 * t_squared) * values[segment + 1]
+        + (t_cubed - t_squared) * width * tangents[segment + 1]
+    )
+    return max(0.0, min(1.0, value))
+
+
+def _endpoint_tangent(
+    edge_secant: float,
+    neighbor_secant: float,
+    edge_width: float,
+    neighbor_width: float,
+) -> float:
+    if edge_secant == 0.0:
+        return 0.0
+    tangent = (
+        (2.0 * edge_width + neighbor_width) * edge_secant
+        - edge_width * neighbor_secant
+    ) / (edge_width + neighbor_width)
+    if tangent * edge_secant <= 0.0:
+        return 0.0
+    if edge_secant * neighbor_secant < 0.0 and abs(tangent) > abs(3.0 * edge_secant):
+        return 3.0 * edge_secant
+    return tangent
 
 
 def detection_aim_point(detection: Detection) -> tuple[str, float, float] | None:

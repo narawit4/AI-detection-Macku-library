@@ -5,8 +5,10 @@ from dataclasses import FrozenInstanceError
 from ai_targeting import (
     AIM_LIMITS,
     AimSettings,
+    DEFAULT_RESPONSE_CURVE,
     Detection,
     DetectionFrameSnapshot,
+    RESPONSE_CURVE_X,
     TargetLockState,
     TargetSnapshot,
     AimMovementEngine,
@@ -15,8 +17,10 @@ from ai_targeting import (
     analyze_detections,
     detection_aim_point,
     observe_target_lock,
+    response_curve_value,
     select_target,
     target_lock_allows,
+    validated_response_curve,
 )
 
 
@@ -66,7 +70,53 @@ class AimSettingsTests(unittest.TestCase):
             "aim_strength": "2",
             "smoothing": "0.25",
             "max_step": "20",
+            "response_curve": ["0", "0.12", "0.35", "0.68", "1"],
         })
+
+    def test_response_curve_defaults_and_round_trips(self):
+        settings = aim_settings_from_mapping({
+            "response_curve": ["0", "0.1", "0.3", "0.7", "0.9"],
+        })
+        self.assertEqual(settings.response_curve, (0.0, 0.1, 0.3, 0.7, 0.9))
+        self.assertEqual(
+            aim_settings_to_mapping(settings)["response_curve"],
+            ["0", "0.1", "0.3", "0.7", "0.9"],
+        )
+
+    def test_malformed_curve_uses_complete_default(self):
+        invalid = (
+            None,
+            [0, .1],
+            [0, .4, .3, .8, 1],
+            [.1, .2, .3, .4, .5],
+            [0, .2, .3, .4, float("nan")],
+            [0, .2, .3, .4, float("inf")],
+            [0, .2, True, .4, 1],
+            [0, .2, .3, .4, 1.1],
+        )
+        for raw in invalid:
+            with self.subTest(raw=raw):
+                self.assertEqual(validated_response_curve(raw), DEFAULT_RESPONSE_CURVE)
+
+    def test_flat_curve_segment_is_valid(self):
+        self.assertEqual(
+            validated_response_curve([0, .2, .2, .7, 1]),
+            (0.0, 0.2, 0.2, 0.7, 1.0),
+        )
+
+    def test_aim_settings_is_immutable_with_response_curve(self):
+        settings = AimSettings(response_curve=(0, .2, .4, .7, 1))
+        with self.assertRaises(FrozenInstanceError):
+            settings.response_curve = DEFAULT_RESPONSE_CURVE
+
+    def test_monotone_curve_hits_points_and_never_overshoots(self):
+        curve = (0.0, 0.12, 0.35, 0.68, 1.0)
+        for x, y in zip(RESPONSE_CURVE_X, curve):
+            self.assertAlmostEqual(response_curve_value(curve, x), y)
+        samples = [response_curve_value(curve, index / 100) for index in range(101)]
+        self.assertEqual(samples, sorted(samples))
+        self.assertEqual(response_curve_value(curve, -1), 0.0)
+        self.assertEqual(response_curve_value(curve, 2), 1.0)
 
 
 class TargetLockTests(unittest.TestCase):
