@@ -23,6 +23,7 @@ tray behavior, or other upstream features.
 - `motion.py`: settings, validation, presets, and pure motion engine.
 - `combined_motion.py`: pure composition of selected Jitter and AI Aim deltas.
 - `ai_targeting.py`: immutable AI settings, target selection, and movement.
+- `ai_zoom.py`: pure adaptive zoom geometry and same-frame refinement composition.
 - `ai_detection.py`: fixed-contract ONNX Runtime detector.
 - `ai_capture.py`: centered DXCam capture wrapper.
 - `ai_service.py`: generation-safe capture and inference worker.
@@ -63,6 +64,8 @@ with the supported Windows Python installation.
   `after(0, ...)`.
 - Keep the motion engine pure and independent of Tkinter and Makcu.
 - Keep combined-motion composition pure and independent of Tkinter and Makcu.
+- Keep adaptive zoom geometry and refinement composition pure and independent
+  of Tkinter and Makcu.
 - Share immutable motion snapshots with the mover under a short lock.
 - Use daemon workers and explicit stop events/generation identifiers for
   connection, movement, Test Run, and hotkey polling.
@@ -82,6 +85,18 @@ with the supported Windows Python installation.
   requires Trigger plus the configured Modifier, if any.
 - AI Aim uses only the fixed centered 320-by-320 capture and bundled model,
   prefers heads over players, and shares the same Trigger/Modifier gate.
+- Adaptive Zoom is automatic and has no persisted control. Every frame first
+  performs full-field 1.0× target acquisition; only an already-selected small
+  target may receive a same-frame 1.5× or 2.0× refinement pass. That second
+  pass runs only during connected, Master-armed, AI-selected normal movement
+  with the configured Trigger and Modifier active. It is excluded while idle,
+  for Overlay-only inference, and during `Test 3s`.
+- `ZOOM` is runtime status only and reports 1.0×, 1.5×, or 2.0×. If refinement
+  is ineligible or cannot produce a compatible result, the same-frame 1.0×
+  base result remains. A successful refinement replaces only the selected base
+  box; its box is mapped back to the original frame for Overlay rendering and
+  unrelated base boxes remain. Adaptive Zoom does not magnify the display or
+  recover targets the base pass never detected.
 - Combined movement sums current source deltas; Jitter continues when AI Aim
   has no target.
 - The optional overlay starts off and is independent of source selection. It
@@ -129,7 +144,8 @@ with the supported Windows Python installation.
   in-memory defaults and leave that file untouched.
 - Schema 5 persists validated settings, including overlay color and head-box
   visibility; do not persist motion-source selection, Master state, overlay
-  visibility, AI targets, snapshots, FPS, provider, or runtime status.
+  visibility, AI targets, snapshots, FPS, provider, zoom status, or other
+  runtime status. Adaptive Zoom makes no schema or persisted-control change.
 - Write configuration through a temporary file, flush and `fsync`, keep a
   backup, and replace atomically.
 - Do not persist held-button or Moving state.
@@ -163,7 +179,7 @@ with the supported Windows Python installation.
 After implementation changes, run:
 
 ```powershell
-python -m py_compile main.py ui.py motion.py combined_motion.py ai_targeting.py ai_detection.py ai_capture.py ai_service.py overlay.py makcu_service.py hotkeys.py settings.py sound_service.py liquid_widgets.py distribution_metadata.py
+python -m py_compile main.py ui.py motion.py combined_motion.py ai_targeting.py ai_detection.py ai_capture.py ai_zoom.py ai_service.py overlay.py makcu_service.py hotkeys.py settings.py sound_service.py liquid_widgets.py distribution_metadata.py
 python -m unittest discover -s tests -v
 python -c "import makcu, serial, onnxruntime, dxcam, comtypes, numpy"
 python .\main.py --ai-runtime-self-check

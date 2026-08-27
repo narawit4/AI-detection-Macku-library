@@ -66,6 +66,24 @@ An AI runtime error fails closed by hiding the Overlay and deselecting AI Aim.
 If Jitter remains selected under Master, Jitter continues or restarts through
 the same gate; an AI-only failure disarms Master.
 
+### Adaptive Zoom
+
+Adaptive Zoom is automatic and has no control or persisted setting. Every frame
+still starts with the full-field 1.0× base pass. Only when a small target has
+already been selected by that pass does AI Aim request a same-frame second pass
+at 1.5× or 2.0×. The second pass is enabled only during connected, Master-armed,
+AI-selected normal movement while the configured Trigger and Modifier (if any)
+are active; it is not active while idle, during Overlay-only viewing, or during
+`Test 3s`.
+
+The `ZOOM` runtime status reports `1.0×`, `1.5×`, or `2.0×`. If refinement is
+not eligible or does not produce a compatible result, the same frame keeps its
+1.0× base result. A successful refinement replaces only the selected base box;
+its coordinates are mapped back into the original 320-by-320 frame for the
+Overlay, while unrelated base boxes remain. Adaptive Zoom does not magnify the
+display and cannot recover a target that the base pass never detected. Zoom
+status is runtime-only; Schema 5 and its persisted settings are unchanged.
+
 ## Requirements
 
 - Windows 10 or newer
@@ -121,7 +139,7 @@ timestamped diagnostics. These files are intentionally ignored by Git.
 ## Verification
 
 ```powershell
-python -m py_compile main.py ui.py motion.py combined_motion.py ai_targeting.py ai_detection.py ai_capture.py ai_service.py overlay.py makcu_service.py hotkeys.py settings.py sound_service.py liquid_widgets.py distribution_metadata.py
+python -m py_compile main.py ui.py motion.py combined_motion.py ai_targeting.py ai_detection.py ai_capture.py ai_zoom.py ai_service.py overlay.py makcu_service.py hotkeys.py settings.py sound_service.py liquid_widgets.py distribution_metadata.py
 python -m unittest discover -s tests -v
 python -c "import makcu, serial, pygame, onnxruntime, dxcam, comtypes, numpy"
 python -c "from ai_detection import OnnxDetector, model_resource_path; print(OnnxDetector(model_resource_path()).provider)"
