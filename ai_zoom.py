@@ -25,6 +25,7 @@ _HEAD_ONE_HALF_X_MAX = 32.0
 _PLAYER_TWO_X_MAX = 64.0
 _PLAYER_ONE_HALF_X_MAX = 112.0
 _ZOOM_SOURCE_SIZES = {1.5: 213, 2.0: 160}
+_SEPARABLE_RESIZE_SHAPES = {(160, 160, 320), (213, 213, 320)}
 
 
 @dataclass(frozen=True)
@@ -45,7 +46,7 @@ def _resize_plan(
     source_y = np.linspace(0.0, source_height - 1, output_size)
     x0 = np.floor(source_x).astype(np.intp)
     y0 = np.floor(source_y).astype(np.intp)
-    plan = (
+    values = (
         x0,
         np.minimum(x0 + 1, source_width - 1),
         y0,
@@ -53,9 +54,10 @@ def _resize_plan(
         (source_x - x0)[None, :, None],
         (source_y - y0)[:, None, None],
     )
-    for values in plan:
-        values.flags.writeable = False
-    return plan
+    return tuple(
+        np.frombuffer(value.tobytes(), dtype=value.dtype).reshape(value.shape)
+        for value in values
+    )
 
 
 def select_zoom_factor(
@@ -106,15 +108,31 @@ def resize_rgb_bilinear(
     x0, x1, y0, y1, wx, wy = _resize_plan(
         source_height, source_width, output_size
     )
-    source = image.astype(np.float64)
-    horizontal = (
-        source[:, x0, :] * (1.0 - wx)
-        + source[:, x1, :] * wx
-    )
-    blended = (
-        horizontal[y0, :, :] * (1.0 - wy)
-        + horizontal[y1, :, :] * wy
-    )
+    if (
+        source_height,
+        source_width,
+        output_size,
+    ) in _SEPARABLE_RESIZE_SHAPES:
+        source = image.astype(np.float64)
+        horizontal = (
+            source[:, x0, :] * (1.0 - wx)
+            + source[:, x1, :] * wx
+        )
+        blended = (
+            horizontal[y0, :, :] * (1.0 - wy)
+            + horizontal[y1, :, :] * wy
+        )
+    else:
+        top_left = image[y0[:, None], x0[None, :]].astype(np.float32)
+        top_right = image[y0[:, None], x1[None, :]].astype(np.float32)
+        bottom_left = image[y1[:, None], x0[None, :]].astype(np.float32)
+        bottom_right = image[y1[:, None], x1[None, :]].astype(np.float32)
+        blended = (
+            top_left * (1.0 - wx) * (1.0 - wy)
+            + top_right * wx * (1.0 - wy)
+            + bottom_left * (1.0 - wx) * wy
+            + bottom_right * wx * wy
+        )
     rounded = np.floor(np.clip(blended, 0.0, 255.0) + 0.5)
     return np.ascontiguousarray(rounded.astype(np.uint8))
 
