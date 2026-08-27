@@ -287,12 +287,197 @@ class AiServiceTests(unittest.TestCase):
     def large_head(self, x):
         return Detection(x - 20.0, 120.0, x + 20.0, 200.0, 0.9, 7)
 
+    def tracking_head(self, x, y=100.0):
+        return Detection(x - 5.0, y - 5.0, x + 5.0, y + 5.0, 0.9, 7)
+
     def release_and_wait(self, capture, service, sequence):
         capture.release_frame()
         self.assertTrue(wait_until(
             lambda: service.latest_detection_snapshot() is not None
             and service.latest_detection_snapshot().sequence == sequence
         ))
+
+    def test_crossing_ambiguity_withholds_target_and_refinement(self):
+        person_a = (130.0, 140.0, 150.0, 160.0, 175.0, 190.0)
+        person_b = (None, 220.0, 190.0, 160.0, 145.0, 130.0)
+        outputs = []
+        for a_x, b_x in zip(person_a, person_b):
+            boxes = [self.tracking_head(a_x)]
+            if b_x is not None:
+                boxes.insert(0, self.tracking_head(b_x))
+            outputs.append(tuple(boxes))
+        detector = SequentialDetector(outputs)
+        capture = ControlledCapture([
+            np.zeros((320, 320, 3), dtype=np.uint8)
+            for _ in outputs
+        ])
+        gate = {"active": False}
+        clock = MutableClock(10.0)
+        service, _events = self.make_zoom_service(
+            detector,
+            capture=capture,
+            clock=clock,
+        )
+        service.start(AimSettings, lambda: gate["active"])
+
+        for sequence in (1, 2, 3):
+            clock.set(10.0 + sequence / 60.0)
+            self.release_and_wait(capture, service, sequence)
+            self.assertAlmostEqual(
+                service.latest_snapshot().aim_x,
+                person_a[sequence - 1],
+            )
+
+        gate["active"] = True
+        clock.set(10.0 + 4 / 60.0)
+        calls_before_ambiguity = len(detector.frames)
+        self.release_and_wait(capture, service, 4)
+
+        self.assertIsNone(service.latest_snapshot())
+        ambiguous = service.latest_detection_snapshot()
+        self.assertIsNone(ambiguous.selected_index)
+        self.assertEqual(len(ambiguous.detections), 2)
+        self.assertEqual(len(detector.frames), calls_before_ambiguity + 1)
+
+        gate["active"] = False
+        clock.set(10.0 + 5 / 60.0)
+        self.release_and_wait(capture, service, 5)
+        self.assertIsNone(service.latest_snapshot())
+        self.assertIsNone(service.latest_detection_snapshot().selected_index)
+
+        clock.set(10.0 + 6 / 60.0)
+        self.release_and_wait(capture, service, 6)
+        self.assertAlmostEqual(service.latest_snapshot().aim_x, 190.0)
+        self.assertEqual(service.latest_detection_snapshot().selected_index, 1)
+
+    def test_service_replacement_waits_for_three_clear_frames(self):
+        original = (self.small_head(100.0),)
+        replacement = (self.small_head(220.0),)
+        detector = SequentialDetector((
+            original,
+            replacement,
+            replacement,
+            replacement,
+        ))
+        capture = ControlledCapture([
+            np.zeros((320, 320, 3), dtype=np.uint8)
+            for _ in range(4)
+        ])
+        clock = MutableClock(10.0)
+        service, _events = self.make_zoom_service(
+            detector,
+            capture=capture,
+            clock=clock,
+        )
+        service.start(AimSettings, lambda: False)
+
+        self.release_and_wait(capture, service, 1)
+        self.assertAlmostEqual(service.latest_snapshot().aim_x, 100.0)
+
+        for sequence, captured_at in ((2, 10.150), (3, 10.167)):
+            clock.set(captured_at)
+            self.release_and_wait(capture, service, sequence)
+            self.assertIsNone(service.latest_snapshot())
+            pending = service.latest_detection_snapshot()
+            self.assertIsNone(pending.selected_index)
+            self.assertEqual(pending.detections, replacement)
+
+        clock.set(10.184)
+        self.release_and_wait(capture, service, 4)
+        self.assertAlmostEqual(service.latest_snapshot().aim_x, 220.0)
+        self.assertEqual(service.latest_detection_snapshot().selected_index, 0)
+
+    def test_old_generation_cannot_publish_tracker_recovery(self):
+        tracking_head = self.tracking_head
+
+        class RecoveryBlockingDetector:
+            provider = "DmlExecutionProvider"
+
+            def __init__(self):
+                self.calls = 0
+                self.entered = threading.Event()
+                self.release = threading.Event()
+
+            def detect(self, _frame):
+                self.calls += 1
+                outputs = (
+                    (tracking_head(100.0),),
+                    (tracking_head(99.0), tracking_head(101.0)),
+                    (tracking_head(102.0),),
+                    (tracking_head(103.0),),
+                )
+                if self.calls == 4:
+                    self.entered.set()
+                    self.release.wait(1.0)
+                return outputs[self.calls - 1]
+
+        old_detector = RecoveryBlockingDetector()
+        new_detector = SequentialDetector(((self.small_head(35.0),),))
+        detectors = iter((old_detector, new_detector))
+        old_capture = FakeCapture([object(), object(), object(), object()])
+        new_capture = FakeCapture([object()])
+        captures = iter((old_capture, new_capture))
+        service = AiService(
+            lambda _event: None,
+            detector_factory=lambda _path: next(detectors),
+            capture_factory=lambda: next(captures),
+        )
+        self.addCleanup(old_detector.release.set)
+        self.addCleanup(service.close)
+
+        service.start(AimSettings, lambda: False)
+        self.assertTrue(old_detector.entered.wait(1.0))
+        service.stop("restart")
+        service.start(AimSettings, lambda: False)
+        self.assertTrue(wait_until(
+            lambda: service.latest_snapshot() is not None
+            and service.latest_snapshot().aim_x == 35.0
+        ))
+
+        old_detector.release.set()
+
+        self.assertTrue(old_capture.closed.wait(1.0))
+        self.assertAlmostEqual(service.latest_snapshot().aim_x, 35.0)
+        self.assertEqual(
+            service.latest_detection_snapshot().detections,
+            (self.small_head(35.0),),
+        )
+
+    def test_refinement_replaces_only_confirmed_base_box_and_stays_out_of_tracker(self):
+        selected = self.small_head(160.0)
+        unrelated = Detection(20.0, 40.0, 40.0, 140.0, 0.9, 0)
+        refined = Detection(168.0, 150.0, 186.0, 168.0, 0.95, 7)
+        next_base = self.small_head(115.0)
+        detector = SequentialDetector((
+            (selected, unrelated),
+            (refined,),
+            (next_base,),
+        ))
+        capture = ControlledCapture([
+            np.zeros((320, 320, 3), dtype=np.uint8)
+            for _ in range(2)
+        ])
+        gate = {"active": True}
+        clock = MutableClock(10.0)
+        service, _events = self.make_zoom_service(
+            detector,
+            capture=capture,
+            clock=clock,
+        )
+        service.start(AimSettings, lambda: gate["active"])
+
+        self.release_and_wait(capture, service, 1)
+        published = service.latest_detection_snapshot()
+        self.assertEqual(len(published.detections), 2)
+        self.assertNotEqual(published.detections[0], selected)
+        self.assertEqual(published.detections[1], unrelated)
+        self.assertEqual(published.selected_index, 0)
+
+        gate["active"] = False
+        clock.set(10.01)
+        self.release_and_wait(capture, service, 2)
+        self.assertAlmostEqual(service.latest_snapshot().aim_x, 115.0)
+        self.assertEqual(service.latest_detection_snapshot().detections, (next_base,))
 
     def test_stop_after_capture_prevents_base_detector_call(self):
         detector = BlockingDetector()
@@ -422,90 +607,6 @@ class AiServiceTests(unittest.TestCase):
             [event.payload for event in events if event.kind == "zoom"],
             [1.5, 2.0, 1.5],
         )
-
-    def test_one_frame_center_candidate_cannot_steal_returning_target(self):
-        original = (self.large_head(80.0),)
-        recoil = (self.large_head(130.0), self.large_head(155.0))
-        returned = (self.large_head(82.0), self.large_head(155.0))
-        detector = SequentialDetector((
-            original,
-            original,
-            recoil,
-            returned,
-            returned,
-        ))
-        capture = ControlledCapture([
-            np.zeros((320, 320, 3), dtype=np.uint8)
-            for _ in range(5)
-        ])
-        clock = MutableClock(10.0)
-        service, _events = self.make_zoom_service(
-            detector,
-            capture=capture,
-            clock=clock,
-        )
-        service.start(AimSettings, lambda: True)
-
-        self.release_and_wait(capture, service, 1)
-        clock.set(10.01)
-        self.release_and_wait(capture, service, 2)
-        self.assertAlmostEqual(service.latest_snapshot().aim_x, 80.0)
-
-        clock.set(10.02)
-        self.release_and_wait(capture, service, 3)
-        self.assertIsNone(service.latest_snapshot())
-        self.assertEqual(service.latest_detection_snapshot().selected_index, 1)
-
-        clock.set(10.03)
-        self.release_and_wait(capture, service, 4)
-        self.assertIsNone(service.latest_snapshot())
-        self.assertEqual(service.latest_detection_snapshot().selected_index, 0)
-
-        clock.set(10.04)
-        self.release_and_wait(capture, service, 5)
-        self.assertAlmostEqual(service.latest_snapshot().aim_x, 82.0)
-        self.assertEqual(len(detector.frames), 5)
-
-    def test_persistent_replacement_waits_for_three_frames_before_movement(self):
-        original = (self.large_head(80.0),)
-        replacement = (self.large_head(130.0), self.large_head(155.0))
-        detector = SequentialDetector((
-            original,
-            original,
-            replacement,
-            replacement,
-            replacement,
-        ))
-        capture = ControlledCapture([
-            np.zeros((320, 320, 3), dtype=np.uint8)
-            for _ in range(5)
-        ])
-        clock = MutableClock(10.0)
-        service, _events = self.make_zoom_service(
-            detector,
-            capture=capture,
-            clock=clock,
-        )
-        service.start(AimSettings, lambda: True)
-
-        self.release_and_wait(capture, service, 1)
-        clock.set(10.01)
-        self.release_and_wait(capture, service, 2)
-        self.assertAlmostEqual(service.latest_snapshot().aim_x, 80.0)
-
-        for sequence in (3, 4):
-            clock.set(10.0 + sequence / 100.0)
-            self.release_and_wait(capture, service, sequence)
-            self.assertIsNone(service.latest_snapshot())
-            self.assertEqual(
-                service.latest_detection_snapshot().selected_index,
-                1,
-            )
-
-        clock.set(10.05)
-        self.release_and_wait(capture, service, 5)
-        self.assertAlmostEqual(service.latest_snapshot().aim_x, 155.0)
-        self.assertEqual(len(detector.frames), 5)
 
     def test_refinement_miss_resets_confirmation_without_holding_old_target(self):
         base = (self.small_head(),)
@@ -704,7 +805,7 @@ class AiServiceTests(unittest.TestCase):
         service, events = self.make_zoom_service(
             detector,
             frames=frames,
-            clock=FakeClock([0.0, 0.1, 0.2, 0.3, 1.2]),
+            clock=FakeClock([0.0, 0.1, 0.2, 0.21, 1.2]),
         )
         service.start(AimSettings, lambda: True)
         self.assertTrue(wait_until(
@@ -926,7 +1027,7 @@ class AiServiceTests(unittest.TestCase):
             events.append,
             detector_factory=lambda path: FakeDetector(),
             capture_factory=lambda: FakeCapture(frames=[10, 20]),
-            clock=FakeClock([1.0, 1.01, 1.02, 2.1]),
+            clock=FakeClock([1.0, 1.01, 1.02, 1.03, 1.04]),
         )
         self.addCleanup(service.close)
 

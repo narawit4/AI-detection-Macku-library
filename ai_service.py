@@ -14,12 +14,9 @@ from ai_targeting import (
     AimSettings,
     DetectionAnalysis,
     DetectionFrameSnapshot,
-    TargetLockState,
     TargetSnapshot,
-    analyze_detections,
-    observe_target_lock,
-    target_lock_allows,
 )
+from ai_tracking import TrackerState, observe_detections
 from ai_zoom import (
     ZoomStabilityState,
     build_zoom_input,
@@ -290,7 +287,7 @@ class AiService:
             self._emit_current(AiEvent("ready", provider), generation, stop_event)
 
             sequence = 0
-            target_lock = TargetLockState()
+            tracker_state = TrackerState()
             stability = ZoomStabilityState()
             refinement_enabled = True
             published_factor = 1.0
@@ -309,21 +306,15 @@ class AiService:
                 base_detections = detector.detect(frame)
                 if not self._is_current(generation, stop_event):
                     return
-                base_analysis = analyze_detections(
+                tracked = observe_detections(
+                    tracker_state,
                     base_detections,
                     settings,
                     sequence=sequence,
                     captured_at=captured_at,
-                    previous=target_lock.confirmed_target,
                 )
-                target_lock = observe_target_lock(
-                    target_lock,
-                    base_analysis.target,
-                )
-                selection_confirmed = target_lock_allows(
-                    target_lock,
-                    base_analysis.target,
-                )
+                tracker_state = tracked.state
+                base_analysis = tracked.analysis
                 factor = 1.0
                 published = base_analysis
                 gate_active = False
@@ -402,8 +393,6 @@ class AiService:
                         stability = ZoomStabilityState()
                         factor = 1.0
                         published = base_analysis
-                if not selection_confirmed:
-                    published = DetectionAnalysis(None, published.frame)
                 with self._lock:
                     if not self._is_current_locked(generation, stop_event):
                         return
