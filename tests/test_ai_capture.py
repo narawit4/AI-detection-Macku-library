@@ -53,7 +53,7 @@ class CaptureTests(unittest.TestCase):
     def test_capture_uses_numpy_rgb_backend_and_owned_frames(self):
         camera = FakeCamera(frame=np.zeros((320, 320, 3), dtype=np.uint8))
         factory = RecordingCameraFactory(camera)
-        capture = DxcamCapture(camera_factory=factory)
+        capture = DxcamCapture(camera_factory=factory, target_fps=165)
 
         capture.start()
         frame = capture.read()
@@ -63,7 +63,7 @@ class CaptureTests(unittest.TestCase):
             "processor_backend": "numpy", "max_buffer_len": 2,
         })
         self.assertEqual(camera.start_kwargs, {
-            "region": (800, 380, 1120, 700), "target_fps": 120,
+            "region": (800, 380, 1120, 700), "target_fps": 165,
         })
         self.assertEqual(camera.get_latest_frame_kwargs, {"copy": True})
         self.assertTrue(frame.flags.owndata)

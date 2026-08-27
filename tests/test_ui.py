@@ -3,10 +3,12 @@ from tkinter import ttk
 from types import SimpleNamespace
 import threading
 import unittest
+from unittest import mock
 
 from ai_service import AiEvent
 from ai_targeting import AimSettings
 from combined_motion import MotionSources
+from display_timing import RuntimeCadence
 from ui import JitterApp
 from makcu_service import ServiceEvent
 from liquid_widgets import LiquidIconButton, LiquidSlider
@@ -364,7 +366,15 @@ class JitterLayoutTests(unittest.TestCase):
         self.app = None
         self.make_app()
 
-    def make_app(self, *, config=None, clock=None):
+    def make_app(
+        self,
+        *,
+        config=None,
+        clock=None,
+        runtime_cadence=None,
+        use_default_factories=False,
+        falsey_factories=False,
+    ):
         self.service = None
         self.store = StubStore(config or AppConfig())
         self.ai = StubAiService()
@@ -376,15 +386,39 @@ class JitterLayoutTests(unittest.TestCase):
             self.service = StubService(event_sink)
             return self.service
 
+        ai_service_factory = lambda sink: self.ai.with_sink(sink)
+        if falsey_factories:
+            class FalseyFactory:
+                def __init__(self, factory):
+                    self.factory = factory
+
+                def __bool__(self):
+                    return False
+
+                def __call__(self, event_sink):
+                    return self.factory(event_sink)
+
+            service_factory = FalseyFactory(service_factory)
+            ai_service_factory = FalseyFactory(ai_service_factory)
+
         self.app = JitterApp(
             config_store=self.store,
-            service_factory=service_factory,
-            ai_service_factory=lambda sink: self.ai.with_sink(sink),
+            service_factory=None if use_default_factories else service_factory,
+            ai_service_factory=(
+                None
+                if use_default_factories
+                else ai_service_factory
+            ),
             hotkey_factory=StubHotkey,
             overlay_factory=lambda _root: self.overlay,
             sound_player=self.sounds,
             clock=clock or (lambda: 123.5),
             auto_start=False,
+            runtime_cadence=(
+                runtime_cadence
+                if runtime_cadence is not None
+                else RuntimeCadence(None, 120, 240)
+            ),
         )
         original_after_cancel = self.app.after_cancel
 
@@ -395,6 +429,60 @@ class JitterLayoutTests(unittest.TestCase):
         self.app.after_cancel = recording_after_cancel
         self.app.withdraw()
         return self.app
+
+    def test_app_default_factories_receive_runtime_cadence(self):
+        self.app.close_app()
+        cadence = RuntimeCadence(144, 144, 288)
+        makcu_kwargs = []
+        ai_kwargs = []
+
+        def make_service(event_sink, **kwargs):
+            makcu_kwargs.append(kwargs)
+            self.service = StubService(event_sink)
+            return self.service
+
+        def make_ai_service(event_sink, **kwargs):
+            ai_kwargs.append(kwargs)
+            return self.ai.with_sink(event_sink)
+
+        with (
+            mock.patch("ui.MakcuService", side_effect=make_service),
+            mock.patch("ui.AiService", side_effect=make_ai_service),
+        ):
+            app = self.make_app(
+                runtime_cadence=cadence,
+                use_default_factories=True,
+            )
+
+        self.assertEqual(app.runtime_cadence, cadence)
+        self.assertEqual(makcu_kwargs, [{"ai_poll_hz": 288}])
+        self.assertEqual(ai_kwargs, [{"capture_fps": 144}])
+        self.assertEqual(
+            app.ai_cadence_var.get(),
+            "DISPLAY 144 HZ · SERVO 288 HZ",
+        )
+        self.assertIn(app.ai_cadence_var.get(), widget_texts(app.ai_status_card))
+
+    def test_fallback_cadence_status_is_explicit(self):
+        self.app.close_app()
+        app = self.make_app(
+            runtime_cadence=RuntimeCadence(None, 120, 240),
+        )
+
+        self.assertEqual(
+            app.ai_cadence_var.get(),
+            "DISPLAY AUTO · SERVO 240 HZ",
+        )
+
+    def test_injected_service_factories_keep_one_argument_contract(self):
+        self.app.close_app()
+        app = self.make_app(
+            runtime_cadence=RuntimeCadence(165, 165, 330),
+            falsey_factories=True,
+        )
+
+        self.assertIs(app.service, self.service)
+        self.assertIs(app.ai_service, self.ai)
 
     def tearDown(self):
         try:

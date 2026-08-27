@@ -26,6 +26,7 @@ from ai_targeting import (
     aim_settings_to_mapping,
 )
 from combined_motion import MotionSources
+from display_timing import RuntimeCadence, detect_runtime_cadence
 from hotkeys import HotkeyWatcher
 from makcu_service import MakcuService, ServiceEvent
 from motion import (
@@ -200,6 +201,7 @@ class JitterApp(tk.Tk):
         sound_player: Any | None = None,
         clock: Callable[[], float] = time.perf_counter,
         auto_start: bool = True,
+        runtime_cadence: RuntimeCadence | None = None,
     ) -> None:
         super().__init__()
         for font_name in (
@@ -215,6 +217,7 @@ class JitterApp(tk.Tk):
         self.geometry("840x620")
         self.resizable(False, False)
         self.protocol("WM_DELETE_WINDOW", self.close_app)
+        self.runtime_cadence = runtime_cadence or detect_runtime_cadence()
 
         self.config_store = config_store or ConfigStore()
         self.load_outcome = self.config_store.load()
@@ -280,8 +283,17 @@ class JitterApp(tk.Tk):
         self._build_page()
         self.overlay = (overlay_factory or DetectionOverlay)(self)
 
-        self.service_factory = service_factory or (lambda sink: MakcuService(sink))
-        self.ai_service_factory = ai_service_factory or (lambda sink: AiService(sink))
+        cadence = self.runtime_cadence
+        self.service_factory = (
+            service_factory
+            if service_factory is not None
+            else lambda sink: MakcuService(sink, ai_poll_hz=cadence.servo_hz)
+        )
+        self.ai_service_factory = (
+            ai_service_factory
+            if ai_service_factory is not None
+            else lambda sink: AiService(sink, capture_fps=cadence.capture_fps)
+        )
         self.hotkey_factory = hotkey_factory or HotkeyWatcher
         self.service = self.service_factory(self.queue_service_event)
         self.ai_service = self.ai_service_factory(self.queue_ai_event)
@@ -787,6 +799,15 @@ class JitterApp(tk.Tk):
         self.ai_status_var = tk.StringVar(self, "Stopped")
         self.ai_fps_var = tk.StringVar(self, "0 FPS")
         self.ai_provider_var = tk.StringVar(self, "No provider")
+        cadence = self.runtime_cadence
+        self.ai_cadence_var = tk.StringVar(
+            self,
+            (
+                f"DISPLAY {cadence.display_hz} HZ · SERVO {cadence.servo_hz} HZ"
+                if cadence.display_hz is not None
+                else f"DISPLAY AUTO · SERVO {cadence.servo_hz} HZ"
+            ),
+        )
         self.ai_zoom_var = tk.StringVar(self, "1.0×")
         self.ai_vars = {
             key: tk.StringVar(self, value)
@@ -1815,6 +1836,7 @@ class JitterApp(tk.Tk):
             ("STATUS", self.ai_status_var),
             ("INFERENCE", self.ai_fps_var),
             ("PROVIDER", self.ai_provider_var),
+            ("CADENCE", self.ai_cadence_var),
             ("ZOOM", self.ai_zoom_var),
         ), start=2):
             metric = ttk.Frame(
@@ -1840,7 +1862,7 @@ class JitterApp(tk.Tk):
             style="Liquid.Secondary.TButton",
             command=lambda: self.toggle_overlay(),
         )
-        self.overlay_button.grid(row=6, column=0, sticky="ew", pady=(4, 0))
+        self.overlay_button.grid(row=7, column=0, sticky="ew", pady=(4, 0))
         self.overlay_color_button = ttk.Button(
             self.ai_status_card,
             text=f"Box Color {self.overlay_color.upper()}",
@@ -1848,7 +1870,7 @@ class JitterApp(tk.Tk):
             command=self.choose_overlay_color,
         )
         self.overlay_color_button.grid(
-            row=7, column=0, sticky="ew", pady=(6, 0)
+            row=8, column=0, sticky="ew", pady=(6, 0)
         )
         self.overlay_head_button = ttk.Button(
             self.ai_status_card,
@@ -1863,7 +1885,7 @@ class JitterApp(tk.Tk):
             command=self.toggle_overlay_heads,
         )
         self.overlay_head_button.grid(
-            row=8, column=0, sticky="ew", pady=(6, 0)
+            row=9, column=0, sticky="ew", pady=(6, 0)
         )
 
     def _refresh_motion_scrollregion(

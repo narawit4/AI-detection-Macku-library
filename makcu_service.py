@@ -56,18 +56,31 @@ class MakcuService:
         event_sink: Callable[[ServiceEvent], None],
         controller_factory: Callable[..., Any] = create_controller,
         engine_factory: Callable[[], Any] = PairedPulseEngine,
-        aim_engine_factory: Callable[[], Any] = AimMovementEngine,
+        aim_engine_factory: Callable[[], Any] | None = None,
         combined_engine_factory: Callable[[MotionSources], Any] | None = None,
+        ai_poll_hz: float = 240.0,
     ) -> None:
         self._event_sink = event_sink
         self._controller_factory = controller_factory
         self._engine_factory = engine_factory
         self._aim_engine_factory = aim_engine_factory
-        self._combined_engine_factory = combined_engine_factory or (
-            lambda sources: CombinedMotionEngine(
+        try:
+            validated_ai_poll_hz = (
+                float(ai_poll_hz) if not isinstance(ai_poll_hz, bool) else 240.0
+            )
+        except (TypeError, ValueError, OverflowError):
+            validated_ai_poll_hz = 240.0
+        if not math.isfinite(validated_ai_poll_hz) or validated_ai_poll_hz <= 0.0:
+            validated_ai_poll_hz = 240.0
+        self._ai_poll_hz = validated_ai_poll_hz
+        self._combined_engine_factory = (
+            combined_engine_factory
+            if combined_engine_factory is not None
+            else lambda sources: CombinedMotionEngine(
                 sources,
                 jitter_engine_factory=engine_factory,
                 aim_engine_factory=aim_engine_factory,
+                ai_poll_hz=self._ai_poll_hz,
             )
         )
         self._lock = threading.RLock()

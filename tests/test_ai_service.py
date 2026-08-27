@@ -258,6 +258,59 @@ class PublicationObserverLock:
 
 
 class AiServiceTests(unittest.TestCase):
+    def test_default_capture_factory_receives_valid_capture_fps(self):
+        target_fps_values = []
+
+        class RecordingCapture:
+            def __init__(self, *, target_fps):
+                target_fps_values.append(target_fps)
+
+        with mock.patch("ai_service.DxcamCapture", RecordingCapture):
+            service = AiService(lambda _event: None, capture_fps=165)
+            self.addCleanup(service.close)
+            capture = service._capture_factory()
+
+        self.assertIsInstance(capture, RecordingCapture)
+        self.assertEqual(target_fps_values, [165])
+
+    def test_invalid_capture_fps_falls_back_to_120(self):
+        invalid_values = (0, -1, 165.0, "165", True, float("nan"), object())
+        for invalid in invalid_values:
+            with self.subTest(capture_fps=invalid):
+                target_fps_values = []
+
+                class RecordingCapture:
+                    def __init__(self, *, target_fps):
+                        target_fps_values.append(target_fps)
+
+                with mock.patch("ai_service.DxcamCapture", RecordingCapture):
+                    service = AiService(lambda _event: None, capture_fps=invalid)
+                    try:
+                        service._capture_factory()
+                    finally:
+                        service.close()
+
+                self.assertEqual(target_fps_values, [120])
+
+    def test_explicit_capture_factory_remains_authoritative(self):
+        capture = object()
+
+        class FalseyCaptureFactory:
+            def __bool__(self):
+                return False
+
+            def __call__(self):
+                return capture
+
+        service = AiService(
+            lambda _event: None,
+            capture_factory=FalseyCaptureFactory(),
+            capture_fps=165,
+        )
+        self.addCleanup(service.close)
+
+        self.assertIs(service._capture_factory(), capture)
+
     def make_zoom_service(
         self,
         detector,

@@ -46,13 +46,20 @@ class AiService:
         event_sink: Callable[[AiEvent], None],
         model_path: Path | str | None = None,
         detector_factory: Callable[[Path | str], Any] = OnnxDetector,
-        capture_factory: Callable[[], Any] = DxcamCapture,
+        capture_factory: Callable[[], Any] | None = None,
         clock: Callable[[], float] = time.perf_counter,
+        capture_fps: int = 120,
     ) -> None:
         self._event_sink = event_sink
         self._model_path = model_path
         self._detector_factory = detector_factory
-        self._capture_factory = capture_factory
+        if type(capture_fps) is not int or capture_fps <= 0:
+            capture_fps = 120
+        self._capture_factory = (
+            capture_factory
+            if capture_factory is not None
+            else lambda: DxcamCapture(target_fps=capture_fps)
+        )
         self._clock = clock
         self._lock = threading.Lock()
         self._event_lock = threading.RLock()

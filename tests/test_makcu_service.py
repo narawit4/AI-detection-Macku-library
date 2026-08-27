@@ -1527,10 +1527,11 @@ class MakcuMovementTests(unittest.TestCase):
 
         self.assertEqual(events[events_after_reconnect:], [])
 
-    def test_ai_worker_polls_at_240_hz(self):
+    def test_ai_worker_uses_injected_servo_hz(self):
         engine = FakeAimEngine()
         service, _controller, _events = self.connected_service(
-            aim_engine_factory=lambda: engine
+            aim_engine_factory=lambda: engine,
+            ai_poll_hz=330,
         )
         stop_event = StopAfterFirstWait()
         connection_generation = service.connection_generation
@@ -1554,7 +1555,56 @@ class MakcuMovementTests(unittest.TestCase):
                 None,
             )
 
-        self.assertEqual(stop_event.timeouts, [1 / 240])
+        self.assertEqual(stop_event.timeouts, [1 / 330])
+
+    def test_invalid_ai_poll_hz_falls_back_to_240(self):
+        invalid_values = (
+            0,
+            -1,
+            float("inf"),
+            float("-inf"),
+            float("nan"),
+            True,
+            object(),
+        )
+        for invalid in invalid_values:
+            with self.subTest(ai_poll_hz=invalid):
+                service = MakcuService(
+                    lambda _event: None,
+                    ai_poll_hz=invalid,
+                )
+                try:
+                    engine = service._combined_engine_factory(
+                        MotionSources(False, True)
+                    )
+                    self.assertEqual(
+                        engine.poll_interval(MotionSettings()),
+                        1 / 240,
+                    )
+                finally:
+                    service.close()
+
+    def test_explicit_combined_factory_remains_authoritative(self):
+        engine = RecordingCombinedEngine(MotionSources(False, True))
+
+        class FalseyCombinedFactory:
+            def __bool__(self):
+                return False
+
+            def __call__(self, _sources):
+                return engine
+
+        service = MakcuService(
+            lambda _event: None,
+            combined_engine_factory=FalseyCombinedFactory(),
+            ai_poll_hz=330,
+        )
+        self.addCleanup(service.close)
+
+        self.assertIs(
+            service._combined_engine_factory(MotionSources(False, True)),
+            engine,
+        )
 
     def test_paired_pulse_worker_sends_diagonal_reports_and_stop_prevents_next_half(self):
         service, controller, _events = self.connected_service(use_default_engine=True)
