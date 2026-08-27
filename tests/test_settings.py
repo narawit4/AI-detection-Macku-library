@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from ai_targeting import AimSettings
+from ai_targeting import AimSettings, DEFAULT_RESPONSE_CURVE
 from motion import MotionSettings
 import settings as settings_module
 from settings import AppConfig, ConfigStore, SCHEMA_VERSION, runtime_base_dir
@@ -108,7 +108,7 @@ class ConfigStoreTests(unittest.TestCase):
             document = json.loads(path.read_text(encoding="utf-8"))
             restored = store.load().config
 
-        self.assertEqual(document["schema_version"], 5)
+        self.assertEqual(document["schema_version"], 6)
         self.assertEqual(document.get("overlay_color"), "#00cc88")
         self.assertIs(document.get("overlay_head_visible"), False)
         self.assertNotIn("overlay_visible", document)
@@ -215,7 +215,69 @@ class ConfigStoreTests(unittest.TestCase):
             MotionSettings(4.0, 45.0, "Instant"),
         )
 
-    def test_schema_four_round_trips_ai_settings_without_mode(self):
+    def test_schema_six_round_trips_response_curve(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            config = AppConfig(ai=AimSettings(
+                0.5, 0.6, 0.7, 30, (0.0, 0.1, 0.4, 0.8, 0.9)
+            ))
+            store = ConfigStore(path)
+            store.save(config)
+            document = json.loads(path.read_text(encoding="utf-8"))
+            restored = store.load().config
+
+        self.assertEqual(document["schema_version"], 6)
+        self.assertEqual(
+            document["ai"]["response_curve"],
+            ["0", "0.1", "0.4", "0.8", "0.9"],
+        )
+        self.assertEqual(restored, config)
+
+    def test_schema_five_receives_default_curve_without_rewrite(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            original = json.dumps({
+                "schema_version": 5,
+                "ai": {"aim_strength": "0.8"},
+            })
+            path.write_text(original, encoding="utf-8")
+            restored = ConfigStore(path).load().config
+            after = path.read_text(encoding="utf-8")
+
+        self.assertEqual(restored.ai.response_curve, DEFAULT_RESPONSE_CURVE)
+        self.assertEqual(after, original)
+
+    def test_schemas_one_through_four_default_missing_response_curve(self):
+        for schema in range(1, 5):
+            with self.subTest(schema=schema), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "config.json"
+                path.write_text(json.dumps({
+                    "schema_version": schema,
+                    "ai": {"aim_strength": "0.8"},
+                }), encoding="utf-8")
+                config = ConfigStore(path).load().config
+
+            self.assertEqual(config.ai.response_curve, DEFAULT_RESPONSE_CURVE)
+
+    def test_schema_six_malformed_response_curves_use_default(self):
+        malformed_curves = (
+            None,
+            "0,0.1,0.4,0.8,0.9",
+            [0.0, 0.1, 0.4, 0.8],
+            [0.0, 0.4, 0.3, 0.8, 0.9],
+        )
+        for response_curve in malformed_curves:
+            with self.subTest(response_curve=response_curve), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "config.json"
+                path.write_text(json.dumps({
+                    "schema_version": 6,
+                    "ai": {"response_curve": response_curve},
+                }), encoding="utf-8")
+                config = ConfigStore(path).load().config
+
+            self.assertEqual(config.ai.response_curve, DEFAULT_RESPONSE_CURVE)
+
+    def test_schema_six_round_trips_ai_settings_without_mode(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.json"
             config = AppConfig(ai=AimSettings(0.5, 0.6, 0.7, 30))
@@ -229,6 +291,7 @@ class ConfigStoreTests(unittest.TestCase):
             "aim_strength": "0.6",
             "smoothing": "0.7",
             "max_step": "30",
+            "response_curve": ["0", "0.12", "0.35", "0.68", "1"],
         })
         self.assertEqual(restored, config)
 
@@ -310,17 +373,26 @@ class ConfigStoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.json"
             store = ConfigStore(path)
-            first = AppConfig(selected_preset="Soft")
+            first = AppConfig(
+                selected_preset="Soft",
+                ai=AimSettings(response_curve=(0.0, 0.1, 0.4, 0.8, 0.9)),
+            )
             second = AppConfig(selected_preset="Strong")
             store.save(first)
+            first_document = json.loads(path.read_text(encoding="utf-8"))
             store.save(second)
             backup = json.loads((Path(str(path) + ".bak")).read_text(encoding="utf-8"))
-        self.assertEqual(backup["selected_preset"], "Soft")
+        self.assertEqual(backup, first_document)
+        self.assertEqual(backup["schema_version"], 6)
+        self.assertEqual(
+            backup["ai"]["response_curve"],
+            ["0", "0.1", "0.4", "0.8", "0.9"],
+        )
 
     def test_future_schema_is_not_overwritten(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.json"
-            original = {"schema_version": SCHEMA_VERSION + 1, "future": True}
+            original = {"schema_version": 7, "future": True}
             path.write_text(json.dumps(original), encoding="utf-8")
             store = ConfigStore(path)
             outcome = store.load()

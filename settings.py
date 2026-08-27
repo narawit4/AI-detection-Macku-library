@@ -24,7 +24,7 @@ from motion import (
 )
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 VALID_BUTTONS = ("Left", "Right", "Middle", "Mouse4", "Mouse5")
 VALID_THEMES = ("light", "dark")
 DEFAULT_OVERLAY_COLOR = "#ff2b2b"
