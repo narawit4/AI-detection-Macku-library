@@ -26,7 +26,7 @@ tray behavior, or other upstream features.
 - `ai_detection.py`: fixed-contract ONNX Runtime detector.
 - `ai_capture.py`: centered DXCam capture wrapper.
 - `ai_service.py`: generation-safe capture and inference worker.
-- `overlay.py`: centered, click-through, capture-excluded red detection view.
+- `overlay.py`: centered, click-through, capture-excluded detection view.
 - `distribution_metadata.py`: validates, reviews, and executes the canonical
   packaging command and release-material plan.
 - `nuitka-package.config.yml`: explicitly bundles ONNX Runtime's DirectML DLL.
@@ -85,8 +85,9 @@ with the supported Windows Python installation.
 - Combined movement sums current source deltas; Jitter continues when AI Aim
   has no target.
 - The optional overlay starts off and is independent of source selection. It
-  is a centered 320-by-320 red detection view that must be click-through and
-  excluded from capture.
+  is a centered 320-by-320 configurable-color detection view that must be
+  click-through and excluded from capture. Head-box visibility affects only
+  the overlay; AI Aim keeps its head-first targeting behavior.
 - STOP immediately cancels movement, hides the overlay, and ends its inference
   demand. Disable, disconnect, and source changes immediately cancel movement;
   AI inference continues only while the visible independent overlay requires
@@ -126,9 +127,9 @@ with the supported Windows Python installation.
 - Validate loaded values and preserve safe defaults for malformed data.
 - Never overwrite a config with a newer unsupported schema; run with safe
   in-memory defaults and leave that file untouched.
-- Schema 4 persists validated settings only; do not persist motion-source
-  selection, Master state, overlay visibility, AI targets, snapshots, FPS,
-  provider, or runtime status.
+- Schema 5 persists validated settings, including overlay color and head-box
+  visibility; do not persist motion-source selection, Master state, overlay
+  visibility, AI targets, snapshots, FPS, provider, or runtime status.
 - Write configuration through a temporary file, flush and `fsync`, keep a
   backup, and replace atomically.
 - Do not persist held-button or Moving state.

@@ -48,6 +48,8 @@ class OverlayBox:
 def project_overlay_boxes(
     snapshot: DetectionFrameSnapshot | None,
     now: float,
+    *,
+    show_heads: bool = True,
 ) -> tuple[OverlayBox, ...]:
     """Project a fresh immutable detector frame into canvas rectangles."""
     if snapshot is None or max(0.0, now - snapshot.captured_at) > MAX_FRAME_AGE_S:
@@ -61,6 +63,7 @@ def project_overlay_boxes(
             4 if index == snapshot.selected_index else 2,
         )
         for index, detection in enumerate(snapshot.detections)
+        if show_heads or detection.class_id != 7
     )
 
 
@@ -210,9 +213,11 @@ class DetectionOverlay:
         snapshot: DetectionFrameSnapshot | None,
         *,
         now: float,
+        color: str = OVERLAY_COLOR,
+        show_heads: bool = True,
     ) -> None:
         self._require_main_thread()
-        boxes = project_overlay_boxes(snapshot, now)
+        boxes = project_overlay_boxes(snapshot, now, show_heads=show_heads)
         self.clear()
         for box in boxes:
             self._canvas.create_rectangle(
@@ -220,7 +225,7 @@ class DetectionOverlay:
                 box.y1,
                 box.x2,
                 box.y2,
-                outline=OVERLAY_COLOR,
+                outline=color,
                 width=box.width,
                 tags=("detection",),
             )

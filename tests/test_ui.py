@@ -290,6 +290,7 @@ class StubOverlay:
         self.shown = self.hidden = self.closed = 0
         self.cleared = 0
         self.rendered = []
+        self.render_options = []
         self.show_error = None
         self.hide_error = None
         self.render_error = None
@@ -299,10 +300,18 @@ class StubOverlay:
             raise self.show_error
         self.shown += 1
 
-    def render(self, snapshot, *, now):
+    def render(
+        self,
+        snapshot,
+        *,
+        now,
+        color=None,
+        show_heads=None,
+    ):
         if self.render_error is not None:
             raise self.render_error
         self.rendered.append((snapshot, now))
+        self.render_options.append((color, show_heads))
 
     def clear(self):
         self.cleared += 1
@@ -424,6 +433,51 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertEqual(app.motion_hero_card.winfo_manager(), "grid")
         self.assertEqual(app.ai_settings_card.winfo_manager(), "grid")
 
+    def test_overlay_preferences_reflect_config_while_runtime_starts_off(self):
+        self.app.close_app()
+        app = self.make_app(config=AppConfig(
+            overlay_color="#00cc88",
+            overlay_head_visible=False,
+        ))
+
+        self.assertEqual(app.overlay_color, "#00cc88")
+        self.assertIs(app.overlay_head_visible, False)
+        self.assertFalse(app.overlay_visible)
+
+    def test_overlay_color_button_applies_choice_and_schedules_save(self):
+        self.app._color_chooser = lambda **_kwargs: (
+            (0.0, 204.0, 136.0),
+            "#00CC88",
+        )
+        self.app._cancel_after("_save_after_id")
+        button = self.app.overlay_color_button
+        button.invoke()
+
+        self.assertEqual(
+            self.app.overlay_color, "#00cc88"
+        )
+        self.assertIsNotNone(self.app._save_after_id)
+        self.assertIn("#00CC88", button.cget("text"))
+
+    def test_overlay_color_cancel_keeps_current_choice(self):
+        self.app._color_chooser = lambda **_kwargs: (None, None)
+        before = self.app.overlay_color
+        button = self.app.overlay_color_button
+        button.invoke()
+
+        self.assertEqual(self.app.overlay_color, before)
+
+    def test_head_boxes_button_toggles_visibility_and_schedules_save(self):
+        self.app._cancel_after("_save_after_id")
+        button = self.app.overlay_head_button
+        button.invoke()
+
+        self.assertIs(
+            self.app.overlay_head_visible, False
+        )
+        self.assertIsNotNone(self.app._save_after_id)
+        self.assertEqual(button.cget("text"), "Head Boxes OFF")
+
     def test_ai_service_is_injected_after_widgets_without_autostart(self):
         self.assertIs(self.ai.event_sink.__self__, self.app)
         self.assertEqual(self.ai.event_sink.__func__, self.app.queue_ai_event.__func__)
@@ -531,6 +585,8 @@ class JitterLayoutTests(unittest.TestCase):
         self.app.ai_selected = True
         self.app.master_armed = True
         self.app.overlay_visible = True
+        self.app.overlay_color = "#00cc88"
+        self.app.overlay_head_visible = False
 
         self.app.save_config()
 
@@ -545,6 +601,8 @@ class JitterLayoutTests(unittest.TestCase):
             theme="dark",
             sound_enabled=False,
             sound_volume=35,
+            overlay_color="#00cc88",
+            overlay_head_visible=False,
         ))
         for name in (
             "mode", "jitter_selected", "ai_selected", "master_armed",
@@ -2334,6 +2392,10 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.assertEqual(
             self.overlay.rendered[-1],
             (self.ai.detection_snapshot, 123.5),
+        )
+        self.assertEqual(
+            self.overlay.render_options[-1],
+            ("#ff2b2b", True),
         )
         self.assertIsNotNone(self.app._overlay_after_id)
 

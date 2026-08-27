@@ -54,6 +54,21 @@ class OverlayProjectionTests(unittest.TestCase):
         self.assertEqual(project_overlay_boxes(frame, 0.150), expected)
         self.assertEqual(project_overlay_boxes(frame, -1.0), expected)
 
+    def test_head_boxes_can_be_hidden_without_hiding_player_boxes(self):
+        frame = DetectionFrameSnapshot(
+            1,
+            10.0,
+            (
+                Detection(1, 2, 30, 40, 0.8, 0),
+                Detection(100, 110, 130, 150, 0.9, 7),
+            ),
+            1,
+        )
+
+        boxes = project_overlay_boxes(frame, 10.0, show_heads=False)
+
+        self.assertEqual(boxes, (OverlayBox(1, 2, 30, 40, 2),))
+
 
 class FakeNativeApi:
     def __init__(self, *, style=0x1000, root_hwnd=1234):
@@ -428,6 +443,20 @@ class DetectionOverlayTests(unittest.TestCase):
                 ),
             ],
         )
+
+    def test_render_uses_requested_box_color(self):
+        overlay, _window, canvases, _adapter, _calls = self.make_overlay()
+        overlay.show()
+        frame = DetectionFrameSnapshot(
+            1,
+            10.0,
+            (Detection(1, 2, 30, 40, 0.8, 0),),
+            None,
+        )
+
+        overlay.render(frame, now=10.0, color="#00cc88")
+
+        self.assertEqual(canvases[0].items[0][1]["outline"], "#00cc88")
 
     def test_stale_render_clears_existing_boxes_while_window_stays_visible(self):
         overlay, _window, canvases, _adapter, _calls = self.make_overlay()

@@ -91,7 +91,43 @@ class ConfigStoreTests(unittest.TestCase):
         self.assertEqual(outcome.config.theme, "light")
         self.assertTrue(outcome.config.sound_enabled)
         self.assertEqual(outcome.config.sound_volume, 70)
+        self.assertEqual(outcome.config.overlay_color, "#ff2b2b")
+        self.assertTrue(outcome.config.overlay_head_visible)
         self.assertTrue(outcome.save_allowed)
+
+    def test_overlay_preferences_round_trip_without_runtime_visibility(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            store = ConfigStore(path)
+            config = AppConfig(
+                overlay_color="#00cc88",
+                overlay_head_visible=False,
+            )
+
+            store.save(config)
+            document = json.loads(path.read_text(encoding="utf-8"))
+            restored = store.load().config
+
+        self.assertEqual(document["schema_version"], 5)
+        self.assertEqual(document.get("overlay_color"), "#00cc88")
+        self.assertIs(document.get("overlay_head_visible"), False)
+        self.assertNotIn("overlay_visible", document)
+        self.assertEqual(restored.overlay_color, "#00cc88")
+        self.assertIs(restored.overlay_head_visible, False)
+
+    def test_malformed_overlay_preferences_use_safe_defaults(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            path.write_text(json.dumps({
+                "schema_version": 5,
+                "overlay_color": "transparent red",
+                "overlay_head_visible": "no",
+            }), encoding="utf-8")
+            outcome = ConfigStore(path).load()
+
+        self.assertTrue(outcome.save_allowed)
+        self.assertEqual(outcome.config.overlay_color, "#ff2b2b")
+        self.assertTrue(outcome.config.overlay_head_visible)
 
     def test_schema_three_preserves_settings_but_drops_legacy_mode(self):
         document = {
@@ -117,7 +153,7 @@ class ConfigStoreTests(unittest.TestCase):
             path = Path(directory) / "config.json"
             ConfigStore(path).save(AppConfig())
             document = json.loads(path.read_text(encoding="utf-8"))
-        self.assertEqual(document["schema_version"], 4)
+        self.assertEqual(document["schema_version"], SCHEMA_VERSION)
         for key in (
             "mode", "jitter_selected", "ai_selected", "master_armed",
             "overlay_visible", "target", "detections", "fps", "provider",
@@ -137,7 +173,7 @@ class ConfigStoreTests(unittest.TestCase):
             store.save(config)
             document = json.loads(path.read_text(encoding="utf-8"))
             restored = store.load().config
-        self.assertEqual(document["schema_version"], 4)
+        self.assertEqual(document["schema_version"], SCHEMA_VERSION)
         self.assertEqual(document["motion"], {
             "pulse_size_px": "4", "pulse_rate_hz": "45", "ramp_mode": "Instant",
         })

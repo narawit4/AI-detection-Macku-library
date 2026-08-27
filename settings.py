@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 import shutil
@@ -23,9 +24,17 @@ from motion import (
 )
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 VALID_BUTTONS = ("Left", "Right", "Middle", "Mouse4", "Mouse5")
 VALID_THEMES = ("light", "dark")
+DEFAULT_OVERLAY_COLOR = "#ff2b2b"
+_OVERLAY_COLOR_PATTERN = re.compile(r"#[0-9a-fA-F]{6}\Z")
+
+
+def normalize_overlay_color(raw: Any) -> str:
+    if isinstance(raw, str) and _OVERLAY_COLOR_PATTERN.fullmatch(raw):
+        return raw.lower()
+    return DEFAULT_OVERLAY_COLOR
 
 
 @dataclass(frozen=True)
@@ -42,6 +51,8 @@ class AppConfig:
     theme: str = "light"
     sound_enabled: bool = True
     sound_volume: int = 70
+    overlay_color: str = DEFAULT_OVERLAY_COLOR
+    overlay_head_visible: bool = True
 
 
 @dataclass(frozen=True)
@@ -168,6 +179,18 @@ class ConfigStore:
         sound_volume = _safe_int(
             document.get("sound_volume", 70), 70, 0, 100
         )
+        if schema >= 5:
+            overlay_color = normalize_overlay_color(
+                document.get("overlay_color")
+            )
+            overlay_head_visible = document.get(
+                "overlay_head_visible", True
+            )
+            if not isinstance(overlay_head_visible, bool):
+                overlay_head_visible = True
+        else:
+            overlay_color = DEFAULT_OVERLAY_COLOR
+            overlay_head_visible = True
         if schema in (1, 2):
             ai = AimSettings()
         else:
@@ -197,6 +220,8 @@ class ConfigStore:
             theme=theme,
             sound_enabled=sound_enabled,
             sound_volume=sound_volume,
+            overlay_color=overlay_color,
+            overlay_head_visible=overlay_head_visible,
         )
         return LoadOutcome(config)
 
@@ -219,6 +244,11 @@ class ConfigStore:
                 if isinstance(config.sound_enabled, bool) else True
             ),
             "sound_volume": _safe_int(config.sound_volume, 70, 0, 100),
+            "overlay_color": normalize_overlay_color(config.overlay_color),
+            "overlay_head_visible": (
+                config.overlay_head_visible
+                if isinstance(config.overlay_head_visible, bool) else True
+            ),
         }
         temporary = Path(str(self.path) + ".tmp")
         backup = Path(str(self.path) + ".bak")

@@ -14,7 +14,7 @@ import threading
 import time
 import tkinter as tk
 import tkinter.font as tkfont
-from tkinter import ttk
+from tkinter import colorchooser, ttk
 import tokenize
 from typing import Any, Callable, Mapping
 
@@ -37,7 +37,7 @@ from motion import (
     motion_settings_from_mapping,
     motion_settings_to_mapping,
 )
-from settings import AppConfig, ConfigStore
+from settings import AppConfig, ConfigStore, normalize_overlay_color
 from liquid_widgets import LiquidIconButton, LiquidNavigation, LiquidSlider
 from sound_service import ToggleSoundPlayer
 from overlay import DetectionOverlay, OverlaySetupError
@@ -247,6 +247,9 @@ class JitterApp(tk.Tk):
         self.ai_selected = False
         self.master_armed = False
         self.overlay_visible = False
+        self.overlay_color = self.config.overlay_color
+        self.overlay_head_visible = self.config.overlay_head_visible
+        self._color_chooser = colorchooser.askcolor
         self._clock = clock
         self._motion_mode: str | None = None
         self._test_restore_master = False
@@ -1835,6 +1838,30 @@ class JitterApp(tk.Tk):
             command=lambda: self.toggle_overlay(),
         )
         self.overlay_button.grid(row=5, column=0, sticky="ew", pady=(4, 0))
+        self.overlay_color_button = ttk.Button(
+            self.ai_status_card,
+            text=f"Box Color {self.overlay_color.upper()}",
+            style="Liquid.Secondary.TButton",
+            command=self.choose_overlay_color,
+        )
+        self.overlay_color_button.grid(
+            row=6, column=0, sticky="ew", pady=(6, 0)
+        )
+        self.overlay_head_button = ttk.Button(
+            self.ai_status_card,
+            text=(
+                "Head Boxes ON"
+                if self.overlay_head_visible else "Head Boxes OFF"
+            ),
+            style=(
+                "Liquid.Primary.TButton"
+                if self.overlay_head_visible else "Liquid.Secondary.TButton"
+            ),
+            command=self.toggle_overlay_heads,
+        )
+        self.overlay_head_button.grid(
+            row=7, column=0, sticky="ew", pady=(6, 0)
+        )
 
     def _refresh_motion_scrollregion(
         self, _event: tk.Event | None = None
@@ -2389,6 +2416,48 @@ class JitterApp(tk.Tk):
                 if self.overlay_visible else "Liquid.Secondary.TButton"
             ),
         )
+        self.overlay_color_button.configure(
+            text=f"Box Color {self.overlay_color.upper()}"
+        )
+        self.overlay_head_button.configure(
+            text=(
+                "Head Boxes ON"
+                if self.overlay_head_visible else "Head Boxes OFF"
+            ),
+            style=(
+                "Liquid.Primary.TButton"
+                if self.overlay_head_visible else "Liquid.Secondary.TButton"
+            ),
+        )
+
+    def choose_overlay_color(self) -> None:
+        try:
+            choice = self._color_chooser(
+                initialcolor=self.overlay_color,
+                parent=self,
+                title="Overlay Box Color",
+            )
+        except tk.TclError:
+            logging.exception("Overlay color chooser failed")
+            self.footer_var.set("Could not open the color chooser")
+            return
+        selected = (
+            choice[1]
+            if isinstance(choice, tuple) and len(choice) > 1 else None
+        )
+        if selected is None:
+            return
+        self.overlay_color = normalize_overlay_color(selected)
+        self._render_runtime_controls()
+        self._schedule_save()
+        self.footer_var.set(f"Overlay color set to {self.overlay_color.upper()}")
+
+    def toggle_overlay_heads(self) -> None:
+        self.overlay_head_visible = not self.overlay_head_visible
+        self._render_runtime_controls()
+        self._schedule_save()
+        state = "shown" if self.overlay_head_visible else "hidden"
+        self.footer_var.set(f"Overlay head boxes {state}")
 
     def toggle_master(self) -> None:
         if self._motion_mode in _TEST_MOTION_MODES:
@@ -2580,6 +2649,8 @@ class JitterApp(tk.Tk):
             self.overlay.render(
                 self.ai_service.latest_detection_snapshot(),
                 now=self._clock(),
+                color=self.overlay_color,
+                show_heads=self.overlay_head_visible,
             )
         except Exception:
             logging.exception("Detection overlay rendering failed")
@@ -3533,6 +3604,8 @@ class JitterApp(tk.Tk):
             theme=self.theme_var.get(),
             sound_enabled=self.sound_enabled_var.get(),
             sound_volume=sound_volume,
+            overlay_color=self.overlay_color,
+            overlay_head_visible=self.overlay_head_visible,
         )
         try:
             self.config_store.save(config)

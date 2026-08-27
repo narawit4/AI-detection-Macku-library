@@ -54,10 +54,13 @@ immediately cancel movement; inference remains active when the independent
 visible Overlay still requires it. Shutdown ends both. Trigger or Modifier
 release stops movement while the armed AI capture remains ready.
 
-The independent `Overlay` control starts off. When enabled, it draws red
-detection boxes in a centered 320-by-320, click-through window that is excluded
-from capture. Overlay viewing does not require AI Aim to be selected for
-movement; it starts the approved detection runtime only while needed.
+The independent `Overlay` control starts off. When enabled, it draws detection
+boxes in a centered 320-by-320, click-through window that is excluded from
+capture. `Box Color` changes the rectangle color, and `Head Boxes` can hide
+head rectangles without changing AI Aim's head-first targeting. These two
+display preferences persist, while Overlay visibility remains runtime-only.
+Overlay viewing does not require AI Aim to be selected for movement; it starts
+the approved detection runtime only while needed.
 
 An AI runtime error fails closed by hiding the Overlay and deselecting AI Aim.
 If Jitter remains selected under Master, Jitter continues or restarts through
@@ -108,12 +111,12 @@ click-through and absent from capture.
 ## User data and diagnostics
 
 `config.json` and its backup `config.json.bak` are stored beside the source
-script (or beside a packaged executable). Schema 4 stores validated settings;
+script (or beside a packaged executable). Schema 5 stores validated settings;
 settings are loaded without overwriting existing user data and writes are
-atomic. Motion-source selection, Master state, overlay visibility, targets,
-snapshots, FPS, and provider status are runtime-only. `app.log` in the same
-folder contains timestamped diagnostics. These files are intentionally ignored
-by Git.
+atomic. Overlay color and head-box visibility persist, but motion-source
+selection, Master state, overlay visibility, targets, snapshots, FPS, and
+provider status are runtime-only. `app.log` in the same folder contains
+timestamped diagnostics. These files are intentionally ignored by Git.
 
 ## Verification
 
