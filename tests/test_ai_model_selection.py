@@ -1,0 +1,157 @@
+import tempfile
+import threading
+import unittest
+from dataclasses import FrozenInstanceError
+from pathlib import Path
+from unittest import mock
+
+from ai_model_selection import (
+    ModelChoice,
+    ModelSelectionError,
+    ModelValidationEvent,
+    ModelValidator,
+    bundled_model_choice,
+    external_model_choice,
+)
+
+
+class ModelChoiceTests(unittest.TestCase):
+    def test_bundled_choice_uses_resolved_default_resource(self):
+        with mock.patch(
+            "ai_model_selection.model_resource_path",
+            return_value=Path("models/all_games_320.onnx"),
+        ):
+            choice = bundled_model_choice()
+        self.assertEqual(choice.path.name, "all_games_320.onnx")
+        self.assertTrue(choice.path.is_absolute())
+        self.assertEqual(choice.display_name, "all_games_320.onnx")
+        self.assertTrue(choice.is_default)
+        with self.assertRaises(FrozenInstanceError):
+            choice.display_name = "changed.onnx"
+
+    def test_external_choice_accepts_case_insensitive_onnx_and_resolves_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "custom.ONNX"
+            path.write_bytes(b"model")
+            choice = external_model_choice(path)
+        self.assertEqual(choice.path, path.resolve())
+        self.assertEqual(choice.display_name, "custom.ONNX")
+        self.assertFalse(choice.is_default)
+
+    def test_external_choice_rejects_missing_wrong_suffix_and_directory_safely(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            wrong = root / "custom.txt"
+            wrong.write_bytes(b"model")
+            cases = (
+                (root / "missing.onnx", "Selected model file was not found"),
+                (wrong, "Select an ONNX model file"),
+                (root, "Selected model must be a file"),
+            )
+            for raw_path, message in cases:
+                with self.subTest(raw_path=raw_path):
+                    with self.assertRaisesRegex(ModelSelectionError, message):
+                        external_model_choice(raw_path)
+
+
+class ModelValidatorTests(unittest.TestCase):
+    def test_validator_constructs_model_on_named_daemon_without_inference(self):
+        events = []
+        finished = threading.Event()
+        calls = []
+
+        class ContractOnlyDetector:
+            provider = "DmlExecutionProvider"
+
+        def detector_factory(path):
+            thread = threading.current_thread()
+            calls.append((path, thread.name, thread.daemon))
+            return ContractOnlyDetector()
+
+        choice = ModelChoice(Path("chosen.onnx"), "chosen.onnx", False)
+        validator = ModelValidator(
+            lambda event: (events.append(event), finished.set()),
+            detector_factory=detector_factory,
+        )
+        self.addCleanup(validator.close)
+        self.assertTrue(validator.start(choice, 4))
+        self.assertTrue(finished.wait(1.0))
+        self.assertEqual(calls, [(choice.path, "ModelValidation-4", True)])
+        self.assertEqual(events, [ModelValidationEvent("ready", 4, choice)])
+
+    def test_new_validation_cancels_late_result_from_previous_token(self):
+        first_entered = threading.Event()
+        release_first = threading.Event()
+        first_returned = threading.Event()
+        second_ready = threading.Event()
+        events = []
+
+        class Detector:
+            provider = "CPUExecutionProvider"
+
+        def detector_factory(path):
+            if path.name == "first.onnx":
+                first_entered.set()
+                release_first.wait(1.0)
+                first_returned.set()
+            return Detector()
+
+        def sink(event):
+            events.append(event)
+            if event.token == 2:
+                second_ready.set()
+
+        validator = ModelValidator(sink, detector_factory=detector_factory)
+        self.addCleanup(validator.close)
+        first = ModelChoice(Path("first.onnx"), "first.onnx", False)
+        second = ModelChoice(Path("second.onnx"), "second.onnx", False)
+        self.assertTrue(validator.start(first, 1))
+        self.assertTrue(first_entered.wait(1.0))
+        self.assertTrue(validator.start(second, 2))
+        self.assertTrue(second_ready.wait(1.0))
+        release_first.set()
+        self.assertTrue(first_returned.wait(1.0))
+        self.assertEqual(events, [ModelValidationEvent("ready", 2, second)])
+
+    def test_failure_event_hides_exception_text_but_log_keeps_diagnostics(self):
+        choice = ModelChoice(Path("secret.onnx"), "secret.onnx", False)
+        events = []
+        ready = threading.Event()
+
+        def fail(_path):
+            raise RuntimeError("sensitive absolute path detail")
+
+        validator = ModelValidator(
+            lambda event: (events.append(event), ready.set()),
+            detector_factory=fail,
+        )
+        self.addCleanup(validator.close)
+        with self.assertLogs("ai_model_selection", level="ERROR") as logs:
+            self.assertTrue(validator.start(choice, 9))
+            self.assertTrue(ready.wait(1.0))
+        self.assertEqual(
+            events,
+            [ModelValidationEvent("error", 9, choice, "RuntimeError")],
+        )
+        self.assertNotIn("sensitive absolute path detail", repr(events))
+        self.assertIn("sensitive absolute path detail", "\n".join(logs.output))
+
+    def test_thread_start_failure_returns_false_without_duplicate_error_event(self):
+        class FailingThread:
+            def __init__(self, **_kwargs):
+                pass
+
+            def start(self):
+                raise RuntimeError("scheduler detail")
+
+        events = []
+        validator = ModelValidator(events.append)
+        self.addCleanup(validator.close)
+        choice = ModelChoice(Path("chosen.onnx"), "chosen.onnx", False)
+        with (
+            mock.patch("ai_model_selection.threading.Thread", FailingThread),
+            self.assertLogs("ai_model_selection", level="ERROR") as logs,
+        ):
+            self.assertFalse(validator.start(choice, 3))
+        self.assertEqual(events, [])
+        self.assertIn("scheduler detail", "\n".join(logs.output))
