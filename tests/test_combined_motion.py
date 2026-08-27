@@ -127,8 +127,35 @@ class CombinedMotionTests(unittest.TestCase):
             MotionSources(jitter=True, ai=True),
             jitter_engine_factory=lambda: FixedJitter((0, 0)),
             aim_engine_factory=lambda: FixedAim((0, 0)),
+            ai_poll_hz=288.0,
         )
-        self.assertEqual(engine.poll_interval(MotionSettings(pulse_rate_hz=20)), 1.0 / 240.0)
+        self.assertEqual(engine.poll_interval(MotionSettings(pulse_rate_hz=20)), 1.0 / 288.0)
+
+    def test_default_aim_engine_receives_configured_nominal_cadence(self):
+        engine = CombinedMotionEngine(
+            MotionSources(ai=True),
+            ai_poll_hz=60.0,
+        )
+        report = engine.step(
+            MotionSettings(),
+            TargetSnapshot(1, 100.0, "head", 176.0, 160.0),
+            AimSettings(
+                aim_strength=1.0,
+                smoothing=0.0,
+                max_step=127,
+                response_curve=(0.0, 0.25, 0.5, 0.75, 1.0),
+            ),
+            dt=0.01,
+            elapsed=0.0,
+            now=10.0,
+        )
+        self.assertEqual(report, (6, 0))
+
+    def test_ai_poll_rate_must_be_positive_and_finite(self):
+        for rate in (0.0, -1.0, float("inf"), float("nan")):
+            with self.subTest(rate=rate):
+                with self.assertRaisesRegex(ValueError, "AI poll rate"):
+                    CombinedMotionEngine(MotionSources(ai=True), ai_poll_hz=rate)
 
 
 if __name__ == "__main__":

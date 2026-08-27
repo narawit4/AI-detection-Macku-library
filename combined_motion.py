@@ -2,6 +2,7 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass
+import math
 
 from ai_targeting import AimMovementEngine, AimSettings, TargetSnapshot
 from motion import MotionSettings, PairedPulseEngine
@@ -22,13 +23,26 @@ class CombinedMotionEngine:
         self,
         sources: MotionSources,
         jitter_engine_factory: Callable[[], object] = PairedPulseEngine,
-        aim_engine_factory: Callable[[], object] = AimMovementEngine,
+        aim_engine_factory: Callable[[], object] | None = None,
+        ai_poll_hz: float = 240.0,
     ) -> None:
         if not sources.any:
             raise ValueError("At least one motion source must be selected")
+        try:
+            self._ai_poll_hz = float(ai_poll_hz)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("AI poll rate must be positive and finite") from exc
+        if not math.isfinite(self._ai_poll_hz) or self._ai_poll_hz <= 0.0:
+            raise ValueError("AI poll rate must be positive and finite")
         self.sources = sources
         self._jitter = jitter_engine_factory() if sources.jitter else None
-        self._aim = aim_engine_factory() if sources.ai else None
+        self._aim = None
+        if sources.ai:
+            self._aim = (
+                aim_engine_factory()
+                if aim_engine_factory is not None
+                else AimMovementEngine(nominal_hz=self._ai_poll_hz)
+            )
 
     def step(
         self,
@@ -55,6 +69,6 @@ class CombinedMotionEngine:
 
     def poll_interval(self, motion_settings: MotionSettings) -> float:
         if self.sources.ai:
-            return 1.0 / 240.0
+            return 1.0 / self._ai_poll_hz
         rate = max(20.0, min(120.0, float(motion_settings.pulse_rate_hz)))
         return 1.0 / (rate * 2.0)

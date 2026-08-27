@@ -378,15 +378,21 @@ class AimMovementEngine:
     CENTER = 160.0
     DEAD_ZONE = 1.5
     MAX_AGE_S = 0.150
-    MAX_ACCELERATION = 6.0
+    MAX_ACCELERATION = 21_600.0
+    MAX_DT_S = 0.100
+    REFERENCE_RADIUS = math.hypot(CENTER, CENTER)
 
-    def __init__(self) -> None:
+    def __init__(self, nominal_hz: float = 240.0) -> None:
+        self._nominal_hz = nominal_hz
         self.reset()
 
     def reset(self) -> None:
         self._last_sequence = None
-        self._previous_x = self._previous_y = 0.0
+        self._remaining_x = self._remaining_y = 0.0
+        self._velocity_x = self._velocity_y = 0.0
         self._fraction_x = self._fraction_y = 0.0
+        self._previous_tick = None
+        self._target_captured_at = None
 
     def step(
         self,
@@ -397,39 +403,84 @@ class AimMovementEngine:
         if snapshot is None:
             self.reset()
             return 0, 0
-        if snapshot.sequence == self._last_sequence:
-            return 0, 0
-        self._last_sequence = snapshot.sequence
-        age = max(0.0, now - snapshot.captured_at)
+        fresh_sequence = snapshot.sequence != self._last_sequence
+        target_captured_at = (
+            snapshot.captured_at if fresh_sequence else self._target_captured_at
+        )
+        age = max(0.0, now - target_captured_at)
         if age > self.MAX_AGE_S:
             self.reset()
             return 0, 0
 
-        error_x = snapshot.aim_x - self.CENTER
-        error_y = snapshot.aim_y - self.CENTER
-        if math.hypot(error_x, error_y) <= self.DEAD_ZONE:
-            self._previous_x = self._previous_y = 0.0
+        if fresh_sequence:
+            self._last_sequence = snapshot.sequence
+            self._remaining_x = snapshot.aim_x - self.CENTER
+            self._remaining_y = snapshot.aim_y - self.CENTER
             self._fraction_x = self._fraction_y = 0.0
+            self._target_captured_at = snapshot.captured_at
+
+        radius = math.hypot(self._remaining_x, self._remaining_y)
+        if radius <= self.DEAD_ZONE:
+            if fresh_sequence:
+                self.reset()
+            else:
+                self._velocity_x = self._velocity_y = 0.0
+                self._fraction_x = self._fraction_y = 0.0
             return 0, 0
 
-        factor = 1.0 - settings.smoothing
-        desired_x = error_x * settings.aim_strength
-        desired_y = error_y * settings.aim_strength
-        smoothed_x = self._previous_x + (desired_x - self._previous_x) * factor
-        smoothed_y = self._previous_y + (desired_y - self._previous_y) * factor
-        smoothed_x = max(self._previous_x - self.MAX_ACCELERATION,
-                         min(self._previous_x + self.MAX_ACCELERATION, smoothed_x))
-        smoothed_y = max(self._previous_y - self.MAX_ACCELERATION,
-                         min(self._previous_y + self.MAX_ACCELERATION, smoothed_y))
-        step = float(settings.max_step)
-        clamped_x = max(-step, min(step, smoothed_x))
-        clamped_y = max(-step, min(step, smoothed_y))
-        self._previous_x, self._previous_y = clamped_x, clamped_y
+        if self._previous_tick is None:
+            dt = 1.0 / self._nominal_hz
+        else:
+            dt = max(0.0, min(self.MAX_DT_S, now - self._previous_tick))
+        self._previous_tick = now
 
-        total_x = clamped_x + self._fraction_x
-        total_y = clamped_y + self._fraction_y
-        report_x = math.trunc(total_x)
-        report_y = math.trunc(total_y)
-        self._fraction_x = total_x - report_x
-        self._fraction_y = total_y - report_y
+        normalized = min(1.0, radius / self.REFERENCE_RADIUS)
+        curve_distance = (
+            response_curve_value(settings.response_curve, normalized)
+            * self.REFERENCE_RADIUS
+        )
+        reference_step = min(
+            float(settings.max_step), curve_distance * settings.aim_strength
+        )
+        desired_speed = reference_step * 60.0
+        desired_x = desired_speed * self._remaining_x / radius
+        desired_y = desired_speed * self._remaining_y / radius
+
+        if settings.smoothing > 0.0:
+            tau = 0.200 * (settings.smoothing / 0.95) ** 2
+            alpha = 1.0 - math.exp(-dt / tau)
+        else:
+            alpha = 1.0
+        next_x = self._velocity_x + (desired_x - self._velocity_x) * alpha
+        next_y = self._velocity_y + (desired_y - self._velocity_y) * alpha
+        change_x = next_x - self._velocity_x
+        change_y = next_y - self._velocity_y
+        change = math.hypot(change_x, change_y)
+        max_change = self.MAX_ACCELERATION * dt
+        if change > max_change and change > 0.0:
+            scale = max_change / change
+            change_x *= scale
+            change_y *= scale
+        self._velocity_x += change_x
+        self._velocity_y += change_y
+
+        total_x = self._velocity_x * dt + self._fraction_x
+        total_y = self._velocity_y * dt + self._fraction_y
+        candidate_x = math.trunc(total_x)
+        candidate_y = math.trunc(total_y)
+        self._fraction_x = total_x - candidate_x
+        self._fraction_y = total_y - candidate_y
+        report_x = self._clamp_report(candidate_x, self._remaining_x, settings.max_step)
+        report_y = self._clamp_report(candidate_y, self._remaining_y, settings.max_step)
+        self._remaining_x -= report_x
+        self._remaining_y -= report_y
         return report_x, report_y
+
+    @staticmethod
+    def _clamp_report(candidate: int, remaining: float, max_step: int) -> int:
+        candidate = max(-int(max_step), min(int(max_step), candidate))
+        if remaining > 0.0:
+            return max(0, min(candidate, math.floor(remaining)))
+        if remaining < 0.0:
+            return min(0, max(candidate, math.ceil(remaining)))
+        return 0
