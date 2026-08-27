@@ -1,5 +1,6 @@
 import hashlib
 import unittest
+from dataclasses import FrozenInstanceError
 
 import numpy as np
 
@@ -12,14 +13,113 @@ from ai_targeting import (
     TargetSnapshot,
 )
 from ai_zoom import (
+    RECOIL_COOLDOWN_SECONDS,
+    ZoomStabilityState,
     ZoomTransform,
     build_zoom_input,
     compose_zoom_refinement,
     map_detection,
     map_target,
+    limit_zoom_factor,
+    movement_is_confirmed,
+    observe_zoom_stability,
+    record_zoom_refinement_miss,
     resize_rgb_bilinear,
     select_zoom_factor,
 )
+
+
+class ZoomStabilityTests(unittest.TestCase):
+    def target(self, sequence=1, kind="head", x=100.0, y=100.0):
+        return TargetSnapshot(sequence, 10.0, kind, x, y)
+
+    def test_initial_state_is_empty_unconfirmed_and_immutable(self):
+        state = ZoomStabilityState()
+        self.assertIsNone(state.previous_base_target)
+        self.assertEqual(state.stable_count, 0)
+        self.assertEqual(state.cooldown_until, 0.0)
+        self.assertFalse(movement_is_confirmed(state))
+        with self.assertRaises(FrozenInstanceError):
+            state.stable_count = 1
+
+    def test_first_acquisition_starts_count_and_cooldown(self):
+        target = self.target()
+        state = observe_zoom_stability(
+            ZoomStabilityState(), target, 10.0
+        )
+        self.assertEqual(state.previous_base_target, target)
+        self.assertEqual(state.stable_count, 1)
+        self.assertAlmostEqual(
+            state.cooldown_until, 10.0 + RECOIL_COOLDOWN_SECONDS
+        )
+        self.assertFalse(movement_is_confirmed(state))
+
+    def test_exact_18_pixels_confirms_but_18_point_01_restarts(self):
+        first = observe_zoom_stability(
+            ZoomStabilityState(), self.target(x=100.0), 10.0
+        )
+        exact = observe_zoom_stability(
+            first, self.target(sequence=2, x=118.0), 10.01
+        )
+        outside = observe_zoom_stability(
+            first, self.target(sequence=2, x=118.01), 10.01
+        )
+        self.assertEqual(exact.stable_count, 2)
+        self.assertTrue(movement_is_confirmed(exact))
+        self.assertEqual(outside.stable_count, 1)
+        self.assertFalse(movement_is_confirmed(outside))
+        self.assertAlmostEqual(outside.cooldown_until, 10.11)
+
+    def test_class_change_is_unstable_inside_distance_boundary(self):
+        first = observe_zoom_stability(
+            ZoomStabilityState(), self.target(kind="player"), 10.0
+        )
+        changed = observe_zoom_stability(
+            first,
+            self.target(sequence=2, kind="head", x=101.0),
+            10.02,
+        )
+        self.assertEqual(changed.stable_count, 1)
+        self.assertEqual(changed.previous_base_target.target_class, "head")
+        self.assertAlmostEqual(changed.cooldown_until, 10.12)
+
+    def test_missing_target_clears_previous_and_confirmation(self):
+        first = observe_zoom_stability(
+            ZoomStabilityState(), self.target(), 10.0
+        )
+        confirmed = observe_zoom_stability(
+            first, self.target(sequence=2), 10.01
+        )
+        missing = observe_zoom_stability(confirmed, None, 10.02)
+        self.assertIsNone(missing.previous_base_target)
+        self.assertEqual(missing.stable_count, 0)
+        self.assertFalse(movement_is_confirmed(missing))
+        self.assertAlmostEqual(missing.cooldown_until, 10.12)
+
+    def test_two_x_requires_confirmation_and_exact_cooldown_boundary(self):
+        first = observe_zoom_stability(
+            ZoomStabilityState(), self.target(), 10.0
+        )
+        confirmed = observe_zoom_stability(
+            first, self.target(sequence=2), 10.02
+        )
+        self.assertEqual(limit_zoom_factor(1.0, first, 10.0), 1.0)
+        self.assertEqual(limit_zoom_factor(1.5, first, 10.0), 1.5)
+        self.assertEqual(limit_zoom_factor(2.0, first, 10.2), 1.5)
+        self.assertEqual(limit_zoom_factor(2.0, confirmed, 10.099), 1.5)
+        self.assertEqual(limit_zoom_factor(2.0, confirmed, 10.1), 2.0)
+
+    def test_refinement_miss_resets_count_keeps_target_and_extends_only(self):
+        target = self.target()
+        state = ZoomStabilityState(target, 2, 20.0)
+        retained = record_zoom_refinement_miss(state, 10.0)
+        extended = record_zoom_refinement_miss(retained, 20.0)
+        self.assertEqual(retained.previous_base_target, target)
+        self.assertEqual(retained.stable_count, 0)
+        self.assertEqual(retained.cooldown_until, 20.0)
+        self.assertEqual(extended.previous_base_target, target)
+        self.assertEqual(extended.stable_count, 0)
+        self.assertAlmostEqual(extended.cooldown_until, 20.1)
 
 
 class ZoomFactorTests(unittest.TestCase):

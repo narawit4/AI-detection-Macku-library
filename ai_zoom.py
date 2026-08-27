@@ -26,6 +26,91 @@ _PLAYER_TWO_X_MAX = 64.0
 _PLAYER_ONE_HALF_X_MAX = 112.0
 _ZOOM_SOURCE_SIZES = {1.5: 213, 2.0: 160}
 _SEPARABLE_RESIZE_SHAPES = {(160, 160, 320), (213, 213, 320)}
+STABLE_DISPLACEMENT_PX = 18.0
+STABLE_CONFIRMATION_COUNT = 2
+RECOIL_COOLDOWN_SECONDS = 0.100
+
+
+@dataclass(frozen=True)
+class ZoomStabilityState:
+    previous_base_target: TargetSnapshot | None = None
+    stable_count: int = 0
+    cooldown_until: float = 0.0
+
+
+def _extended_zoom_cooldown(
+    state: ZoomStabilityState,
+    now: float,
+) -> float:
+    return max(
+        state.cooldown_until,
+        now + RECOIL_COOLDOWN_SECONDS,
+    )
+
+
+def observe_zoom_stability(
+    state: ZoomStabilityState,
+    target: TargetSnapshot | None,
+    now: float,
+) -> ZoomStabilityState:
+    if target is None:
+        return ZoomStabilityState(
+            None,
+            0,
+            _extended_zoom_cooldown(state, now),
+        )
+
+    previous = state.previous_base_target
+    unstable = (
+        previous is None
+        or previous.target_class != target.target_class
+        or math.hypot(
+            target.aim_x - previous.aim_x,
+            target.aim_y - previous.aim_y,
+        ) > STABLE_DISPLACEMENT_PX
+    )
+    if unstable:
+        return ZoomStabilityState(
+            target,
+            1,
+            _extended_zoom_cooldown(state, now),
+        )
+    return ZoomStabilityState(
+        target,
+        min(STABLE_CONFIRMATION_COUNT, state.stable_count + 1),
+        state.cooldown_until,
+    )
+
+
+def record_zoom_refinement_miss(
+    state: ZoomStabilityState,
+    now: float,
+) -> ZoomStabilityState:
+    return ZoomStabilityState(
+        state.previous_base_target,
+        0,
+        _extended_zoom_cooldown(state, now),
+    )
+
+
+def movement_is_confirmed(state: ZoomStabilityState) -> bool:
+    return (
+        state.previous_base_target is not None
+        and state.stable_count >= STABLE_CONFIRMATION_COUNT
+    )
+
+
+def limit_zoom_factor(
+    requested_factor: float,
+    state: ZoomStabilityState,
+    now: float,
+) -> float:
+    if requested_factor == 2.0 and (
+        not movement_is_confirmed(state)
+        or now < state.cooldown_until
+    ):
+        return 1.5
+    return float(requested_factor)
 
 
 @dataclass(frozen=True)
