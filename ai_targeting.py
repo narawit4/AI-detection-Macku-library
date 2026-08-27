@@ -106,7 +106,7 @@ def aim_settings_to_mapping(settings: AimSettings) -> dict[str, str]:
     }
 
 
-def _aim_point(detection: Detection) -> tuple[str, float, float] | None:
+def detection_aim_point(detection: Detection) -> tuple[str, float, float] | None:
     if detection.class_id == 7:
         return "head", (detection.x1 + detection.x2) / 2.0, (
             detection.y1 + detection.y2
@@ -130,12 +130,12 @@ def analyze_detections(
         detection
         for detection in detections
         if detection.confidence >= settings.confidence
-        and _aim_point(detection) is not None
+        and detection_aim_point(detection) is not None
     )
     candidates = [
         (index, point)
         for index, detection in enumerate(accepted)
-        if (point := _aim_point(detection)) is not None
+        if (point := detection_aim_point(detection)) is not None
     ]
     heads = [item for item in candidates if item[1][0] == "head"]
     candidates = heads or [item for item in candidates if item[1][0] == "player"]

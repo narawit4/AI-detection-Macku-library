@@ -2,10 +2,17 @@ import unittest
 
 import numpy as np
 
-from ai_targeting import Detection, TargetSnapshot
+from ai_targeting import (
+    AimSettings,
+    Detection,
+    DetectionAnalysis,
+    DetectionFrameSnapshot,
+    TargetSnapshot,
+)
 from ai_zoom import (
     ZoomTransform,
     build_zoom_input,
+    compose_zoom_refinement,
     map_detection,
     map_target,
     resize_rgb_bilinear,
@@ -136,6 +143,101 @@ class ZoomGeometryTests(unittest.TestCase):
                 Detection(-100, -100, -1, -1, 0.8, 0), transform
             )
         )
+
+
+class ZoomCompositionTests(unittest.TestCase):
+    def base_player(self):
+        return DetectionAnalysis(
+            TargetSnapshot(7, 30.0, "player", 160.0, 120.0),
+            DetectionFrameSnapshot(
+                7,
+                30.0,
+                (
+                    Detection(20, 40, 60, 140, 0.7, 0),
+                    Detection(140, 80, 180, 280, 0.8, 0),
+                    Detection(250, 40, 300, 160, 0.75, 0),
+                ),
+                1,
+            ),
+        )
+
+    def test_player_seed_refines_to_mapped_head_and_preserves_other_boxes(self):
+        result = compose_zoom_refinement(
+            self.base_player(),
+            (Detection(140, 70, 180, 110, 0.92, 7),),
+            ZoomTransform(80, 40, 160, 2.0),
+            AimSettings(confidence=0.35),
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(
+            result.target,
+            TargetSnapshot(7, 30.0, "head", 160.0, 85.0),
+        )
+        self.assertEqual(result.frame.selected_index, 1)
+        self.assertEqual(result.frame.detections[0], self.base_player().frame.detections[0])
+        self.assertEqual(
+            result.frame.detections[1],
+            Detection(150, 75, 170, 95, 0.92, 7),
+        )
+        self.assertEqual(result.frame.detections[2], self.base_player().frame.detections[2])
+
+    def test_head_seed_rejects_player_downgrade(self):
+        base = DetectionAnalysis(
+            TargetSnapshot(8, 31.0, "head", 160.0, 100.0),
+            DetectionFrameSnapshot(
+                8, 31.0, (Detection(150, 90, 170, 110, 0.9, 7),), 0
+            ),
+        )
+        self.assertIsNone(
+            compose_zoom_refinement(
+                base,
+                (Detection(100, 80, 220, 300, 0.95, 0),),
+                ZoomTransform(80, 40, 160, 2.0),
+                AimSettings(confidence=0.35),
+            )
+        )
+
+    def test_outside_expanded_seed_and_low_confidence_fall_back(self):
+        for detection in (
+            Detection(300, 10, 319, 29, 0.9, 7),
+            Detection(140, 70, 180, 110, 0.1, 7),
+        ):
+            with self.subTest(detection=detection):
+                self.assertIsNone(
+                    compose_zoom_refinement(
+                        self.base_player(),
+                        (detection,),
+                        ZoomTransform(80, 40, 160, 2.0),
+                        AimSettings(confidence=0.35),
+                    )
+                )
+
+    def test_association_includes_exact_12px_and_20_percent_margins(self):
+        transform = ZoomTransform(80, 0, 160, 2.0)
+        exact_boundary = Detection(86, 70, 106, 90, 0.92, 7)
+        result = compose_zoom_refinement(
+            self.base_player(),
+            (exact_boundary,),
+            transform,
+            AimSettings(confidence=0.35),
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(result.target.aim_x, 128.0)
+        self.assertEqual(result.target.aim_y, 40.0)
+
+        for just_outside in (
+            Detection(85.96, 70, 105.96, 90, 0.92, 7),
+            Detection(86, 69.96, 106, 89.96, 0.92, 7),
+        ):
+            with self.subTest(just_outside=just_outside):
+                self.assertIsNone(
+                    compose_zoom_refinement(
+                        self.base_player(),
+                        (just_outside,),
+                        transform,
+                        AimSettings(confidence=0.35),
+                    )
+                )
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ from ai_targeting import (
     aim_settings_from_mapping,
     aim_settings_to_mapping,
     analyze_detections,
+    detection_aim_point,
     select_target,
 )
 
@@ -158,6 +159,21 @@ class TargetSelectionTests(unittest.TestCase):
 
     def test_empty_detections_return_none(self):
         self.assertIsNone(select_target((), AimSettings(), sequence=1, captured_at=1.0))
+
+
+class DetectionAimPointTests(unittest.TestCase):
+    def test_public_aim_point_preserves_head_and_player_contract(self):
+        self.assertEqual(
+            detection_aim_point(Detection(10, 20, 30, 40, 0.9, 7)),
+            ("head", 20.0, 30.0),
+        )
+        self.assertEqual(
+            detection_aim_point(Detection(10, 20, 30, 120, 0.9, 0)),
+            ("player", 20.0, 40.0),
+        )
+        self.assertIsNone(
+            detection_aim_point(Detection(10, 20, 30, 40, 0.9, 4))
+        )
 
 
 class AimMovementEngineTests(unittest.TestCase):

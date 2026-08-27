@@ -2,10 +2,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+from typing import Iterable
 
 import numpy as np
 
-from ai_targeting import Detection, TargetSnapshot
+from ai_targeting import (
+    AimSettings,
+    Detection,
+    DetectionAnalysis,
+    DetectionFrameSnapshot,
+    TargetSnapshot,
+    analyze_detections,
+    detection_aim_point,
+)
 
 
 FRAME_SIZE = 320
@@ -143,4 +152,67 @@ def map_target(
         target.target_class,
         _map_coordinate(target.aim_x, transform.left, scale),
         _map_coordinate(target.aim_y, transform.top, scale),
+    )
+
+
+def compose_zoom_refinement(
+    base: DetectionAnalysis,
+    refined_detections: Iterable[Detection],
+    transform: ZoomTransform,
+    settings: AimSettings,
+) -> DetectionAnalysis | None:
+    selected_index = base.frame.selected_index
+    if (
+        base.target is None
+        or selected_index is None
+        or not 0 <= selected_index < len(base.frame.detections)
+    ):
+        return None
+    seed = base.frame.detections[selected_index]
+    if seed.class_id == 7:
+        allowed_classes = {7}
+    elif seed.class_id == 0:
+        allowed_classes = {0, 7}
+    else:
+        return None
+
+    margin_x = max(12.0, (seed.x2 - seed.x1) * 0.20)
+    margin_y = max(12.0, (seed.y2 - seed.y1) * 0.20)
+    compatible = []
+    for detection in refined_detections:
+        mapped = map_detection(detection, transform)
+        if mapped is None or mapped.class_id not in allowed_classes:
+            continue
+        point = detection_aim_point(mapped)
+        if point is None:
+            continue
+        _target_class, aim_x, aim_y = point
+        if (
+            seed.x1 - margin_x <= aim_x <= seed.x2 + margin_x
+            and seed.y1 - margin_y <= aim_y <= seed.y2 + margin_y
+        ):
+            compatible.append(mapped)
+
+    refined = analyze_detections(
+        compatible,
+        settings,
+        sequence=base.frame.sequence,
+        captured_at=base.frame.captured_at,
+        previous=base.target,
+    )
+    if refined.target is None or refined.frame.selected_index is None:
+        return None
+    selected_refined = refined.frame.detections[
+        refined.frame.selected_index
+    ]
+    composed = list(base.frame.detections)
+    composed[selected_index] = selected_refined
+    return DetectionAnalysis(
+        refined.target,
+        DetectionFrameSnapshot(
+            base.frame.sequence,
+            base.frame.captured_at,
+            tuple(composed),
+            selected_index,
+        ),
     )
