@@ -53,6 +53,7 @@ class TrackerState:
 class TrackingObservation:
     state: TrackerState
     analysis: DetectionAnalysis
+    stability_target: TargetSnapshot | None
 
 
 def _box_area(detection: Detection) -> float:
@@ -302,6 +303,7 @@ def _without_publication(
     *,
     sequence: int,
     captured_at: float,
+    stability_target: TargetSnapshot | None = None,
 ) -> TrackingObservation:
     return TrackingObservation(
         state,
@@ -311,6 +313,7 @@ def _without_publication(
             sequence=sequence,
             captured_at=captured_at,
         ),
+        stability_target,
     )
 
 
@@ -346,6 +349,7 @@ def _observe_initial(
                 sequence=sequence,
                 captured_at=captured_at,
             ),
+            best.target,
         )
 
     pending_count = (
@@ -367,6 +371,7 @@ def _observe_initial(
                 sequence=sequence,
                 captured_at=captured_at,
             ),
+            best.target,
         )
     pending_state = TrackerState(
         pending_candidate=best.target,
@@ -377,6 +382,7 @@ def _observe_initial(
         accepted,
         sequence=sequence,
         captured_at=captured_at,
+        stability_target=None if ambiguous else best.target,
     )
 
 
@@ -423,6 +429,7 @@ def _observe_replacement(
                 sequence=sequence,
                 captured_at=captured_at,
             ),
+            best.target,
         )
     pending = TrackerState(
         confirmed_detection=state.confirmed_detection,
@@ -438,6 +445,7 @@ def _observe_replacement(
         accepted,
         sequence=sequence,
         captured_at=captured_at,
+        stability_target=best.target,
     )
 
 
@@ -529,6 +537,7 @@ def observe_detections(
                 accepted,
                 sequence=sequence,
                 captured_at=captured_at,
+                stability_target=best.target,
             )
 
     confirmed = _confirmed_state(
@@ -544,4 +553,5 @@ def observe_detections(
             sequence=sequence,
             captured_at=captured_at,
         ),
+        best.target,
     )

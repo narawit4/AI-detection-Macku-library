@@ -78,14 +78,21 @@ the same gate; an AI-only failure disarms Master.
 
 ### Conservative tracking and movement
 
-AI Aim tracks the complete detection box, including class, overlap, size, and
-plausible predicted motion, instead of choosing independently from aim points
-on every frame. When two plausible candidates are too close to distinguish,
-the Overlay can continue showing current boxes but the AI movement component
-pauses. The original target must then be clear for two consecutive frames
-before AI movement resumes. If that target is lost, a replacement must remain
-the same class and follow a stable path for three consecutive observations
-before promotion; a saved box is never sent as stale movement.
+AI Aim tracks the complete detection box instead of choosing independently
+from aim points on every frame. It predicts the current position from recent
+motion, then considers same-class boxes inside a plausibility radius of
+`max(48 px, 1.5 × the previous box diagonal)`. Candidates outside the
+`0.4-2.5` area-ratio range are rejected; the remainder are ranked using
+predicted distance, intersection-over-union, and area change.
+
+The tracker can hold the last confirmed identity for up to 150 ms, but never
+publishes that saved coordinate as movement. When plausible candidates are too
+close to distinguish, the Overlay continues showing every current accepted box
+without marking a provisional selection, while AI movement pauses. The
+original target must be clear for two consecutive frames before movement
+resumes. After the 150 ms hold expires, a replacement needs three stable
+same-class observations before promotion. Provisional recovery and replacement
+candidates are never published as AI movement targets.
 
 Capture cadence follows the primary display refresh rate, capped at 240 FPS.
 The movement servo runs at twice the detected display rate, clamped to the
@@ -119,18 +126,13 @@ Overlay, while unrelated base boxes remain. Adaptive Zoom does not magnify the
 display and cannot recover a target that the base pass never detected. Zoom
 status is runtime-only; Schema 5 and its persisted settings are unchanged.
 
-While the movement gate is active, AI Aim confirms a base-pass target across
-two consecutive same-class observations no more than 18 pixels apart. The
-current Overlay boxes remain visible during the confirmation frame, but AI
-movement is withheld rather than reusing an old position. In combined mode,
-Jitter continues while that AI component is withheld.
-
-After acquisition, AI Aim keeps the last confirmed base target as its selection
-anchor. A candidate that does not match the anchor's class and 48-pixel
-association radius must remain one class and stay within 18 pixels for three
-consecutive observations before it can replace that anchor. Until then,
-current Overlay boxes remain visible but AI movement is withheld; if the
-original target returns, the pending switch is cancelled.
+Separately from full-box identity tracking, the recoil/zoom movement gate
+requires two consecutive clear same-class base observations no more than 18
+pixels apart. It may count a tracker's current clear recovery or replacement
+candidate, but tracker publication remains authoritative: provisional targets
+never move the pointer. Ambiguous or missing observations reset this separate
+stability count. In combined mode, Jitter continues whenever that AI component
+is withheld.
 
 A new or shaken small target starts with the wider 1.5x refinement. A confirmed
 target may return to 2.0x only after the fixed 100 ms recoil cooldown. A normal

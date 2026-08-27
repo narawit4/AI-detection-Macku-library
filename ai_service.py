@@ -333,7 +333,7 @@ class AiService:
                         else:
                             stability = observe_zoom_stability(
                                 stability,
-                                base_analysis.target,
+                                tracked.stability_target,
                                 captured_at,
                             )
                             selected = base_analysis.frame.selected_index

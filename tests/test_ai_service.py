@@ -352,6 +352,154 @@ class AiServiceTests(unittest.TestCase):
             and service.latest_detection_snapshot().sequence == sequence
         ))
 
+    def test_normal_gate_initial_acquisition_requires_two_stable_base_frames(self):
+        detections = (
+            (self.large_head(100.0),),
+            (self.large_head(101.0),),
+        )
+        detector = SequentialDetector(detections)
+        capture = ControlledCapture([
+            np.zeros((320, 320, 3), dtype=np.uint8)
+            for _ in detections
+        ])
+        clock = MutableClock(10.0)
+        service, _events = self.make_zoom_service(
+            detector,
+            capture=capture,
+            clock=clock,
+        )
+        service.start(AimSettings, lambda: True)
+
+        self.release_and_wait(capture, service, 1)
+        self.assertIsNone(service.latest_snapshot())
+        self.assertEqual(service.latest_detection_snapshot().selected_index, 0)
+
+        clock.set(10.01)
+        self.release_and_wait(capture, service, 2)
+        self.assertAlmostEqual(service.latest_snapshot().aim_x, 101.0)
+        self.assertEqual(service.latest_detection_snapshot().selected_index, 0)
+
+    def test_normal_gate_recovery_publishes_second_clear_original_frame(self):
+        outputs = (
+            (self.large_head(100.0),),
+            (self.large_head(100.0),),
+            (self.large_head(99.0), self.large_head(101.0)),
+            (self.large_head(102.0),),
+            (self.large_head(103.0),),
+        )
+        detector = SequentialDetector(outputs)
+        capture = ControlledCapture([
+            np.zeros((320, 320, 3), dtype=np.uint8)
+            for _ in outputs
+        ])
+        clock = MutableClock(10.0)
+        service, _events = self.make_zoom_service(
+            detector,
+            capture=capture,
+            clock=clock,
+        )
+        service.start(AimSettings, lambda: True)
+
+        for sequence in (1, 2):
+            clock.set(10.0 + sequence / 100.0)
+            self.release_and_wait(capture, service, sequence)
+        self.assertAlmostEqual(service.latest_snapshot().aim_x, 100.0)
+
+        clock.set(10.03)
+        self.release_and_wait(capture, service, 3)
+        self.assertIsNone(service.latest_snapshot())
+        ambiguous = service.latest_detection_snapshot()
+        self.assertIsNone(ambiguous.selected_index)
+        self.assertEqual(ambiguous.detections, outputs[2])
+
+        clock.set(10.04)
+        self.release_and_wait(capture, service, 4)
+        self.assertIsNone(service.latest_snapshot())
+        recovering = service.latest_detection_snapshot()
+        self.assertIsNone(recovering.selected_index)
+        self.assertEqual(recovering.detections, outputs[3])
+
+        clock.set(10.05)
+        self.release_and_wait(capture, service, 5)
+        self.assertAlmostEqual(service.latest_snapshot().aim_x, 103.0)
+        self.assertEqual(service.latest_detection_snapshot().selected_index, 0)
+
+    def test_normal_gate_replacement_publishes_third_stable_observation(self):
+        original = (self.large_head(100.0),)
+        replacement = (self.large_head(250.0),)
+        outputs = (
+            original,
+            original,
+            replacement,
+            replacement,
+            replacement,
+        )
+        detector = SequentialDetector(outputs)
+        capture = ControlledCapture([
+            np.zeros((320, 320, 3), dtype=np.uint8)
+            for _ in outputs
+        ])
+        clock = MutableClock(10.0)
+        service, _events = self.make_zoom_service(
+            detector,
+            capture=capture,
+            clock=clock,
+        )
+        service.start(AimSettings, lambda: True)
+
+        self.release_and_wait(capture, service, 1)
+        clock.set(10.01)
+        self.release_and_wait(capture, service, 2)
+        self.assertAlmostEqual(service.latest_snapshot().aim_x, 100.0)
+
+        for sequence, captured_at in ((3, 10.160), (4, 10.177)):
+            clock.set(captured_at)
+            self.release_and_wait(capture, service, sequence)
+            self.assertIsNone(service.latest_snapshot())
+            pending = service.latest_detection_snapshot()
+            self.assertIsNone(pending.selected_index)
+            self.assertEqual(pending.detections, replacement)
+
+        clock.set(10.194)
+        self.release_and_wait(capture, service, 5)
+        self.assertAlmostEqual(service.latest_snapshot().aim_x, 250.0)
+        self.assertEqual(service.latest_detection_snapshot().selected_index, 0)
+
+    def test_normal_gate_missing_frame_resets_stability(self):
+        outputs = (
+            (self.large_head(100.0),),
+            (self.large_head(100.0),),
+            (),
+            (self.large_head(101.0),),
+            (self.large_head(102.0),),
+        )
+        detector = SequentialDetector(outputs)
+        capture = ControlledCapture([
+            np.zeros((320, 320, 3), dtype=np.uint8)
+            for _ in outputs
+        ])
+        clock = MutableClock(10.0)
+        service, _events = self.make_zoom_service(
+            detector,
+            capture=capture,
+            clock=clock,
+        )
+        service.start(AimSettings, lambda: True)
+
+        for sequence in (1, 2):
+            clock.set(10.0 + sequence / 100.0)
+            self.release_and_wait(capture, service, sequence)
+        self.assertAlmostEqual(service.latest_snapshot().aim_x, 100.0)
+
+        for sequence in (3, 4):
+            clock.set(10.0 + sequence / 100.0)
+            self.release_and_wait(capture, service, sequence)
+            self.assertIsNone(service.latest_snapshot())
+
+        clock.set(10.05)
+        self.release_and_wait(capture, service, 5)
+        self.assertAlmostEqual(service.latest_snapshot().aim_x, 102.0)
+
     def test_crossing_ambiguity_withholds_target_and_refinement(self):
         person_a = (130.0, 140.0, 150.0, 160.0, 175.0, 190.0)
         person_b = (None, 220.0, 190.0, 160.0, 145.0, 130.0)

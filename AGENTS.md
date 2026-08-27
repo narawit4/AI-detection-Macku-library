@@ -90,11 +90,13 @@ with the supported Windows Python installation.
   requires Trigger plus the configured Modifier, if any.
 - AI Aim uses only the fixed centered 320-by-320 capture and bundled model,
   prefers heads over players, and shares the same Trigger/Modifier gate.
-- Track the complete detection box using class, overlap, area, and plausible
-  predicted motion. When plausible candidates are ambiguous, keep current
-  Overlay boxes publishable but pause AI movement. Require two consecutive
-  clear observations of the original target to recover after ambiguity and
-  three stable same-class observations to promote a replacement.
+- Track the complete detection box using predicted position, a plausibility
+  radius of `max(48 pixels, 1.5 × box diagonal)`, an inclusive 0.4-2.5 area
+  ratio, IoU, and area-change scoring. Hold identity for at most 150 ms without
+  publishing a saved coordinate. When plausible candidates are ambiguous,
+  keep current Overlay boxes publishable but pause AI movement. Require two
+  consecutive clear observations of the original target to recover after
+  ambiguity and three stable same-class observations to promote a replacement.
 - Derive runtime cadence from the primary display: cap capture at 240 FPS and
   run the servo at twice display refresh, clamped to 120-480 Hz. Fall back to
   120 FPS capture and a 240 Hz servo when detection is unavailable or invalid.
@@ -119,19 +121,18 @@ with the supported Windows Python installation.
   box; its box is mapped back to the original frame for Overlay rendering and
   unrelated base boxes remain. Adaptive Zoom does not magnify the display or
   recover targets the base pass never detected.
-- Recoil-stable zoom observes only base-pass targets. AI movement requires two
-  consecutive same-class observations within 18 pixels; current Overlay boxes
-  remain publishable while an unconfirmed movement target is `None`.
+- Recoil-stable zoom is separate from full-box tracker publication. It may
+  observe the tracker's current clear base-pass recovery or pending candidate,
+  but never an ambiguous or missing observation. AI movement requires two
+  consecutive same-class observations within 18 pixels and the tracker must
+  also publish the target; current Overlay boxes remain publishable while a
+  provisional movement target is `None`.
 - A requested 2.0x refinement is capped at 1.5x until confirmation and a fixed
   100 ms cooldown both pass. A normal refinement miss resets confirmation and
   extends cooldown without adding an inference call or holding a stale target.
 - Keep base-selection continuity separate from movement publication. Stability
   is local to one AI generation and resets when the movement zoom gate is
   false; combined Jitter continues when AI movement is unconfirmed.
-- Keep the last confirmed base target as the selection anchor. A candidate
-  that does not match both its class and 48-pixel association radius must
-  remain one class and stay within 18 pixels for three consecutive
-  observations before promotion.
 - While a replacement is pending, publish current Overlay detections but no AI
   movement target. Cancel the pending switch if the confirmed target returns;
   never send the saved anchor itself as stale movement.
@@ -224,7 +225,7 @@ After implementation changes, run:
 ```powershell
 python -m py_compile main.py ui.py motion.py combined_motion.py ai_targeting.py ai_tracking.py ai_detection.py ai_capture.py ai_zoom.py ai_service.py display_timing.py overlay.py makcu_service.py hotkeys.py settings.py sound_service.py liquid_widgets.py distribution_metadata.py
 python -m unittest discover -s tests -v
-python -c "import makcu, serial, onnxruntime, dxcam, comtypes, numpy"
+python -c "import makcu, serial, pygame, onnxruntime, dxcam, comtypes, numpy"
 python .\main.py --ai-runtime-self-check
 python .\distribution_metadata.py --review-json
 ```
