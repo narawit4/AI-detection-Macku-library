@@ -18,6 +18,7 @@ LOGGER = logging.getLogger(__name__)
 OVERLAY_SIZE = 320
 OVERLAY_COLOR = "#ff2b2b"
 MAX_FRAME_AGE_S = 0.150
+_TRANSPARENT_KEY_CANDIDATES = ("#010203", "#010204")
 
 WDA_EXCLUDEFROMCAPTURE = 0x00000011
 WS_EX_TRANSPARENT = 0x00000020
@@ -219,6 +220,7 @@ class DetectionOverlay:
         self._require_main_thread()
         boxes = project_overlay_boxes(snapshot, now, show_heads=show_heads)
         self.clear()
+        self._keep_outline_visible(color)
         for box in boxes:
             self._canvas.create_rectangle(
                 box.x1,
@@ -229,6 +231,18 @@ class DetectionOverlay:
                 width=box.width,
                 tags=("detection",),
             )
+
+    def _keep_outline_visible(self, color: str) -> None:
+        if color.casefold() != self._transparent_key.casefold():
+            return
+        replacement = next(
+            candidate
+            for candidate in _TRANSPARENT_KEY_CANDIDATES
+            if candidate.casefold() != color.casefold()
+        )
+        self._canvas.configure(background=replacement)
+        self._window.attributes("-transparentcolor", replacement)
+        self._transparent_key = replacement
 
     def clear(self) -> None:
         self._require_main_thread()

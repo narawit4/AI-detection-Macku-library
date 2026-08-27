@@ -463,9 +463,28 @@ class JitterLayoutTests(unittest.TestCase):
         self.app._color_chooser = lambda **_kwargs: (None, None)
         before = self.app.overlay_color
         button = self.app.overlay_color_button
+        self.app._cancel_after("_save_after_id")
         button.invoke()
 
         self.assertEqual(self.app.overlay_color, before)
+        self.assertIsNone(self.app._save_after_id)
+
+    def test_overlay_color_chooser_error_keeps_current_choice(self):
+        def fail_chooser(**_kwargs):
+            raise tk.TclError("chooser failed")
+
+        self.app._color_chooser = fail_chooser
+        before = self.app.overlay_color
+        self.app._cancel_after("_save_after_id")
+
+        with self.assertLogs(level="ERROR"):
+            self.app.overlay_color_button.invoke()
+
+        self.assertEqual(self.app.overlay_color, before)
+        self.assertIsNone(self.app._save_after_id)
+        self.assertEqual(
+            self.app.footer_var.get(), "Could not open the color chooser"
+        )
 
     def test_head_boxes_button_toggles_visibility_and_schedules_save(self):
         self.app._cancel_after("_save_after_id")
@@ -2398,6 +2417,16 @@ class JitterRuntimeTests(JitterLayoutTests):
             ("#ff2b2b", True),
         )
         self.assertIsNotNone(self.app._overlay_after_id)
+
+    def test_head_boxes_off_reaches_overlay_render(self):
+        self.app.overlay_head_button.invoke()
+
+        self.app.toggle_overlay()
+
+        self.assertEqual(
+            self.overlay.render_options[-1],
+            ("#ff2b2b", False),
+        )
 
     def test_overlay_render_error_turns_off_overlay_and_final_ai_demand(self):
         self.overlay.render_error = RuntimeError("canvas failed")

@@ -129,6 +129,20 @@ class ConfigStoreTests(unittest.TestCase):
         self.assertEqual(outcome.config.overlay_color, "#ff2b2b")
         self.assertTrue(outcome.config.overlay_head_visible)
 
+    def test_schema_four_migrates_overlay_preferences_to_defaults(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            path.write_text(json.dumps({
+                "schema_version": 4,
+                "overlay_color": "#00cc88",
+                "overlay_head_visible": False,
+            }), encoding="utf-8")
+            outcome = ConfigStore(path).load()
+
+        self.assertTrue(outcome.save_allowed)
+        self.assertEqual(outcome.config.overlay_color, "#ff2b2b")
+        self.assertTrue(outcome.config.overlay_head_visible)
+
     def test_schema_three_preserves_settings_but_drops_legacy_mode(self):
         document = {
             "schema_version": 3,

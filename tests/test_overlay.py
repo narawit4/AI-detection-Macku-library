@@ -69,6 +69,22 @@ class OverlayProjectionTests(unittest.TestCase):
 
         self.assertEqual(boxes, (OverlayBox(1, 2, 30, 40, 2),))
 
+    def test_hidden_earlier_head_does_not_reindex_selected_player(self):
+        frame = DetectionFrameSnapshot(
+            1,
+            10.0,
+            (
+                Detection(100, 110, 130, 150, 0.9, 7),
+                Detection(1, 2, 30, 40, 0.8, 0),
+            ),
+            1,
+        )
+
+        self.assertEqual(
+            project_overlay_boxes(frame, 10.0, show_heads=False),
+            (OverlayBox(1, 2, 30, 40, 4),),
+        )
+
 
 class FakeNativeApi:
     def __init__(self, *, style=0x1000, root_hwnd=1234):
@@ -277,6 +293,13 @@ class FakeCanvas:
             raise error
         self.items = []
 
+    def configure(self, **options):
+        self.calls.append(("canvas-configure", options))
+        error = self.failures.get("configure")
+        if error is not None:
+            raise error
+        self.options.update(options)
+
     def create_rectangle(self, *coords, **options):
         self.items.append((coords, options))
 
@@ -457,6 +480,22 @@ class DetectionOverlayTests(unittest.TestCase):
         overlay.render(frame, now=10.0, color="#00cc88")
 
         self.assertEqual(canvases[0].items[0][1]["outline"], "#00cc88")
+
+    def test_render_keeps_transparency_key_distinct_from_requested_color(self):
+        overlay, _window, canvases, _adapter, calls = self.make_overlay()
+        overlay.show()
+        frame = DetectionFrameSnapshot(
+            1,
+            10.0,
+            (Detection(1, 2, 30, 40, 0.8, 0),),
+            None,
+        )
+
+        overlay.render(frame, now=10.0, color="#010203")
+
+        self.assertEqual(canvases[0].items[0][1]["outline"], "#010203")
+        self.assertEqual(canvases[0].options["background"], "#010204")
+        self.assertIn(("-transparentcolor", "#010204"), calls)
 
     def test_stale_render_clears_existing_boxes_while_window_stays_visible(self):
         overlay, _window, canvases, _adapter, _calls = self.make_overlay()

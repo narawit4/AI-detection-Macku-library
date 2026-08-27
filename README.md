@@ -105,8 +105,8 @@ connected-device check: verify each selected-source combination with the
 configured Trigger/Modifier, Test 3s with those sources, the global hotkey,
 STOP between half-pulses, disconnect/reconnect, and shutdown. Also verify the
 diagonal up-right/down-left paired Jitter direction, the Soft, Balanced, and
-Strong pulse sizes and rates, and that the optional red centered overlay is
-click-through and absent from capture.
+Strong pulse sizes and rates, and that the optional configured-color centered
+overlay is click-through and absent from capture.
 
 ## User data and diagnostics
 
