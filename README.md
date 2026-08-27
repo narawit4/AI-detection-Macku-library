@@ -42,11 +42,12 @@ select an external `.onnx` file for this process only, and `Use Default`
 returns to the bundled model. A custom model must keep the exact `images`
 `[1,3,320,320]` and `output0` `[1,300,6]` float contract and use class 0 for
 players and class 7 for heads. Jitter validates it off the UI thread, pauses
-AI during the switch, and restores the previous model if validation or startup
-fails. The selected path is never saved, copied, packaged, or used by the
-release self-check; every launch starts with the bundled model. Model changes
-are unavailable while `Test 3s` is active. Jitter does not support training or
-profiles.
+AI during the switch, and after its exact ready event restarts the eligible AI
+runtime and motion. A candidate startup failure makes one automatic rollback
+attempt to restart the previous model. The selected path is never saved,
+copied, packaged, or used by the release self-check; every launch starts with
+the bundled model. Model changes are unavailable while `Test 3s` is active.
+Jitter does not support training or profiles.
 
 AI Aim exposes four controls on the Motion page:
 

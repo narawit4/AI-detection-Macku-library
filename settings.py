@@ -29,6 +29,7 @@ VALID_BUTTONS = ("Left", "Right", "Middle", "Mouse4", "Mouse5")
 VALID_THEMES = ("light", "dark")
 DEFAULT_OVERLAY_COLOR = "#ff2b2b"
 _OVERLAY_COLOR_PATTERN = re.compile(r"#[0-9a-fA-F]{6}\Z")
+_MODEL_DATA_KEYS = ("model_path", "model_name", "model_hash")
 
 
 def normalize_overlay_color(raw: Any) -> str:
@@ -128,6 +129,35 @@ class ConfigStore:
     @staticmethod
     def _defaults() -> AppConfig:
         return AppConfig()
+
+    def _sanitized_schema_five_backup(self) -> dict[str, Any] | None:
+        """Return a clean backup document only when model data was injected."""
+        try:
+            with self.path.open("r", encoding="utf-8") as handle:
+                document = json.load(handle)
+        except (OSError, TypeError, ValueError, UnicodeError, OverflowError):
+            return None
+        if not isinstance(document, dict):
+            return None
+        try:
+            schema = _schema_identifier(
+                document.get("schema_version", SCHEMA_VERSION)
+            )
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if schema != SCHEMA_VERSION:
+            return None
+
+        sanitized = dict(document)
+        for key in _MODEL_DATA_KEYS:
+            sanitized.pop(key, None)
+        raw_ai = document.get("ai")
+        if isinstance(raw_ai, dict):
+            sanitized_ai = dict(raw_ai)
+            for key in _MODEL_DATA_KEYS:
+                sanitized_ai.pop(key, None)
+            sanitized["ai"] = sanitized_ai
+        return sanitized if sanitized != document else None
 
     def load(self) -> LoadOutcome:
         self._save_allowed = True
@@ -259,6 +289,7 @@ class ConfigStore:
         }
         temporary = Path(str(self.path) + ".tmp")
         backup = Path(str(self.path) + ".bak")
+        backup_temporary = Path(str(backup) + ".tmp")
         try:
             with temporary.open("w", encoding="utf-8", newline="\n") as handle:
                 json.dump(document, handle, indent=2, sort_keys=True)
@@ -266,11 +297,26 @@ class ConfigStore:
                 handle.flush()
                 os.fsync(handle.fileno())
             if self.path.exists():
-                shutil.copy2(self.path, backup)
+                sanitized_backup = self._sanitized_schema_five_backup()
+                if sanitized_backup is None:
+                    shutil.copy2(self.path, backup)
+                else:
+                    with backup_temporary.open(
+                        "w", encoding="utf-8", newline="\n"
+                    ) as handle:
+                        json.dump(sanitized_backup, handle, indent=2, sort_keys=True)
+                        handle.write("\n")
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                    os.replace(backup_temporary, backup)
             os.replace(temporary, self.path)
         except OSError:
             try:
                 temporary.unlink()
+            except FileNotFoundError:
+                pass
+            try:
+                backup_temporary.unlink()
             except FileNotFoundError:
                 pass
             raise

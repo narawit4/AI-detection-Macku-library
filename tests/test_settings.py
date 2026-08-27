@@ -371,6 +371,35 @@ class ConfigStoreTests(unittest.TestCase):
         self.assertNotIn("model_path", document["ai"])
         self.assertEqual(document["schema_version"], 5)
 
+    def test_schema_five_first_save_sanitizes_injected_model_data_from_backup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            path.write_text(json.dumps({
+                "schema_version": 5,
+                "model_path": "C:/private/custom.onnx",
+                "model_name": "custom.onnx",
+                "model_hash": "private-hash",
+                "ai": {
+                    "model_path": "nested.onnx",
+                    "model_name": "nested-name",
+                    "model_hash": "nested-hash",
+                },
+            }), encoding="utf-8")
+            store = ConfigStore(path)
+            outcome = store.load()
+            store.save(outcome.config)
+            documents = (
+                json.loads(path.read_text(encoding="utf-8")),
+                json.loads(
+                    path.with_name("config.json.bak").read_text(encoding="utf-8")
+                ),
+            )
+        for document in documents:
+            self.assertEqual(document["schema_version"], 5)
+            for key in ("model_path", "model_name", "model_hash"):
+                self.assertNotIn(key, document)
+                self.assertNotIn(key, document["ai"])
+
     def test_schema_five_generated_config_and_backup_never_contain_model_data(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.json"

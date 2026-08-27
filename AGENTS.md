@@ -96,9 +96,11 @@ with the supported Windows Python installation.
   `Browse...` may select only an external runtime `.onnx` with the exact
   `images` `[1,3,320,320]` and `output0` `[1,300,6]` float contract, class 0
   players, and class 7 heads. Validate off the UI thread, pause AI during a
-  switch, and restore the previous model after validation or startup failure.
-  Never download, copy, package, or persist an external model or its path;
-  every launch starts with the bundled model.
+  switch, and after its exact ready event restart the eligible AI runtime and
+  motion. A candidate startup failure makes exactly one automatic rollback
+  attempt to restart the previous model. Never download, copy, package, or
+  persist an external model or its path; every launch starts with the bundled
+  model.
 - Track the complete detection box using predicted position, a plausibility
   radius of `max(48 pixels, 1.5 × box diagonal)`, an inclusive 0.4-2.5 area
   ratio, IoU, and area-change scoring. Hold identity for at most 150 ms without
