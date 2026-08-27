@@ -6,7 +6,11 @@ import unittest
 from unittest import mock
 
 from ai_service import AiEvent
-from ai_targeting import AimSettings, DEFAULT_RESPONSE_CURVE
+from ai_targeting import (
+    AimSettings,
+    DEFAULT_RESPONSE_CURVE,
+    response_curve_value,
+)
 from combined_motion import MotionSources
 from display_timing import RuntimeCadence
 from ui import JitterApp
@@ -620,6 +624,33 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertEqual(self.app.get_ai_settings().response_curve[2], 0.42)
         self.assertIsNotNone(self.app._save_after_id)
 
+    def test_curve_edit_preserves_last_valid_scalars_when_scalar_text_is_invalid(self):
+        self.app.close_app()
+        initial = AimSettings(0.5, 0.6, 0.7, 30)
+        app = self.make_app(config=AppConfig(ai=initial))
+        app.ai_vars["confidence"].set("invalid")
+        self.assertIs(app.get_ai_settings(), initial)
+
+        app.ai_curve_vars[2].set("42")
+        app._curve_entry_changed(2)
+
+        self.assertEqual(
+            app.get_ai_settings(),
+            AimSettings(0.5, 0.6, 0.7, 30, (0.0, 0.12, 0.42, 0.68, 1.0)),
+        )
+
+    def test_scalar_edit_preserves_fractional_curve_from_last_valid_snapshot(self):
+        self.app.close_app()
+        curve = (0.0, 0.123, 0.357, 0.689, 0.997)
+        app = self.make_app(config=AppConfig(
+            ai=AimSettings(response_curve=curve),
+        ))
+
+        app.ai_vars["aim_strength"].set("0.5")
+
+        self.assertEqual(app.get_ai_settings().aim_strength, 0.5)
+        self.assertEqual(app.get_ai_settings().response_curve, curve)
+
     def test_reset_curve_restores_default(self):
         self.app.ai_curve_vars[1].set("20")
         self.app._curve_entry_changed(1)
@@ -704,6 +735,28 @@ class JitterLayoutTests(unittest.TestCase):
                     )
                 self.assertIn("response curve", self.app.footer_var.get().lower())
 
+    def test_later_curve_interaction_keeps_actual_invalid_entry_styled(self):
+        original = self.app.get_ai_settings()
+        self.app.ai_curve_vars[2].set("invalid")
+        self.app._curve_entry_changed(2)
+        self.assertEqual(
+            self.app.ai_curve_entries[2].cget("style"),
+            "Liquid.Invalid.TEntry",
+        )
+
+        self.app.ai_curve_vars[3].set("70")
+        self.app._curve_entry_changed(3)
+
+        self.assertIs(self.app.get_ai_settings(), original)
+        self.assertEqual(
+            self.app.ai_curve_entries[2].cget("style"),
+            "Liquid.Invalid.TEntry",
+        )
+        self.assertEqual(
+            self.app.ai_curve_entries[3].cget("style"),
+            "Liquid.Entry.TEntry",
+        )
+
     def test_curve_drag_clamps_adjustable_node_between_neighbors(self):
         self.app._curve_drag_started(2)
         self.app._curve_dragged(SimpleNamespace(y=-1000))
@@ -713,6 +766,35 @@ class JitterLayoutTests(unittest.TestCase):
         self.app._curve_drag_ended()
         self.assertEqual(self.app.get_ai_settings().response_curve[2], 0.12)
         self.assertEqual(self.app.get_ai_settings().response_curve[0], 0.0)
+
+    def test_curve_real_canvas_drag_survives_redraw_until_release(self):
+        self.app.deiconify()
+        self.app.select_page(1)
+        self.app.motion_scroll_canvas.yview_moveto(1.0)
+        self.app.update()
+        canvas = self.app.ai_curve_canvas
+        node_bounds = canvas.bbox("ai-curve-node-2")
+        x = (node_bounds[0] + node_bounds[2]) // 2
+        y = (node_bounds[1] + node_bounds[3]) // 2
+
+        canvas.event_generate("<Motion>", x=x, y=y)
+        canvas.event_generate("<ButtonPress-1>", x=x, y=y)
+        self.app.update()
+        self.assertEqual(self.app._curve_drag_index, 2)
+
+        canvas.event_generate("<B1-Motion>", x=x, y=y - 20)
+        self.app.update()
+        first_motion = self.app.get_ai_settings().response_curve[2]
+        self.assertNotEqual(first_motion, DEFAULT_RESPONSE_CURVE[2])
+
+        canvas.event_generate("<B1-Motion>", x=x, y=y + 20)
+        self.app.update()
+        second_motion = self.app.get_ai_settings().response_curve[2]
+        self.assertNotEqual(second_motion, first_motion)
+
+        canvas.event_generate("<ButtonRelease-1>", x=x, y=y + 20)
+        self.app.update()
+        self.assertIsNone(self.app._curve_drag_index)
 
     def test_curve_redraw_tracks_theme_palette(self):
         self.app.update_idletasks()
@@ -725,6 +807,27 @@ class JitterLayoutTests(unittest.TestCase):
 
         self.assertEqual(canvas.cget("background"), "#202F43")
         self.assertEqual(canvas.itemcget("ai-curve-sample", "fill"), "#63E6FF")
+
+    def test_curve_sample_is_unsmoothed_response_curve_polyline(self):
+        self.app.update_idletasks()
+        canvas = self.app.ai_curve_canvas
+        actual = canvas.coords("ai-curve-sample")
+        left, top, right, bottom = self.app._curve_plot_bounds()
+        plot_width = right - left
+        plot_height = bottom - top
+        curve = self.app.get_ai_settings().response_curve
+        expected = []
+        for sample in range(65):
+            normalized_x = sample / 64.0
+            expected.extend((
+                left + normalized_x * plot_width,
+                bottom - response_curve_value(curve, normalized_x) * plot_height,
+            ))
+
+        self.assertEqual(len(actual), len(expected))
+        for actual_coord, expected_coord in zip(actual, expected):
+            self.assertAlmostEqual(actual_coord, expected_coord)
+        self.assertEqual(canvas.itemcget("ai-curve-sample", "smooth"), "0")
 
     def test_curve_redraw_is_safe_after_canvas_destroy(self):
         self.app.ai_curve_canvas.destroy()
