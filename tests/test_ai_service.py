@@ -2,6 +2,7 @@ import threading
 import time
 import unittest
 from unittest import mock
+from pathlib import Path
 
 import numpy as np
 
@@ -1626,6 +1627,59 @@ class AiServiceTests(unittest.TestCase):
         })
         service.stop()
         release_factory.set()
+
+    def test_start_model_path_overrides_constructor_default_for_one_generation(
+        self,
+    ):
+        observed = []
+        ready = threading.Event()
+
+        def detector_factory(path):
+            observed.append(path)
+            return FakeDetector()
+
+        service = AiService(
+            lambda event: ready.set() if event.kind == "ready" else None,
+            model_path="constructor.onnx",
+            detector_factory=detector_factory,
+            capture_factory=FakeCapture,
+        )
+        self.addCleanup(service.close)
+        service.start(AimSettings, model_path=Path("generation.onnx"))
+
+        self.assertTrue(ready.wait(1.0))
+        self.assertEqual(observed, [Path("generation.onnx")])
+
+    def test_running_generation_keeps_first_path_and_restart_uses_second_path(
+        self,
+    ):
+        paths = []
+        first_path_consumed = threading.Event()
+        ready_count = threading.Event()
+
+        def detector_factory(path):
+            paths.append(path)
+            if len(paths) == 1:
+                first_path_consumed.set()
+            if len(paths) == 2:
+                ready_count.set()
+            return FakeDetector()
+
+        service = AiService(
+            lambda _event: None,
+            detector_factory=detector_factory,
+            capture_factory=FakeCapture,
+        )
+        self.addCleanup(service.close)
+        first = service.start(AimSettings, model_path="first.onnx")
+        self.assertTrue(first_path_consumed.wait(1.0))
+        duplicate = service.start(AimSettings, model_path="ignored.onnx")
+        self.assertEqual(duplicate, first)
+        service.stop("switch")
+        service.start(AimSettings, model_path="second.onnx")
+
+        self.assertTrue(ready_count.wait(1.0))
+        self.assertEqual(paths, ["first.onnx", "second.onnx"])
 
     def test_detector_and_capture_are_initialized_in_order_off_main_thread(self):
         calls = []

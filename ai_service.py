@@ -121,6 +121,8 @@ class AiService:
         self,
         settings_provider: Callable[[], AimSettings],
         zoom_gate_provider: Callable[[], bool] | None = None,
+        *,
+        model_path: Path | str | None = None,
     ) -> int | None:
         if zoom_gate_provider is None:
             zoom_gate_provider = lambda: False
@@ -152,6 +154,7 @@ class AiService:
                         stop_event,
                         settings_provider,
                         zoom_gate_provider,
+                        model_path,
                     ),
                     name=f"AiInference-{generation}",
                     daemon=True,
@@ -292,12 +295,17 @@ class AiService:
         stop_event: threading.Event,
         settings_provider: Callable[[], AimSettings],
         zoom_gate_provider: Callable[[], bool],
+        generation_model_path: Path | str | None,
     ) -> None:
         capture = None
         try:
             if not self._is_current(generation, stop_event):
                 return
-            model_path = self._model_path or model_resource_path()
+            model_path = (
+                generation_model_path
+                if generation_model_path is not None
+                else self._model_path or model_resource_path()
+            )
             detector = self._detector_factory(model_path)
             if not self._is_current(generation, stop_event):
                 return
