@@ -15,6 +15,7 @@ from ai_targeting import (
     DetectionAnalysis,
     DetectionFrameSnapshot,
     TargetSnapshot,
+    validated_target_area,
 )
 from ai_tracking import TrackerState, observe_detections
 from ai_zoom import (
@@ -69,6 +70,7 @@ class AiService:
         self._closed = False
         self._latest: TargetSnapshot | None = None
         self._latest_detection: DetectionFrameSnapshot | None = None
+        self._targeting_revision = 0
         self._status = "stopped"
         self._provider: str | None = None
 
@@ -94,6 +96,20 @@ class AiService:
     def latest_detection_snapshot(self) -> DetectionFrameSnapshot | None:
         with self._lock:
             return self._latest_detection
+
+    def reset_targeting(self) -> None:
+        """Immediately invalidate movement output without stopping inference."""
+        with self._lock:
+            self._targeting_revision += 1
+            self._latest = None
+            if self._latest_detection is not None:
+                frame = self._latest_detection
+                self._latest_detection = DetectionFrameSnapshot(
+                    frame.sequence,
+                    frame.captured_at,
+                    frame.detections,
+                    None,
+                )
 
     def _clear_snapshots_locked(self) -> None:
         self._latest = None
@@ -296,6 +312,7 @@ class AiService:
             sequence = 0
             tracker_state = TrackerState()
             stability = ZoomStabilityState()
+            active_target_area: str | None = None
             refinement_enabled = True
             published_factor = 1.0
             fps_started_at = self._clock()
@@ -307,7 +324,14 @@ class AiService:
                     continue
                 captured_at = self._clock()
                 sequence += 1
+                with self._lock:
+                    targeting_revision = self._targeting_revision
                 settings = settings_provider()
+                target_area = validated_target_area(settings.target_area)
+                if target_area != active_target_area:
+                    tracker_state = TrackerState(target_area=target_area)
+                    stability = ZoomStabilityState()
+                    active_target_area = target_area
                 if not self._is_current(generation, stop_event):
                     return
                 base_detections = detector.detect(frame)
@@ -401,8 +425,18 @@ class AiService:
                 with self._lock:
                     if not self._is_current_locked(generation, stop_event):
                         return
-                    self._latest = published.target
-                    self._latest_detection = published.frame
+                    if targeting_revision != self._targeting_revision:
+                        factor = 1.0
+                        self._latest = None
+                        self._latest_detection = DetectionFrameSnapshot(
+                            published.frame.sequence,
+                            published.frame.captured_at,
+                            published.frame.detections,
+                            None,
+                        )
+                    else:
+                        self._latest = published.target
+                        self._latest_detection = published.frame
                 if factor != published_factor:
                     self._emit_current(
                         AiEvent("zoom", factor), generation, stop_event

@@ -330,6 +330,16 @@ class ZoomCompositionTests(unittest.TestCase):
         )
         self.assertEqual(result.frame.detections[2], self.base_player().frame.detections[2])
 
+    def test_body_target_area_rejects_head_only_refinement(self):
+        result = compose_zoom_refinement(
+            self.base_player(),
+            (Detection(140, 70, 180, 110, 0.92, 7),),
+            ZoomTransform(80, 40, 160, 2.0),
+            AimSettings(confidence=0.35, target_area="upper_body"),
+        )
+
+        self.assertIsNone(result)
+
     def test_head_seed_rejects_player_downgrade(self):
         base = DetectionAnalysis(
             TargetSnapshot(8, 31.0, "head", 160.0, 100.0),

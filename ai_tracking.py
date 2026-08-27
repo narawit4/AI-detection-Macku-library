@@ -1,6 +1,6 @@
 """Pure conservative temporal tracking for AI detection boxes."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
 from typing import Iterable
 
@@ -11,6 +11,7 @@ from ai_targeting import (
     DetectionFrameSnapshot,
     TargetSnapshot,
     detection_aim_point,
+    validated_target_area,
 )
 
 
@@ -47,6 +48,7 @@ class TrackerState:
     recovery_count: int = 0
     pending_candidate: TargetSnapshot | None = None
     pending_count: int = 0
+    target_area: str = "head"
 
 
 @dataclass(frozen=True)
@@ -93,13 +95,14 @@ def _accepted_detections(
 
 def _candidates(
     accepted: tuple[Detection, ...],
+    settings: AimSettings,
     *,
     sequence: int,
     captured_at: float,
 ) -> tuple[_Candidate, ...]:
     result = []
     for index, detection in enumerate(accepted):
-        point = detection_aim_point(detection)
+        point = detection_aim_point(detection, settings.target_area)
         if point is None:
             continue
         target_class, aim_x, aim_y = point
@@ -449,7 +452,7 @@ def _observe_replacement(
     )
 
 
-def observe_detections(
+def _observe_detections_current_area(
     state: TrackerState,
     detections: Iterable[Detection],
     settings: AimSettings,
@@ -461,6 +464,7 @@ def observe_detections(
     accepted = _accepted_detections(detections, settings)
     candidates = _candidates(
         accepted,
+        settings,
         sequence=sequence,
         captured_at=captured_at,
     )
@@ -554,4 +558,29 @@ def observe_detections(
             captured_at=captured_at,
         ),
         best.target,
+    )
+
+
+def observe_detections(
+    state: TrackerState,
+    detections: Iterable[Detection],
+    settings: AimSettings,
+    *,
+    sequence: int,
+    captured_at: float,
+) -> TrackingObservation:
+    """Observe one base-detection frame and isolate tracks by target area."""
+    target_area = validated_target_area(settings.target_area)
+    if state.target_area != target_area:
+        state = TrackerState(target_area=target_area)
+    observation = _observe_detections_current_area(
+        state,
+        detections,
+        settings,
+        sequence=sequence,
+        captured_at=captured_at,
+    )
+    return replace(
+        observation,
+        state=replace(observation.state, target_area=target_area),
     )

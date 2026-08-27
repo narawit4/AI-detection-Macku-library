@@ -6,6 +6,7 @@ from ai_targeting import (
     AIM_LIMITS,
     AimSettings,
     DEFAULT_RESPONSE_CURVE,
+    TARGET_AREAS,
     Detection,
     DetectionFrameSnapshot,
     RESPONSE_CURVE_X,
@@ -18,6 +19,7 @@ from ai_targeting import (
     response_curve_value,
     select_target,
     validated_response_curve,
+    validated_target_area,
 )
 
 
@@ -69,6 +71,17 @@ class AimSettingsTests(unittest.TestCase):
             "max_step": "20",
             "response_curve": ["0", "0.12", "0.35", "0.68", "1"],
         })
+
+    def test_target_area_defaults_validates_and_round_trips(self):
+        self.assertEqual(TARGET_AREAS, ("head", "upper_body", "chest"))
+        self.assertEqual(AimSettings().target_area, "head")
+        self.assertEqual(validated_target_area("upper_body"), "upper_body")
+        for raw in (None, "Head", "body", 1, True):
+            with self.subTest(raw=raw):
+                self.assertEqual(validated_target_area(raw), "head")
+        settings = aim_settings_from_mapping({"target_area": "chest"})
+        self.assertEqual(settings.target_area, "chest")
+        self.assertNotIn("target_area", aim_settings_to_mapping(settings))
 
     def test_response_curve_defaults_and_round_trips(self):
         settings = aim_settings_from_mapping({
@@ -184,6 +197,38 @@ class TargetSelectionTests(unittest.TestCase):
         )
         self.assertEqual((target.aim_x, target.aim_y), (120.0, 70.0))
 
+    def test_upper_body_uses_player_box_and_keeps_head_in_overlay(self):
+        head = Detection(150, 150, 170, 170, 0.95, 7)
+        player = Detection(100, 50, 140, 150, 0.90, 0)
+
+        result = analyze_detections(
+            (head, player),
+            AimSettings(target_area="upper_body"),
+            sequence=3,
+            captured_at=12.0,
+        )
+
+        self.assertEqual(result.frame.detections, (head, player))
+        self.assertEqual(result.frame.selected_index, 1)
+        self.assertEqual(result.target.target_class, "player")
+        self.assertEqual((result.target.aim_x, result.target.aim_y), (120.0, 80.0))
+
+    def test_chest_uses_player_box_and_never_falls_back_to_head(self):
+        head = Detection(150, 150, 170, 170, 0.95, 7)
+        self.assertIsNone(select_target(
+            (head,),
+            AimSettings(target_area="chest"),
+            sequence=3,
+            captured_at=12.0,
+        ))
+        target = select_target(
+            (Detection(100, 50, 140, 150, 0.90, 0),),
+            AimSettings(target_area="chest"),
+            sequence=4,
+            captured_at=13.0,
+        )
+        self.assertEqual((target.aim_x, target.aim_y), (120.0, 92.0))
+
     def test_same_class_target_is_retained_within_association_radius(self):
         previous = TargetSnapshot(1, 10.0, "head", 40.0, 40.0)
         target = select_target(
@@ -241,6 +286,19 @@ class DetectionAimPointTests(unittest.TestCase):
         )
         self.assertIsNone(
             detection_aim_point(Detection(10, 20, 30, 40, 0.9, 4))
+        )
+
+    def test_body_aim_points_require_player_boxes(self):
+        head = Detection(10, 20, 30, 40, 0.9, 7)
+        player = Detection(10, 20, 30, 120, 0.9, 0)
+        self.assertIsNone(detection_aim_point(head, "upper_body"))
+        self.assertEqual(
+            detection_aim_point(player, "upper_body"),
+            ("player", 20.0, 50.0),
+        )
+        self.assertEqual(
+            detection_aim_point(player, "chest"),
+            ("player", 20.0, 62.0),
         )
 
 

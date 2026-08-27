@@ -213,6 +213,7 @@ class StubAiService:
         self.start_result = True
         self.start_exception = None
         self.stop_hook = None
+        self.reset_targeting_calls = 0
 
     def with_sink(self, event_sink):
         self.event_sink = event_sink
@@ -254,6 +255,9 @@ class StubAiService:
 
     def latest_detection_snapshot(self):
         return self.detection_snapshot
+
+    def reset_targeting(self):
+        self.reset_targeting_calls += 1
 
 
 class StubHotkey:
@@ -515,6 +519,7 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertEqual(app.ai_vars["aim_strength"].get(), "0.6")
         self.assertEqual(app.ai_vars["smoothing"].get(), "0.7")
         self.assertEqual(app.ai_vars["max_step"].get(), "30")
+        self.assertEqual(app.target_area_var.get(), "Head")
         self.assertEqual(app.ai_status_var.get(), "Stopped")
         self.assertEqual(app.ai_fps_var.get(), "0 FPS")
         self.assertFalse(app.jitter_selected)
@@ -524,6 +529,37 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertEqual(app.master_button.cget("text"), "Enable Selected")
         self.assertEqual(app.motion_hero_card.winfo_manager(), "grid")
         self.assertEqual(app.ai_settings_card.winfo_manager(), "grid")
+
+    def test_target_area_starts_head_changes_live_and_schedules_save(self):
+        self.app.close_app()
+        app = self.make_app(config=AppConfig(
+            ai=AimSettings(target_area="upper_body"),
+        ))
+        self.assertEqual(app.target_area_var.get(), "Head")
+        self.assertEqual(tuple(app.target_area_combo.cget("values")), (
+            "Head", "Upper Body", "Chest",
+        ))
+
+        app._cancel_after("_save_after_id")
+        app.target_area_var.set("Chest")
+        app.ai_zoom_var.set("2.0×")
+        app._target_area_changed()
+
+        self.assertEqual(app.get_ai_settings().target_area, "chest")
+        self.assertEqual(self.ai.reset_targeting_calls, 1)
+        self.assertEqual(app.ai_zoom_var.get(), "1.0×")
+        self.assertIsNotNone(app._save_after_id)
+
+    def test_save_config_keeps_target_area_runtime_only(self):
+        self.app.target_area_var.set("Chest")
+        self.app._target_area_changed()
+        self.app._cancel_after("_save_after_id")
+
+        self.app.save_config()
+
+        saved = self.store.saved[-1]
+        self.assertEqual(saved.ai.target_area, "head")
+        self.assertEqual(self.app.get_ai_settings().target_area, "chest")
 
     def test_overlay_preferences_reflect_config_while_runtime_starts_off(self):
         self.app.close_app()

@@ -15,6 +15,7 @@ AIM_LIMITS: dict[str, tuple[float, float]] = {
 
 RESPONSE_CURVE_X = (0.0, 0.25, 0.5, 0.75, 1.0)
 DEFAULT_RESPONSE_CURVE = (0.0, 0.12, 0.35, 0.68, 1.0)
+TARGET_AREAS = ("head", "upper_body", "chest")
 
 
 @dataclass(frozen=True)
@@ -60,6 +61,7 @@ class AimSettings:
     smoothing: float = 0.65
     max_step: int = 20
     response_curve: tuple[float, float, float, float, float] = DEFAULT_RESPONSE_CURVE
+    target_area: str = "head"
 
 
 _DEFAULTS = AimSettings()
@@ -114,6 +116,10 @@ def validated_response_curve(raw: Any) -> tuple[float, float, float, float, floa
     return curve[0], curve[1], curve[2], curve[3], curve[4]
 
 
+def validated_target_area(raw: Any) -> str:
+    return raw if isinstance(raw, str) and raw in TARGET_AREAS else "head"
+
+
 def aim_settings_from_mapping(raw: Mapping[str, Any] | None) -> AimSettings:
     values = dict(raw or {})
     return AimSettings(
@@ -122,6 +128,7 @@ def aim_settings_from_mapping(raw: Mapping[str, Any] | None) -> AimSettings:
         smoothing=_bounded_number(values.get("smoothing"), _DEFAULTS.smoothing, "smoothing"),
         max_step=_bounded_integer(values.get("max_step"), _DEFAULTS.max_step, "max_step"),
         response_curve=validated_response_curve(values.get("response_curve")),
+        target_area=validated_target_area(values.get("target_area")),
     )
 
 
@@ -225,14 +232,23 @@ def _endpoint_tangent(
     return tangent
 
 
-def detection_aim_point(detection: Detection) -> tuple[str, float, float] | None:
-    if detection.class_id == 7:
+def detection_aim_point(
+    detection: Detection,
+    target_area: str = "head",
+) -> tuple[str, float, float] | None:
+    area = validated_target_area(target_area)
+    if detection.class_id == 7 and area == "head":
         return "head", (detection.x1 + detection.x2) / 2.0, (
             detection.y1 + detection.y2
         ) / 2.0
     if detection.class_id == 0:
+        vertical_fraction = {
+            "head": 0.20,
+            "upper_body": 0.30,
+            "chest": 0.42,
+        }[area]
         return "player", (detection.x1 + detection.x2) / 2.0, (
-            detection.y1 + (detection.y2 - detection.y1) * 0.20
+            detection.y1 + (detection.y2 - detection.y1) * vertical_fraction
         )
     return None
 
@@ -254,7 +270,9 @@ def analyze_detections(
     candidates = [
         (index, point)
         for index, detection in enumerate(accepted)
-        if (point := detection_aim_point(detection)) is not None
+        if (
+            point := detection_aim_point(detection, settings.target_area)
+        ) is not None
     ]
     heads = [item for item in candidates if item[1][0] == "head"]
     candidates = heads or [item for item in candidates if item[1][0] == "player"]

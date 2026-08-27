@@ -195,11 +195,12 @@ class ConfigStore:
             ai = AimSettings()
         else:
             ai_raw = document.get("ai")
-            if schema < 5 and isinstance(ai_raw, Mapping):
+            if isinstance(ai_raw, Mapping):
                 ai_raw = {
                     key: value
                     for key, value in ai_raw.items()
-                    if key != "response_curve"
+                    if key != "target_area"
+                    and not (schema < 5 and key == "response_curve")
                 }
             ai = aim_settings_from_mapping(
                 ai_raw if isinstance(ai_raw, Mapping) else None

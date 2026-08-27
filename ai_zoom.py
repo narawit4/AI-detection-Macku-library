@@ -15,6 +15,7 @@ from ai_targeting import (
     TargetSnapshot,
     analyze_detections,
     detection_aim_point,
+    validated_target_area,
 )
 
 
@@ -293,7 +294,11 @@ def compose_zoom_refinement(
     if seed.class_id == 7:
         allowed_classes = {7}
     elif seed.class_id == 0:
-        allowed_classes = {0, 7}
+        allowed_classes = (
+            {0, 7}
+            if validated_target_area(settings.target_area) == "head"
+            else {0}
+        )
     else:
         return None
 
@@ -304,7 +309,7 @@ def compose_zoom_refinement(
         mapped = map_detection(detection, transform)
         if mapped is None or mapped.class_id not in allowed_classes:
             continue
-        point = detection_aim_point(mapped)
+        point = detection_aim_point(mapped, settings.target_area)
         if point is None:
             continue
         _target_class, aim_x, aim_y = point

@@ -53,6 +53,40 @@ def observe(state, detections, sequence, captured_at, settings=None):
 
 
 class ConservativeTrackingTests(unittest.TestCase):
+    def test_upper_body_tracks_player_box_but_publishes_all_overlay_boxes(self):
+        head = head_box(160, 100)
+        player = player_box(150, aim_y=100)
+
+        result = observe(
+            TrackerState(),
+            (head, player),
+            1,
+            0.0,
+            AimSettings(target_area="upper_body"),
+        )
+
+        self.assertEqual(result.analysis.frame.detections, (head, player))
+        self.assertEqual(result.analysis.frame.selected_index, 1)
+        self.assertEqual(result.analysis.target.target_class, "player")
+        self.assertAlmostEqual(result.analysis.target.aim_y, 110.0)
+
+    def test_target_area_change_discards_confirmed_track_and_head_fallback(self):
+        acquired = observe(
+            TrackerState(), (head_box(160),), 1, 0.0,
+            AimSettings(target_area="head"),
+        )
+
+        changed = observe(
+            acquired.state, (head_box(161),), 2, 0.01,
+            AimSettings(target_area="chest"),
+        )
+
+        self.assertIsNone(changed.analysis.target)
+        self.assertIsNone(changed.analysis.frame.selected_index)
+        self.assertEqual(changed.analysis.frame.detections, (head_box(161),))
+        self.assertIsNone(changed.state.confirmed_target)
+        self.assertEqual(changed.state.target_area, "chest")
+
     def test_crossing_does_not_follow_the_nearest_competitor(self):
         acquired = observe(
             TrackerState(), (head_box(130),), 1, 1 / 60

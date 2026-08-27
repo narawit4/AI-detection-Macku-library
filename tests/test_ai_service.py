@@ -500,6 +500,90 @@ class AiServiceTests(unittest.TestCase):
         self.release_and_wait(capture, service, 5)
         self.assertAlmostEqual(service.latest_snapshot().aim_x, 102.0)
 
+    def test_target_area_change_resets_normal_gate_confirmation(self):
+        player = Detection(140.0, 40.0, 180.0, 180.0, 0.9, 0)
+        detector = SequentialDetector(((player,),) * 4)
+        capture = ControlledCapture([
+            np.zeros((320, 320, 3), dtype=np.uint8)
+            for _ in range(4)
+        ])
+        clock = MutableClock(10.0)
+        service, _events = self.make_zoom_service(
+            detector,
+            capture=capture,
+            clock=clock,
+        )
+        current = {"settings": AimSettings(target_area="head")}
+        service.start(lambda: current["settings"], lambda: True)
+
+        self.release_and_wait(capture, service, 1)
+        self.assertIsNone(service.latest_snapshot())
+        clock.set(10.01)
+        self.release_and_wait(capture, service, 2)
+        self.assertAlmostEqual(service.latest_snapshot().aim_y, 68.0)
+
+        current["settings"] = AimSettings(target_area="upper_body")
+        clock.set(10.02)
+        self.release_and_wait(capture, service, 3)
+        self.assertIsNone(service.latest_snapshot())
+        clock.set(10.03)
+        self.release_and_wait(capture, service, 4)
+        self.assertAlmostEqual(service.latest_snapshot().aim_y, 82.0)
+
+    def test_reset_targeting_immediately_clears_movement_but_keeps_overlay(self):
+        player = Detection(140.0, 40.0, 180.0, 180.0, 0.9, 0)
+        detector = SequentialDetector(((player,),))
+        capture = ControlledCapture([
+            np.zeros((320, 320, 3), dtype=np.uint8)
+        ])
+        service, _events = self.make_zoom_service(detector, capture=capture)
+        service.start(AimSettings, lambda: False)
+        self.release_and_wait(capture, service, 1)
+        overlay_before = service.latest_detection_snapshot()
+        self.assertIsNotNone(service.latest_snapshot())
+
+        service.reset_targeting()
+
+        self.assertIsNone(service.latest_snapshot())
+        overlay_after = service.latest_detection_snapshot()
+        self.assertEqual(overlay_after.detections, overlay_before.detections)
+        self.assertIsNone(overlay_after.selected_index)
+
+    def test_reset_targeting_rejects_an_in_flight_old_setting_publication(self):
+        player = Detection(140.0, 40.0, 180.0, 180.0, 0.9, 0)
+        detector = SequentialDetector(((player,), (player,)))
+        capture = ControlledCapture([
+            np.zeros((320, 320, 3), dtype=np.uint8)
+            for _ in range(2)
+        ])
+        provider_entered = threading.Event()
+        release_provider = threading.Event()
+        calls = 0
+
+        def settings_provider():
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                provider_entered.set()
+                release_provider.wait(1.0)
+            return AimSettings(target_area="head")
+
+        service, _events = self.make_zoom_service(detector, capture=capture)
+        service.start(settings_provider, lambda: False)
+        self.release_and_wait(capture, service, 1)
+        capture.release_frame()
+        self.assertTrue(provider_entered.wait(1.0))
+
+        service.reset_targeting()
+        release_provider.set()
+
+        self.assertTrue(wait_until(
+            lambda: service.latest_detection_snapshot() is not None
+            and service.latest_detection_snapshot().sequence == 2
+        ))
+        self.assertIsNone(service.latest_snapshot())
+        self.assertIsNone(service.latest_detection_snapshot().selected_index)
+
     def test_crossing_ambiguity_withholds_target_and_refinement(self):
         person_a = (130.0, 140.0, 150.0, 160.0, 175.0, 190.0)
         person_b = (None, 220.0, 190.0, 160.0, 145.0, 130.0)

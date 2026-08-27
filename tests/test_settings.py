@@ -233,6 +233,36 @@ class ConfigStoreTests(unittest.TestCase):
         )
         self.assertEqual(restored, config)
 
+    def test_schema_five_never_persists_or_restores_runtime_target_area(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            store = ConfigStore(path)
+            config = AppConfig(ai=AimSettings(target_area="chest"))
+            store.save(config)
+            document = json.loads(path.read_text(encoding="utf-8"))
+            restored = store.load().config
+
+            self.assertEqual(document["schema_version"], 5)
+            self.assertNotIn("target_area", document["ai"])
+            self.assertEqual(restored.ai.target_area, "head")
+
+            path.write_text(json.dumps({
+                "schema_version": 5,
+                "ai": {"aim_strength": "0.8", "target_area": "chest"},
+            }), encoding="utf-8")
+            self.assertEqual(store.load().config.ai.target_area, "head")
+
+    def test_older_schemas_ignore_target_area(self):
+        for schema in range(1, 5):
+            with self.subTest(schema=schema), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "config.json"
+                path.write_text(json.dumps({
+                    "schema_version": schema,
+                    "ai": {"target_area": "chest"},
+                }), encoding="utf-8")
+                config = ConfigStore(path).load().config
+            self.assertEqual(config.ai.target_area, "head")
+
     def test_schema_five_receives_default_curve_without_rewrite(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.json"

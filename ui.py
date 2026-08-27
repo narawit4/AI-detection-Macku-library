@@ -76,6 +76,14 @@ _AI_CONTROL_SPECS = {
     "smoothing": ("Smoothing", 0.0, 0.95, 0.01),
     "max_step": ("Max Step", 1.0, 127.0, 1.0),
 }
+_TARGET_AREA_LABELS = {
+    "head": "Head",
+    "upper_body": "Upper Body",
+    "chest": "Chest",
+}
+_TARGET_AREA_VALUES = {
+    label: value for value, label in _TARGET_AREA_LABELS.items()
+}
 
 
 @dataclass(frozen=True)
@@ -280,7 +288,11 @@ class JitterApp(tk.Tk):
         self._motion_lock = threading.RLock()
         self._motion_snapshot: MotionSettings = self.config.motion
         self._ai_lock = threading.RLock()
-        self._ai_snapshot: AimSettings = self.config.ai
+        self._ai_snapshot: AimSettings = (
+            self.config.ai
+            if self.config.ai.target_area == "head"
+            else replace(self.config.ai, target_area="head")
+        )
         self._adaptive_zoom_gate = False
         self._hotkey_vk = int(self.config.hotkey_vk)
 
@@ -815,11 +827,15 @@ class JitterApp(tk.Tk):
             ),
         )
         self.ai_zoom_var = tk.StringVar(self, "1.0×")
-        ai_mapping = aim_settings_to_mapping(self.config.ai)
+        ai_mapping = aim_settings_to_mapping(self._ai_snapshot)
         self.ai_vars = {
             key: tk.StringVar(self, ai_mapping[key])
             for key in _AI_CONTROL_SPECS
         }
+        self.target_area_var = tk.StringVar(
+            self,
+            _TARGET_AREA_LABELS["head"],
+        )
         response_curve = validated_response_curve(self.config.ai.response_curve)
         self.ai_curve_vars = {
             index: tk.StringVar(
@@ -1824,6 +1840,18 @@ class JitterApp(tk.Tk):
                 spec[2],
                 spec[3],
             )
+        target_area_field, self.target_area_combo = self._dropdown_field(
+            self.ai_settings_card,
+            label="Target Area",
+            variable=self.target_area_var,
+            values=tuple(_TARGET_AREA_VALUES),
+        )
+        target_area_field.grid(
+            row=3, column=0, sticky="ew", padx=5, pady=(12, 0)
+        )
+        self.target_area_combo.bind(
+            "<<ComboboxSelected>>", self._target_area_changed
+        )
 
         self.ai_status_card = ttk.Frame(
             self.motion_scroll_content,
@@ -2189,7 +2217,23 @@ class JitterApp(tk.Tk):
         mapping["response_curve"] = list(
             self.get_ai_settings().response_curve
         )
+        mapping["target_area"] = _TARGET_AREA_VALUES.get(
+            self.target_area_var.get(), "head"
+        )
         return mapping
+
+    def _target_area_changed(self, _event: tk.Event | None = None) -> None:
+        if self._closing:
+            return
+        target_area = _TARGET_AREA_VALUES.get(
+            self.target_area_var.get(), "head"
+        )
+        self._replace_ai_snapshot(
+            replace(self.get_ai_settings(), target_area=target_area)
+        )
+        self.ai_service.reset_targeting()
+        self.ai_zoom_var.set("1.0×")
+        self._schedule_save()
 
     def _curve_entry_changed(self, index: int) -> None:
         if self._updating_ai_curve_controls or self._closing:
@@ -4088,7 +4132,7 @@ class JitterApp(tk.Tk):
         self.sound_volume_var.set(str(sound_volume))
         config = AppConfig(
             motion=self.get_motion_settings(),
-            ai=self.get_ai_settings(),
+            ai=replace(self.get_ai_settings(), target_area="head"),
             trigger=self.trigger_var.get(),
             modifier=self.modifier_var.get(),
             hotkey_vk=self._current_hotkey_vk(),
