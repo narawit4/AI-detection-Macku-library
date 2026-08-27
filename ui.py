@@ -3015,7 +3015,7 @@ class JitterApp(tk.Tk):
         self._model_switch = switch
         self.ai_model_var.set(f"Loading · {candidate.display_name}")
         self._render_model_controls()
-        if (
+        if self.ai_selected and (
             self._normal_motion_started
             or self._expected_motion_generation is not None
         ):
@@ -3025,7 +3025,7 @@ class JitterApp(tk.Tk):
                 "armed" if self.master_armed else "disabled"
             )
         self._ai_targeting_revision = self.ai_service.reset_targeting()
-        self.ai_zoom_var.set("1.0×")
+        self.ai_zoom_var.set("1.0\N{MULTIPLICATION SIGN}")
         if self._ai_runtime_active:
             self._stop_ai_runtime("Model switch")
         self._ai_ready = False
@@ -3043,9 +3043,18 @@ class JitterApp(tk.Tk):
     def _finish_model_switch(self, choice: ModelChoice, footer: str) -> None:
         self._model_choice = choice
         self._model_switch = None
+        self._normalize_idle_ai_runtime_status()
         self.ai_model_var.set(self._model_label(choice))
         self._render_model_controls()
         self.footer_var.set(footer)
+
+    def _normalize_idle_ai_runtime_status(self) -> None:
+        if self._ai_runtime_required():
+            return
+        self.ai_status_var.set("Stopped")
+        self.ai_fps_var.set("0 FPS")
+        self.ai_provider_var.set("No provider")
+        self.ai_zoom_var.set("1.0\N{MULTIPLICATION SIGN}")
 
     def _cancel_model_switch(self, reason: str) -> None:
         switch = self._model_switch
@@ -3070,6 +3079,7 @@ class JitterApp(tk.Tk):
         finally:
             self._model_switch = None
             self._model_choice = switch.previous
+            self._normalize_idle_ai_runtime_status()
             self.ai_model_var.set(self._model_label(self._model_choice))
             self._render_model_controls()
         logging.info("AI model switch cancelled: %s", reason)
@@ -3348,6 +3358,9 @@ class JitterApp(tk.Tk):
 
     def _reconcile_ai_runtime(self, context: str) -> bool:
         required = self._ai_runtime_required()
+        switch = self._model_switch
+        if required and switch is not None and switch.phase == "validating":
+            self._cancel_model_switch(f"{context}: AI demand started")
         if required and not self._ai_runtime_active:
             started = self._start_ai_runtime(context)
             if not started:

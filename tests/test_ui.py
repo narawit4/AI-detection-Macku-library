@@ -271,6 +271,24 @@ class StubAiService:
         return self.targeting_revision
 
 
+class StrictDuplicateStartAiService(StubAiService):
+    """Mirror production ownership: a duplicate start keeps its generation."""
+
+    def start(self, settings_provider, zoom_gate_provider=None, *, model_path=None):
+        self.start_calls.append(
+            (settings_provider, zoom_gate_provider, model_path)
+        )
+        if self.start_exception is not None:
+            raise self.start_exception
+        if not self.start_result:
+            return self.start_result
+        if self.active_generation is not None:
+            return self.active_generation
+        self.generation += 1
+        self.active_generation = self.generation
+        return self.active_generation
+
+
 class StubModelValidator:
     def __init__(self):
         self.event_sink = None
@@ -419,10 +437,14 @@ class JitterLayoutTests(unittest.TestCase):
         runtime_cadence=None,
         use_default_factories=False,
         falsey_factories=False,
+        strict_duplicate_ai=False,
     ):
         self.service = None
         self.store = StubStore(config or AppConfig())
-        self.ai = StubAiService()
+        self.ai = (
+            StrictDuplicateStartAiService()
+            if strict_duplicate_ai else StubAiService()
+        )
         self.model_validator = StubModelValidator()
         self.model_dialog_result = ""
         self.overlay = StubOverlay()
@@ -2978,6 +3000,97 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.assertEqual(len(self.ai.start_calls), starts_before_error + 1)
         self.assertEqual(self.ai.start_calls[-1][2], previous.path)
         self.assertEqual(self.app._model_switch.token, token)
+
+    def test_jitter_only_motion_survives_idle_model_changes_with_and_without_overlay(self):
+        for overlay in (False, True):
+            with self.subTest(overlay=overlay):
+                self.make_app()
+                self.prepare_armed_sources(MotionSources(True, False), gate_active=True)
+                if overlay:
+                    self.app.toggle_overlay()
+                motion_generation = self.service.active_motion_generation
+                motion_calls = len(self.service.composite_motion_calls)
+                cancellation_reasons = list(self.service.cancel_reasons)
+
+                custom, custom_token = self.begin_custom_model_switch("jitter.onnx")
+                self.model_validator.emit(
+                    ModelValidationEvent("ready", custom_token, custom)
+                )
+                self.drain_ui_queue()
+                if overlay:
+                    self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+
+                self.app.use_default_ai_model()
+                default, default_token = self.model_validator.start_calls[-1]
+                self.model_validator.emit(
+                    ModelValidationEvent("ready", default_token, default)
+                )
+                self.drain_ui_queue()
+                if overlay:
+                    self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+
+                self.assertTrue(self.app._normal_motion_started)
+                self.assertEqual(self.service.active_motion_generation, motion_generation)
+                self.assertEqual(len(self.service.composite_motion_calls), motion_calls)
+                self.assertEqual(self.service.cancel_reasons, cancellation_reasons)
+
+    def test_overlay_demand_cancels_idle_validation_before_strict_duplicate_start(self):
+        self.make_app(strict_duplicate_ai=True)
+        previous = self.app._model_choice
+        choice, token = self.begin_custom_model_switch("overlay-race.onnx")
+
+        self.app.toggle_overlay()
+        starts_after_overlay = len(self.ai.start_calls)
+        self.model_validator.emit(ModelValidationEvent("ready", token, choice))
+        self.drain_ui_queue()
+
+        self.assertIsNone(self.app._model_switch)
+        self.assertEqual(self.app._model_choice, previous)
+        self.assertEqual(len(self.ai.start_calls), starts_after_overlay)
+        self.assertEqual(self.ai.start_calls[-1][2], previous.path)
+
+    def test_master_demand_cancels_idle_validation_before_strict_duplicate_start(self):
+        self.make_app(strict_duplicate_ai=True)
+        self.service.connected = True
+        self.app.ai_selected = True
+        previous = self.app._model_choice
+        choice, token = self.begin_custom_model_switch("master-race.onnx")
+
+        self.app.set_master(True)
+        starts_after_master = len(self.ai.start_calls)
+        self.model_validator.emit(ModelValidationEvent("ready", token, choice))
+        self.drain_ui_queue()
+
+        self.assertIsNone(self.app._model_switch)
+        self.assertEqual(self.app._model_choice, previous)
+        self.assertEqual(len(self.ai.start_calls), starts_after_master)
+        self.assertEqual(self.ai.start_calls[-1][2], previous.path)
+
+    def test_idle_switch_terminal_paths_reset_ai_runtime_status(self):
+        for outcome in ("success", "rejected", "cancelled"):
+            with self.subTest(outcome=outcome):
+                self.make_app()
+                choice, token = self.begin_custom_model_switch(f"{outcome}.onnx")
+                if outcome == "success":
+                    self.model_validator.emit(
+                        ModelValidationEvent("ready", token, choice)
+                    )
+                    self.drain_ui_queue()
+                elif outcome == "rejected":
+                    self.model_validator.emit(
+                        ModelValidationEvent("error", token, choice, "invalid")
+                    )
+                    self.drain_ui_queue()
+                else:
+                    self.app.emergency_stop("Stopped by user")
+
+                self.assertEqual(self.app.ai_status_var.get(), "Stopped")
+                self.assertEqual(self.app.ai_fps_var.get(), "0 FPS")
+                self.assertEqual(self.app.ai_provider_var.get(), "No provider")
+                self.assertEqual(
+                    self.app.ai_zoom_var.get(),
+                    "1.0\N{MULTIPLICATION SIGN}",
+                )
 
     def prepare_armed_sources(self, sources, *, gate_active=False):
         self.service.connected = True
