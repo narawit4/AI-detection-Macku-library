@@ -37,6 +37,7 @@ LOGGER = logging.getLogger(__name__)
 class AiEvent:
     kind: str
     payload: Any = None
+    targeting_revision: int | None = None
 
 
 class AiService:
@@ -97,7 +98,7 @@ class AiService:
         with self._lock:
             return self._latest_detection
 
-    def reset_targeting(self) -> None:
+    def reset_targeting(self) -> int:
         """Immediately invalidate movement output without stopping inference."""
         with self._lock:
             self._targeting_revision += 1
@@ -110,6 +111,7 @@ class AiService:
                     frame.detections,
                     None,
                 )
+            return self._targeting_revision
 
     def _clear_snapshots_locked(self) -> None:
         self._latest = None
@@ -313,6 +315,7 @@ class AiService:
             tracker_state = TrackerState()
             stability = ZoomStabilityState()
             active_target_area: str | None = None
+            active_targeting_revision: int | None = None
             refinement_enabled = True
             published_factor = 1.0
             fps_started_at = self._clock()
@@ -328,10 +331,14 @@ class AiService:
                     targeting_revision = self._targeting_revision
                 settings = settings_provider()
                 target_area = validated_target_area(settings.target_area)
-                if target_area != active_target_area:
+                if (
+                    target_area != active_target_area
+                    or targeting_revision != active_targeting_revision
+                ):
                     tracker_state = TrackerState(target_area=target_area)
                     stability = ZoomStabilityState()
                     active_target_area = target_area
+                    active_targeting_revision = targeting_revision
                 if not self._is_current(generation, stop_event):
                     return
                 base_detections = detector.detect(frame)
@@ -439,7 +446,9 @@ class AiService:
                         self._latest_detection = published.frame
                 if factor != published_factor:
                     self._emit_current(
-                        AiEvent("zoom", factor), generation, stop_event
+                        AiEvent("zoom", factor, targeting_revision),
+                        generation,
+                        stop_event,
                     )
                     published_factor = factor
                 completed_inferences += 1

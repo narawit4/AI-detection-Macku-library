@@ -247,6 +247,7 @@ class JitterApp(tk.Tk):
             tuple[str, int | None, Any]
         ] = queue.SimpleQueue()
         self._ai_event_epoch = 0
+        self._ai_targeting_revision = 0
         self._motion_event_epoch = 0
         self._hotkey_event_epoch = 0
         self._hotkey_epoch_lock = threading.Lock()
@@ -2231,9 +2232,8 @@ class JitterApp(tk.Tk):
         self._replace_ai_snapshot(
             replace(self.get_ai_settings(), target_area=target_area)
         )
-        self.ai_service.reset_targeting()
+        self._ai_targeting_revision = self.ai_service.reset_targeting()
         self.ai_zoom_var.set("1.0×")
-        self._schedule_save()
 
     def _curve_entry_changed(self, index: int) -> None:
         if self._updating_ai_curve_controls or self._closing:
@@ -3648,6 +3648,11 @@ class JitterApp(tk.Tk):
             rendered = f"{fps:.1f}".rstrip("0").rstrip(".")
             self.ai_fps_var.set(f"{rendered} FPS")
         elif kind == "zoom":
+            if (
+                event.targeting_revision is not None
+                and event.targeting_revision != self._ai_targeting_revision
+            ):
+                return
             if not self.get_adaptive_zoom_gate():
                 self.ai_zoom_var.set("1.0×")
                 return

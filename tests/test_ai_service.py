@@ -530,6 +530,38 @@ class AiServiceTests(unittest.TestCase):
         self.release_and_wait(capture, service, 4)
         self.assertAlmostEqual(service.latest_snapshot().aim_y, 82.0)
 
+    def test_rapid_round_trip_target_area_change_still_resets_confirmation(self):
+        player = Detection(140.0, 40.0, 180.0, 180.0, 0.9, 0)
+        detector = SequentialDetector(((player,),) * 4)
+        capture = ControlledCapture([
+            np.zeros((320, 320, 3), dtype=np.uint8)
+            for _ in range(4)
+        ])
+        clock = MutableClock(10.0)
+        service, _events = self.make_zoom_service(
+            detector,
+            capture=capture,
+            clock=clock,
+        )
+        current = {"settings": AimSettings(target_area="head")}
+        service.start(lambda: current["settings"], lambda: True)
+        self.release_and_wait(capture, service, 1)
+        clock.set(10.01)
+        self.release_and_wait(capture, service, 2)
+        self.assertIsNotNone(service.latest_snapshot())
+
+        current["settings"] = AimSettings(target_area="chest")
+        service.reset_targeting()
+        current["settings"] = AimSettings(target_area="head")
+        service.reset_targeting()
+        clock.set(10.02)
+        self.release_and_wait(capture, service, 3)
+
+        self.assertIsNone(service.latest_snapshot())
+        clock.set(10.03)
+        self.release_and_wait(capture, service, 4)
+        self.assertIsNotNone(service.latest_snapshot())
+
     def test_reset_targeting_immediately_clears_movement_but_keeps_overlay(self):
         player = Detection(140.0, 40.0, 180.0, 180.0, 0.9, 0)
         detector = SequentialDetector(((player,),))
@@ -856,7 +888,10 @@ class AiServiceTests(unittest.TestCase):
         self.assertIsNotNone(generation)
         self.assertEqual(len(detector.frames), 1)
         self.assertEqual(service.latest_snapshot().target_class, "player")
-        self.assertNotIn(AiEvent("zoom", 1.5), events)
+        self.assertFalse(any(
+            event.kind == "zoom" and event.payload == 1.5
+            for event in events
+        ))
 
     def test_ineligible_large_target_uses_one_inference(self):
         detector = SequentialDetector(
@@ -1083,7 +1118,10 @@ class AiServiceTests(unittest.TestCase):
             and service.latest_snapshot() is not None
         ))
         self.assertEqual(service.latest_snapshot().target_class, "player")
-        self.assertNotIn(AiEvent("zoom", 1.5), events)
+        self.assertFalse(any(
+            event.kind == "zoom" and event.payload == 1.5
+            for event in events
+        ))
 
     def test_restart_during_second_call_cannot_publish_old_refinement(self):
         new_detection = Detection(30, 30, 40, 40, 0.9, 7)
@@ -1120,7 +1158,10 @@ class AiServiceTests(unittest.TestCase):
             lambda: service.latest_detection_snapshot() is not None
             and service.latest_detection_snapshot().detections == (new_detection,)
         ))
-        self.assertNotIn(AiEvent("zoom", 1.5), events)
+        self.assertFalse(any(
+            event.kind == "zoom" and event.payload == 1.5
+            for event in events
+        ))
 
     def test_zoom_events_emit_only_on_success_and_factor_transition(self):
         base = (Detection(140, 80, 180, 160, 0.9, 0),)
@@ -1133,11 +1174,18 @@ class AiServiceTests(unittest.TestCase):
             lambda: len(detector.frames) == 6
             and service.latest_detection_snapshot() is not None
             and service.latest_detection_snapshot().sequence == 3
-            and AiEvent("zoom", 1.0) in events
+            and any(
+                event.kind == "zoom" and event.payload == 1.0
+                for event in events
+            )
         ))
         self.assertEqual(
             [event.payload for event in events if event.kind == "zoom"],
             [1.5, 1.0],
+        )
+        self.assertEqual(
+            [event.targeting_revision for event in events if event.kind == "zoom"],
+            [0, 0],
         )
         self.assertIsNone(service.latest_snapshot())
 
@@ -1174,7 +1222,10 @@ class AiServiceTests(unittest.TestCase):
                 lambda: len(detector.frames) == 5
                 and service.latest_snapshot() is not None
                 and service.latest_snapshot().sequence == 3
-                and AiEvent("zoom", 1.0) in events
+                and any(
+                    event.kind == "zoom" and event.payload == 1.0
+                    for event in events
+                )
             ))
 
         matching_logs = [

@@ -214,6 +214,7 @@ class StubAiService:
         self.start_exception = None
         self.stop_hook = None
         self.reset_targeting_calls = 0
+        self.targeting_revision = 0
 
     def with_sink(self, event_sink):
         self.event_sink = event_sink
@@ -258,6 +259,8 @@ class StubAiService:
 
     def reset_targeting(self):
         self.reset_targeting_calls += 1
+        self.targeting_revision += 1
+        return self.targeting_revision
 
 
 class StubHotkey:
@@ -530,7 +533,7 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertEqual(app.motion_hero_card.winfo_manager(), "grid")
         self.assertEqual(app.ai_settings_card.winfo_manager(), "grid")
 
-    def test_target_area_starts_head_changes_live_and_schedules_save(self):
+    def test_target_area_starts_head_changes_live_without_scheduling_save(self):
         self.app.close_app()
         app = self.make_app(config=AppConfig(
             ai=AimSettings(target_area="upper_body"),
@@ -548,7 +551,7 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertEqual(app.get_ai_settings().target_area, "chest")
         self.assertEqual(self.ai.reset_targeting_calls, 1)
         self.assertEqual(app.ai_zoom_var.get(), "1.0×")
-        self.assertIsNotNone(app._save_after_id)
+        self.assertIsNone(app._save_after_id)
 
     def test_save_config_keeps_target_area_runtime_only(self):
         self.app.target_area_var.set("Chest")
@@ -2493,6 +2496,18 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.app.queue_ai_event(AiEvent("zoom", 2.0))
         self.app.emergency_stop("Stopped")
         self.drain_ui_queue()
+        self.assertEqual(self.app.ai_zoom_var.get(), "1.0×")
+
+    def test_target_area_change_rejects_prechange_queued_zoom_event(self):
+        self.prepare_armed_sources(MotionSources(False, True), gate_active=True)
+        self.app._cancel_after("_ui_pump_after_id")
+        old_revision = self.app._ai_targeting_revision
+        self.app.queue_ai_event(AiEvent("zoom", 2.0, old_revision))
+
+        self.app.target_area_var.set("Chest")
+        self.app._target_area_changed()
+        self.drain_ui_queue()
+
         self.assertEqual(self.app.ai_zoom_var.get(), "1.0×")
 
     def test_ai_error_falls_back_to_jitter_after_exact_retiring_generation(self):
