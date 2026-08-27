@@ -3332,15 +3332,24 @@ class JitterApp(tk.Tk):
             if not started:
                 self._hide_overlay_after_ai_failure()
             return started
-        if not required and self._ai_runtime_active:
-            self._sync_adaptive_zoom_gate()
-            self._stop_ai_runtime(context)
-            self._ai_ready = False
-            self._ai_provider = None
-            self._ai_runtime_active = False
-            self._sync_adaptive_zoom_gate()
         if not required:
-            self._cancel_model_switch_for_no_runtime_demand()
+            try:
+                if self._ai_runtime_active:
+                    self._sync_adaptive_zoom_gate()
+                    self._stop_ai_runtime(context)
+            except Exception:
+                logging.exception(
+                    "AI runtime stop failed during %s", context
+                )
+            finally:
+                self._ai_ready = False
+                self._ai_provider = None
+                self._ai_runtime_active = False
+                self._sync_adaptive_zoom_gate()
+                self._cancel_model_switch_for_no_runtime_demand()
+                self.ai_status_var.set("Stopped")
+                self.ai_fps_var.set("0 FPS")
+                self.ai_provider_var.set("No provider")
         return True
 
     def _hide_overlay_after_ai_failure(self) -> None:

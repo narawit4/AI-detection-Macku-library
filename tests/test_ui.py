@@ -215,6 +215,7 @@ class StubAiService:
         self.active_generation = None
         self.start_result = True
         self.start_exception = None
+        self.stop_exception = None
         self.stop_hook = None
         self.reset_targeting_calls = 0
         self.targeting_revision = 0
@@ -237,6 +238,8 @@ class StubAiService:
 
     def stop(self, reason="manual"):
         self.stop_calls.append(reason)
+        if self.stop_exception is not None:
+            raise self.stop_exception
         if self.stop_hook is not None:
             self.stop_hook(self.active_generation)
         self.active_generation = None
@@ -2615,6 +2618,7 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.assertEqual(self.app._model_choice, previous)
         self.assertFalse(self.app._ai_runtime_active)
         self.assertFalse(self.app._ai_ready)
+        self.assertEqual(self.app.ai_status_var.get(), "Stopped")
         self.assertEqual(self.app.ai_model_var.get(), "Default · all_games_320.onnx")
         self.assertEqual(str(self.app.model_browse_button.cget("state")), "normal")
         self.assertFalse(self.app._normal_motion_started)
@@ -2635,9 +2639,49 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.assertEqual(self.app._model_choice, previous)
         self.assertFalse(self.app._ai_runtime_active)
         self.assertFalse(self.app._ai_ready)
+        self.assertEqual(self.app.ai_status_var.get(), "Stopped")
         self.assertEqual(self.app.ai_model_var.get(), "Default · all_games_320.onnx")
         self.assertEqual(str(self.app.model_browse_button.cget("state")), "normal")
         self.assertFalse(self.app._normal_motion_started)
+
+    def test_stop_exception_cleans_pending_switch_without_restarting_ai(self):
+        for phase in ("candidate", "rollback"):
+            with self.subTest(phase=phase):
+                self.make_app()
+                self.prepare_armed_sources(MotionSources(False, True))
+                choice, token = self.begin_custom_model_switch(f"{phase}.onnx")
+                self.model_validator.emit(
+                    ModelValidationEvent("ready", token, choice)
+                )
+                self.drain_ui_queue()
+                if phase == "rollback":
+                    self.app.handle_ai_event(AiEvent("error", "candidate failed"))
+                previous = self.app._model_switch.previous
+                starts_before_stop = len(self.ai.start_calls)
+                self.ai.stop_exception = RuntimeError("stop failed")
+                failure = None
+                try:
+                    if phase == "candidate":
+                        self.app.set_master(False)
+                    else:
+                        self.app.emergency_stop("Stopped by user")
+                except RuntimeError as error:
+                    failure = error
+
+                self.assertIsNone(failure)
+                self.assertIsNone(self.app._model_switch)
+                self.assertEqual(self.app._model_choice, previous)
+                self.assertFalse(self.app._ai_runtime_active)
+                self.assertFalse(self.app._ai_ready)
+                self.assertEqual(self.app.ai_status_var.get(), "Stopped")
+                self.assertEqual(
+                    self.app.ai_model_var.get(),
+                    "Default · all_games_320.onnx",
+                )
+                self.assertEqual(
+                    str(self.app.model_browse_button.cget("state")), "normal"
+                )
+                self.assertEqual(len(self.ai.start_calls), starts_before_stop)
 
     def test_rollback_error_enters_existing_fail_closed_path_without_retry(self):
         self.prepare_armed_sources(MotionSources(False, True))
