@@ -3,6 +3,8 @@ import time
 import unittest
 from unittest import mock
 
+import numpy as np
+
 from ai_service import AiEvent, AiService
 from ai_targeting import AimSettings, Detection
 
@@ -80,6 +82,24 @@ class SequenceDetector:
         if self.results:
             return self.results.pop(0)
         return ()
+
+
+class SequentialDetector:
+    provider = "DmlExecutionProvider"
+
+    def __init__(self, outputs, second_call_hook=None):
+        self.outputs = list(outputs)
+        self.frames = []
+        self.second_call_hook = second_call_hook
+
+    def detect(self, frame):
+        self.frames.append(frame)
+        if len(self.frames) == 2 and self.second_call_hook is not None:
+            self.second_call_hook()
+        output = self.outputs.pop(0)
+        if isinstance(output, Exception):
+            raise output
+        return output
 
 
 class BlockingDetector:
@@ -206,6 +226,216 @@ class PublicationObserverLock:
 
 
 class AiServiceTests(unittest.TestCase):
+    def make_zoom_service(self, detector, *, frames=None, clock=time.perf_counter):
+        source_frames = (
+            list(frames)
+            if frames is not None
+            else [np.zeros((320, 320, 3), dtype=np.uint8)]
+        )
+        events = []
+        service = AiService(
+            events.append,
+            detector_factory=lambda _path: detector,
+            capture_factory=lambda: FakeCapture(source_frames),
+            clock=clock,
+        )
+        self.addCleanup(service.close)
+        return service, events
+
+    def test_zoom_gate_false_publishes_base_with_one_inference(self):
+        detector = SequentialDetector(((Detection(140, 80, 180, 160, 0.9, 0),),))
+        service, events = self.make_zoom_service(detector)
+        generation = service.start(AimSettings, lambda: False)
+        self.assertTrue(wait_until(
+            lambda: len(detector.frames) == 1
+            and service.latest_snapshot() is not None
+        ))
+        self.assertIsNotNone(generation)
+        self.assertEqual(len(detector.frames), 1)
+        self.assertEqual(service.latest_snapshot().target_class, "player")
+        self.assertNotIn(AiEvent("zoom", 1.5), events)
+
+    def test_eligible_gate_true_refines_same_frame_and_emits_zoom(self):
+        detector = SequentialDetector((
+            (Detection(140, 80, 180, 160, 0.9, 0),),
+            (Detection(144, 135, 174, 165, 0.92, 7),),
+        ))
+        service, events = self.make_zoom_service(detector)
+        service.start(AimSettings, lambda: True)
+        self.assertTrue(wait_until(
+            lambda: len(detector.frames) == 2
+            and service.latest_snapshot() is not None
+            and AiEvent("zoom", 1.5) in events
+        ))
+        self.assertEqual(len(detector.frames), 2)
+        self.assertEqual(detector.frames[1].shape, (320, 320, 3))
+        self.assertEqual(service.latest_snapshot().target_class, "head")
+        self.assertIn(AiEvent("zoom", 1.5), events)
+        self.assertEqual(service.latest_detection_snapshot().selected_index, 0)
+
+    def test_ineligible_large_target_uses_one_inference(self):
+        detector = SequentialDetector(
+            ((Detection(140, 80, 180, 193, 0.9, 0),),)
+        )
+        service, events = self.make_zoom_service(detector)
+        service.start(AimSettings, lambda: True)
+        self.assertTrue(wait_until(
+            lambda: len(detector.frames) == 1
+            and service.latest_snapshot() is not None
+        ))
+        self.assertEqual(len(detector.frames), 1)
+        self.assertFalse(any(event.kind == "zoom" for event in events))
+
+    def test_refinement_miss_publishes_same_frame_base_fallback(self):
+        base = (Detection(140, 80, 180, 160, 0.9, 0),)
+        detector = SequentialDetector((base, ()))
+        service, events = self.make_zoom_service(detector)
+        service.start(AimSettings, lambda: True)
+        self.assertTrue(wait_until(
+            lambda: len(detector.frames) == 2
+            and service.latest_snapshot() is not None
+        ))
+        self.assertEqual(service.latest_snapshot().target_class, "player")
+        self.assertEqual(service.latest_detection_snapshot().detections, base)
+        self.assertFalse(any(event.kind == "zoom" for event in events))
+
+    def test_exact_small_head_threshold_runs_two_x_second_pass(self):
+        detector = SequentialDetector((
+            (Detection(151, 150, 169, 168, 0.9, 7),),
+            (Detection(142, 142, 178, 178, 0.93, 7),),
+        ))
+        service, events = self.make_zoom_service(detector)
+        service.start(AimSettings, lambda: True)
+        self.assertTrue(wait_until(
+            lambda: len(detector.frames) == 2
+            and AiEvent("zoom", 2.0) in events
+        ))
+        self.assertEqual(service.latest_snapshot().target_class, "head")
+        self.assertEqual(service.latest_detection_snapshot().selected_index, 0)
+
+    def test_gate_release_during_second_call_discards_refinement(self):
+        gate = {"active": True}
+        detector = SequentialDetector(
+            (
+                (Detection(140, 80, 180, 160, 0.9, 0),),
+                (Detection(144, 135, 174, 165, 0.95, 7),),
+            ),
+            second_call_hook=lambda: gate.update(active=False),
+        )
+        service, events = self.make_zoom_service(detector)
+        service.start(AimSettings, lambda: gate["active"])
+        self.assertTrue(wait_until(
+            lambda: len(detector.frames) == 2
+            and service.latest_snapshot() is not None
+        ))
+        self.assertEqual(service.latest_snapshot().target_class, "player")
+        self.assertNotIn(AiEvent("zoom", 1.5), events)
+
+    def test_restart_during_second_call_cannot_publish_old_refinement(self):
+        new_detection = Detection(30, 30, 40, 40, 0.9, 7)
+        new_detector = SequentialDetector(((new_detection,),))
+        service_holder = {}
+
+        def restart_service():
+            service_holder["service"].stop("restart")
+            service_holder["service"].start(AimSettings, lambda: False)
+
+        old_detector = SequentialDetector(
+            (
+                (Detection(140, 80, 180, 160, 0.9, 0),),
+                (Detection(144, 135, 174, 165, 0.95, 7),),
+            ),
+            second_call_hook=restart_service,
+        )
+        detectors = iter((old_detector, new_detector))
+        captures = iter((
+            FakeCapture([np.zeros((320, 320, 3), dtype=np.uint8)]),
+            FakeCapture([np.zeros((320, 320, 3), dtype=np.uint8)]),
+        ))
+        events = []
+        service = AiService(
+            events.append,
+            detector_factory=lambda _path: next(detectors),
+            capture_factory=lambda: next(captures),
+        )
+        service_holder["service"] = service
+        self.addCleanup(service.close)
+
+        service.start(AimSettings, lambda: True)
+        self.assertTrue(wait_until(
+            lambda: service.latest_detection_snapshot() is not None
+            and service.latest_detection_snapshot().detections == (new_detection,)
+        ))
+        self.assertNotIn(AiEvent("zoom", 1.5), events)
+
+    def test_zoom_events_emit_only_on_success_and_factor_transition(self):
+        base = (Detection(140, 80, 180, 160, 0.9, 0),)
+        refined = (Detection(144, 135, 174, 165, 0.92, 7),)
+        detector = SequentialDetector((base, refined, base, refined, base, ()))
+        frames = [np.zeros((320, 320, 3), dtype=np.uint8) for _ in range(3)]
+        service, events = self.make_zoom_service(detector, frames=frames)
+        service.start(AimSettings, lambda: True)
+        self.assertTrue(wait_until(
+            lambda: len(detector.frames) == 6
+            and service.latest_snapshot() is not None
+            and service.latest_snapshot().sequence == 3
+            and AiEvent("zoom", 1.0) in events
+        ))
+        self.assertEqual(
+            [event.payload for event in events if event.kind == "zoom"],
+            [1.5, 1.0],
+        )
+        self.assertEqual(service.latest_snapshot().target_class, "player")
+
+    def test_fps_counts_published_frames_not_detector_calls(self):
+        base = (Detection(140, 80, 180, 160, 0.9, 0),)
+        refined = (Detection(144, 135, 174, 165, 0.92, 7),)
+        detector = SequentialDetector((base, refined, base, refined))
+        frames = [np.zeros((320, 320, 3), dtype=np.uint8) for _ in range(2)]
+        service, events = self.make_zoom_service(
+            detector,
+            frames=frames,
+            clock=FakeClock([0.0, 0.1, 0.2, 0.3, 1.2]),
+        )
+        service.start(AimSettings, lambda: True)
+        self.assertTrue(wait_until(
+            lambda: any(event.kind == "fps" for event in events)
+        ))
+        fps = next(event.payload for event in events if event.kind == "fps")
+        self.assertAlmostEqual(fps, 2 / 1.2)
+        self.assertEqual(len(detector.frames), 4)
+
+    def test_first_refinement_error_disables_zoom_once_for_generation(self):
+        base = (Detection(140, 80, 180, 160, 0.9, 0),)
+        refined = (Detection(144, 135, 174, 165, 0.92, 7),)
+        detector = SequentialDetector(
+            (base, refined, base, RuntimeError("refine failed"), base)
+        )
+        frames = [np.zeros((320, 320, 3), dtype=np.uint8) for _ in range(3)]
+        service, events = self.make_zoom_service(detector, frames=frames)
+
+        with self.assertLogs("ai_service", level="ERROR") as logs:
+            service.start(AimSettings, lambda: True)
+            self.assertTrue(wait_until(
+                lambda: len(detector.frames) == 5
+                and service.latest_snapshot() is not None
+                and service.latest_snapshot().sequence == 3
+                and AiEvent("zoom", 1.0) in events
+            ))
+
+        matching_logs = [
+            line for line in logs.output
+            if "Adaptive AI zoom disabled" in line
+        ]
+        self.assertEqual(len(matching_logs), 1)
+        self.assertEqual(service.latest_snapshot().target_class, "player")
+        self.assertFalse(any(event.kind == "error" for event in events))
+        self.assertEqual(
+            [event.payload for event in events if event.kind == "zoom"],
+            [1.5, 1.0],
+        )
+        self.assertEqual(len(detector.frames), 5)
+
     def test_reentrant_loading_stop_or_close_does_not_launch_worker(self):
         for action in ("stop", "close"):
             with self.subTest(action=action):

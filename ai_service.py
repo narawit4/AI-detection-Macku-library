@@ -16,6 +16,11 @@ from ai_targeting import (
     TargetSnapshot,
     analyze_detections,
 )
+from ai_zoom import (
+    build_zoom_input,
+    compose_zoom_refinement,
+    select_zoom_factor,
+)
 
 
 LOGGER = logging.getLogger(__name__)
@@ -81,7 +86,13 @@ class AiService:
         self._latest = None
         self._latest_detection = None
 
-    def start(self, settings_provider: Callable[[], AimSettings]) -> int | None:
+    def start(
+        self,
+        settings_provider: Callable[[], AimSettings],
+        zoom_gate_provider: Callable[[], bool] | None = None,
+    ) -> int | None:
+        if zoom_gate_provider is None:
+            zoom_gate_provider = lambda: False
         with self._lock:
             if self._closed:
                 return None
@@ -105,7 +116,12 @@ class AiService:
             try:
                 worker = threading.Thread(
                     target=self._worker,
-                    args=(generation, stop_event, settings_provider),
+                    args=(
+                        generation,
+                        stop_event,
+                        settings_provider,
+                        zoom_gate_provider,
+                    ),
                     name=f"AiInference-{generation}",
                     daemon=True,
                 )
@@ -244,6 +260,7 @@ class AiService:
         generation: int,
         stop_event: threading.Event,
         settings_provider: Callable[[], AimSettings],
+        zoom_gate_provider: Callable[[], bool],
     ) -> None:
         capture = None
         try:
@@ -265,6 +282,8 @@ class AiService:
 
             sequence = 0
             previous = None
+            refinement_enabled = True
+            published_factor = 1.0
             fps_started_at = self._clock()
             completed_inferences = 0
             while self._is_current(generation, stop_event):
@@ -274,21 +293,81 @@ class AiService:
                     continue
                 captured_at = self._clock()
                 sequence += 1
-                analysis = analyze_detections(
+                settings = settings_provider()
+                base_analysis = analyze_detections(
                     detector.detect(frame),
-                    settings_provider(),
+                    settings,
                     sequence=sequence,
                     captured_at=captured_at,
                     previous=previous,
                 )
                 if not self._is_current(generation, stop_event):
                     return
+                factor = 1.0
+                published = base_analysis
+                if refinement_enabled:
+                    try:
+                        if bool(zoom_gate_provider()):
+                            selected = base_analysis.frame.selected_index
+                            if (
+                                selected is not None
+                                and base_analysis.target is not None
+                            ):
+                                seed = base_analysis.frame.detections[selected]
+                                requested_factor = select_zoom_factor(
+                                    seed, base_analysis.target
+                                )
+                                if (
+                                    requested_factor > 1.0
+                                    and bool(zoom_gate_provider())
+                                ):
+                                    if not self._is_current(
+                                        generation, stop_event
+                                    ):
+                                        return
+                                    zoomed, transform = build_zoom_input(
+                                        frame,
+                                        base_analysis.target,
+                                        requested_factor,
+                                    )
+                                    if not self._is_current(
+                                        generation, stop_event
+                                    ):
+                                        return
+                                    refined_detections = detector.detect(zoomed)
+                                    if not self._is_current(
+                                        generation, stop_event
+                                    ):
+                                        return
+                                    if bool(zoom_gate_provider()):
+                                        refined = compose_zoom_refinement(
+                                            base_analysis,
+                                            refined_detections,
+                                            transform,
+                                            settings,
+                                        )
+                                        if refined is not None:
+                                            published = refined
+                                            factor = requested_factor
+                    except Exception:
+                        LOGGER.exception(
+                            "Adaptive AI zoom disabled for generation %s",
+                            generation,
+                        )
+                        refinement_enabled = False
+                        factor = 1.0
+                        published = base_analysis
                 with self._lock:
                     if not self._is_current_locked(generation, stop_event):
                         return
-                    self._latest = analysis.target
-                    self._latest_detection = analysis.frame
-                previous = analysis.target
+                    self._latest = published.target
+                    self._latest_detection = published.frame
+                previous = published.target
+                if factor != published_factor:
+                    self._emit_current(
+                        AiEvent("zoom", factor), generation, stop_event
+                    )
+                    published_factor = factor
                 completed_inferences += 1
                 now = self._clock()
                 elapsed = now - fps_started_at
