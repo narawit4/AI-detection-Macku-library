@@ -66,13 +66,14 @@ class ModelValidator:
         self._closed = False
 
     def start(self, choice: ModelChoice, token: int) -> bool:
-        with self._lock:
-            if self._closed:
-                return False
-            if self._active is not None:
-                self._active[1].set()
-            stop_event = threading.Event()
-            self._active = (token, stop_event)
+        with self._event_lock:
+            with self._lock:
+                if self._closed:
+                    return False
+                if self._active is not None:
+                    self._active[1].set()
+                stop_event = threading.Event()
+                self._active = (token, stop_event)
         try:
             threading.Thread(
                 target=self._worker,
@@ -81,10 +82,11 @@ class ModelValidator:
                 daemon=True,
             ).start()
         except Exception:
-            stop_event.set()
-            with self._lock:
-                if self._active == (token, stop_event):
-                    self._active = None
+            with self._event_lock:
+                stop_event.set()
+                with self._lock:
+                    if self._active == (token, stop_event):
+                        self._active = None
             LOGGER.exception("AI model validation worker could not start")
             return False
         return True
@@ -130,18 +132,16 @@ class ModelValidator:
                 self._event_sink(event)
 
     def cancel(self) -> None:
-        with self._lock:
-            if self._active is not None:
-                self._active[1].set()
-                self._active = None
         with self._event_lock:
-            pass
+            with self._lock:
+                if self._active is not None:
+                    self._active[1].set()
+                    self._active = None
 
     def close(self) -> None:
-        with self._lock:
-            self._closed = True
-            if self._active is not None:
-                self._active[1].set()
-                self._active = None
         with self._event_lock:
-            pass
+            with self._lock:
+                self._closed = True
+                if self._active is not None:
+                    self._active[1].set()
+                    self._active = None

@@ -113,6 +113,73 @@ class ModelValidatorTests(unittest.TestCase):
         self.assertTrue(first_returned.wait(1.0))
         self.assertEqual(events, [ModelValidationEvent("ready", 2, second)])
 
+    def test_cancel_cannot_transition_during_current_event_publication(self):
+        detector_entered = threading.Event()
+        release_detector = threading.Event()
+        publication_gap_reached = threading.Event()
+        release_publication = threading.Event()
+        cancel_started = threading.Event()
+        cancel_entered_state_lock = threading.Event()
+        cancel_finished = threading.Event()
+        stop_states_at_sink = []
+
+        class Detector:
+            provider = "CPUExecutionProvider"
+
+        def detector_factory(_path):
+            detector_entered.set()
+            release_detector.wait(1.0)
+            return Detector()
+
+        validator = ModelValidator(
+            lambda _event: stop_states_at_sink.append(stop_event.is_set()),
+            detector_factory=detector_factory,
+        )
+        self.addCleanup(validator.close)
+        choice = ModelChoice(Path("chosen.onnx"), "chosen.onnx", False)
+        self.assertTrue(validator.start(choice, 1))
+        self.assertTrue(detector_entered.wait(1.0))
+        stop_event = validator._active[1]
+
+        class PublicationGapLock:
+            def __init__(self):
+                self._lock = threading.Lock()
+
+            def __enter__(self):
+                self._lock.acquire()
+                if threading.current_thread().name == "ValidationCancel":
+                    cancel_entered_state_lock.set()
+                return self
+
+            def __exit__(self, *_args):
+                self._lock.release()
+                if (
+                    threading.current_thread().name == "ModelValidation-1"
+                    and not publication_gap_reached.is_set()
+                ):
+                    publication_gap_reached.set()
+                    release_publication.wait(5.0)
+
+        validator._lock = PublicationGapLock()
+        release_detector.set()
+        self.assertTrue(publication_gap_reached.wait(1.0))
+
+        def cancel():
+            cancel_started.set()
+            validator.cancel()
+            cancel_finished.set()
+
+        thread = threading.Thread(target=cancel, name="ValidationCancel")
+        thread.start()
+        self.assertTrue(cancel_started.wait(1.0))
+        state_transition_entered = cancel_entered_state_lock.wait(1.0)
+        release_publication.set()
+        self.assertTrue(cancel_finished.wait(1.0))
+        thread.join(1.0)
+        self.assertFalse(thread.is_alive())
+        self.assertFalse(state_transition_entered)
+        self.assertEqual(stop_states_at_sink, [False])
+
     def test_failure_event_hides_exception_text_but_log_keeps_diagnostics(self):
         choice = ModelChoice(Path("secret.onnx"), "secret.onnx", False)
         events = []
