@@ -778,7 +778,7 @@ class JitterLayoutTests(unittest.TestCase):
 
         self.assertEqual(self.model_validator.start_calls, [])
         self.assertEqual(
-            self.app.footer_var.get(), "Stop AI before changing the model"
+            self.app.footer_var.get(), "Test Run is active; use STOP to cancel"
         )
 
     def test_motion_scroll_keeps_both_source_settings_available(self):
@@ -2733,6 +2733,155 @@ class JitterRuntimeTests(JitterLayoutTests):
 
         self.assertEqual(
             self.app.ai_model_var.get(), "Default \u00b7 all_games_320.onnx"
+        )
+
+    def test_stop_invalidates_switch_before_late_validation_ready(self):
+        self.app.toggle_overlay()
+        choice, token = self.begin_custom_model_switch("late.onnx")
+        starts = len(self.ai.start_calls)
+
+        self.app.emergency_stop("Stopped by user")
+        self.model_validator.emit(ModelValidationEvent("ready", token, choice))
+        self.drain_ui_queue()
+
+        self.assertIsNone(self.app._model_switch)
+        self.assertEqual(len(self.ai.start_calls), starts)
+        self.assertEqual(
+            self.app.ai_model_var.get(), "Default \u00b7 all_games_320.onnx"
+        )
+        self.assertFalse(self.app.overlay_visible)
+
+    def test_stale_ready_from_cancelled_switch_cannot_commit_after_new_switch(self):
+        first, first_token = self.begin_custom_model_switch("first.onnx")
+
+        self.app.emergency_stop()
+        second, second_token = self.begin_custom_model_switch("second.onnx")
+        self.model_validator.emit(ModelValidationEvent("ready", first_token, first))
+        self.drain_ui_queue()
+
+        self.assertEqual(self.app._model_switch.token, second_token)
+        self.assertEqual(
+            self.app.ai_model_var.get(), "Loading \u00b7 second.onnx"
+        )
+
+    def test_removing_ai_source_cancels_candidate_and_restarts_previous_for_overlay(self):
+        self.prepare_armed_sources(MotionSources(False, True))
+        self.app.toggle_overlay()
+        previous = self.app._model_choice
+        choice, token = self.begin_custom_model_switch("candidate.onnx")
+        self.model_validator.emit(ModelValidationEvent("ready", token, choice))
+        self.drain_ui_queue()
+        starts_before_removal = len(self.ai.start_calls)
+
+        self.app.toggle_ai_source()
+
+        self.assertTrue(self.app.overlay_visible)
+        self.assertIsNone(self.app._model_switch)
+        self.assertEqual(self.app._model_choice, previous)
+        self.assertEqual(
+            self.ai.start_calls[-1][2], previous.path,
+        )
+        self.assertEqual(len(self.ai.start_calls), starts_before_removal + 1)
+
+    def test_model_controls_are_disabled_for_every_test_mode(self):
+        modes = (
+            "test_jitter_pending",
+            "test_jitter",
+            "test_ai_loading",
+            "test_ai",
+            "test_combined_loading",
+            "test_combined",
+        )
+        for mode in modes:
+            with self.subTest(mode=mode):
+                self.app._motion_mode = mode
+                self.app._render_runtime_controls()
+                self.assertEqual(
+                    str(self.app.model_browse_button.cget("state")), "disabled"
+                )
+                self.assertEqual(
+                    str(self.app.use_default_model_button.cget("state")), "disabled"
+                )
+                self.assertEqual(
+                    str(self.app.stop_button.cget("state")), "normal"
+                )
+
+    def test_browse_handler_refuses_direct_call_during_test(self):
+        self.app._motion_mode = "test_ai_loading"
+
+        self.app.browse_ai_model()
+
+        self.assertEqual(self.model_validator.start_calls, [])
+        self.assertEqual(
+            self.app.footer_var.get(), "Test Run is active; use STOP to cancel"
+        )
+
+    def test_busy_switch_rejects_repeated_browse_and_default_commands(self):
+        choice, token = self.begin_custom_model_switch("first.onnx")
+        calls = list(self.model_validator.start_calls)
+
+        self.app.browse_ai_model()
+        self.app.use_default_ai_model()
+
+        self.assertEqual(self.model_validator.start_calls, calls)
+        self.assertEqual(self.app._model_switch.token, token)
+        self.assertEqual(self.app._model_switch.candidate, choice)
+
+    def test_disconnect_cancels_candidate_and_restarts_previous_for_overlay(self):
+        self.prepare_armed_sources(MotionSources(False, True))
+        self.app.toggle_overlay()
+        previous = self.app._model_choice
+        choice, token = self.begin_custom_model_switch("disconnect.onnx")
+        self.model_validator.emit(ModelValidationEvent("ready", token, choice))
+        self.drain_ui_queue()
+
+        self.app._handle_disconnect("Device disconnected")
+        self.model_validator.emit(ModelValidationEvent("ready", token, choice))
+        self.drain_ui_queue()
+
+        self.assertTrue(self.app.overlay_visible)
+        self.assertIsNone(self.app._model_switch)
+        self.assertEqual(self.app._model_choice, previous)
+        self.assertEqual(self.ai.start_calls[-1][2], previous.path)
+
+    def test_close_invalidates_switch_token_before_validator_is_closed(self):
+        choice, token = self.begin_custom_model_switch("close.onnx")
+        starts = len(self.ai.start_calls)
+
+        self.app.close_app()
+        self.model_validator.emit(ModelValidationEvent("ready", token, choice))
+
+        self.assertGreater(self.app._model_switch_token, token)
+        self.assertEqual(self.model_validator.closed, 1)
+        self.assertEqual(len(self.ai.start_calls), starts)
+
+    def test_model_controls_stay_disabled_through_candidate_and_rollback(self):
+        self.prepare_armed_sources(MotionSources(False, True))
+        choice, token = self.begin_custom_model_switch("controls.onnx")
+        self.assertEqual(
+            str(self.app.model_browse_button.cget("state")), "disabled"
+        )
+        self.assertEqual(
+            str(self.app.stop_button.cget("state")), "normal"
+        )
+
+        self.model_validator.emit(ModelValidationEvent("ready", token, choice))
+        self.drain_ui_queue()
+        self.assertEqual(self.app._model_switch.phase, "starting_candidate")
+        self.assertEqual(
+            str(self.app.model_browse_button.cget("state")), "disabled"
+        )
+
+        self.app.handle_ai_event(AiEvent("error", "candidate failed"))
+        self.assertEqual(self.app._model_switch.phase, "starting_rollback")
+        self.assertEqual(
+            str(self.app.use_default_model_button.cget("state")), "disabled"
+        )
+
+        self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        self.assertIsNone(self.app._model_switch)
+        self.assertEqual(
+            str(self.app.model_browse_button.cget("state")), "normal"
         )
 
     def prepare_armed_sources(self, sources, *, gate_active=False):

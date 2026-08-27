@@ -2947,22 +2947,28 @@ class JitterApp(tk.Tk):
         return (
             self._model_switch is not None
             or self._motion_mode in _TEST_MOTION_MODES
+            or self._closing
         )
 
     def _render_model_controls(self) -> None:
-        unavailable = self._model_changes_unavailable()
+        busy = self._model_switch is not None
+        testing = self._motion_mode in _TEST_MOTION_MODES
+        disabled = busy or testing or self._closing
         self.model_browse_button.configure(
-            state="disabled" if unavailable else "normal"
+            state="disabled" if disabled else "normal"
         )
         self.use_default_model_button.configure(
             state=(
                 "disabled"
-                if unavailable or self._model_choice.is_default
+                if disabled or self._model_choice.is_default
                 else "normal"
             )
         )
 
     def browse_ai_model(self) -> None:
+        if self._motion_mode in _TEST_MOTION_MODES:
+            self.footer_var.set("Test Run is active; use STOP to cancel")
+            return
         if self._model_changes_unavailable():
             self.footer_var.set("Stop AI before changing the model")
             return
@@ -2987,6 +2993,9 @@ class JitterApp(tk.Tk):
         self._begin_model_switch(candidate)
 
     def use_default_ai_model(self) -> None:
+        if self._motion_mode in _TEST_MOTION_MODES:
+            self.footer_var.set("Test Run is active; use STOP to cancel")
+            return
         if self._model_changes_unavailable():
             self.footer_var.set("Stop AI before changing the model")
             return
@@ -3038,25 +3047,32 @@ class JitterApp(tk.Tk):
         self._render_model_controls()
         self.footer_var.set(footer)
 
-    def _cancel_pending_model_switch_for_runtime(self) -> None:
-        switch = self._model_switch
-        if switch is None or switch.phase != "validating":
-            return
-        self.model_validator.cancel()
-        self._finish_model_switch(
-            switch.previous,
-            "Model change cancelled because AI started",
-        )
-
-    def _cancel_model_switch_for_no_runtime_demand(self) -> None:
+    def _cancel_model_switch(self, reason: str) -> None:
         switch = self._model_switch
         if switch is None:
             return
-        self.model_validator.cancel()
-        self._finish_model_switch(
-            switch.previous,
-            f"Model change cancelled; restored {switch.previous.display_name}",
-        )
+        self._model_switch_token += 1
+        try:
+            self.model_validator.cancel()
+        except Exception:
+            logging.exception("AI model validation cancellation failed")
+        try:
+            if switch.phase in {"starting_candidate", "starting_rollback"}:
+                try:
+                    self._stop_ai_runtime("Model switch cancelled")
+                except Exception:
+                    logging.exception("AI model switch cleanup failed")
+                finally:
+                    self._ai_ready = False
+                    self._ai_provider = None
+                    self._ai_runtime_active = False
+                    self._sync_adaptive_zoom_gate()
+        finally:
+            self._model_switch = None
+            self._model_choice = switch.previous
+            self.ai_model_var.set(self._model_label(self._model_choice))
+            self._render_model_controls()
+        logging.info("AI model switch cancelled: %s", reason)
 
     def queue_model_validation_event(self, event: ModelValidationEvent) -> None:
         if self._closing or self._closed:
@@ -3224,6 +3240,8 @@ class JitterApp(tk.Tk):
             self._normal_motion_started = False
             self.trigger_gate.clear()
             self._sync_adaptive_zoom_gate()
+            if not self._ai_runtime_required():
+                self._cancel_model_switch("Master disabled")
             self._stop_motion_runtime("Disabled by user")
             self._reconcile_ai_runtime("Master disabled")
             self._set_runtime_state("disabled")
@@ -3278,6 +3296,8 @@ class JitterApp(tk.Tk):
             raise ValueError(f"unknown motion source: {source_name}")
         sources = self._selected_sources()
         self._sync_adaptive_zoom_gate()
+        if source_name == "ai" and not sources.ai:
+            self._cancel_model_switch("AI Aim deselected")
         if not self.master_armed:
             self._render_runtime_controls()
             self.footer_var.set("Motion sources updated")
@@ -3325,14 +3345,13 @@ class JitterApp(tk.Tk):
 
     def _reconcile_ai_runtime(self, context: str) -> bool:
         required = self._ai_runtime_required()
-        if required:
-            self._cancel_pending_model_switch_for_runtime()
         if required and not self._ai_runtime_active:
             started = self._start_ai_runtime(context)
             if not started:
                 self._hide_overlay_after_ai_failure()
             return started
         if not required:
+            self._cancel_model_switch(context)
             try:
                 if self._ai_runtime_active:
                     self._sync_adaptive_zoom_gate()
@@ -3346,7 +3365,6 @@ class JitterApp(tk.Tk):
                 self._ai_provider = None
                 self._ai_runtime_active = False
                 self._sync_adaptive_zoom_gate()
-                self._cancel_model_switch_for_no_runtime_demand()
                 self.ai_status_var.set("Stopped")
                 self.ai_fps_var.set("0 FPS")
                 self.ai_provider_var.set("No provider")
@@ -3378,6 +3396,8 @@ class JitterApp(tk.Tk):
             self.overlay_visible = False
             self._cancel_after("_overlay_after_id")
             self._hide_overlay_fail_closed("Detection overlay hide failed")
+            if not self._ai_runtime_required():
+                self._cancel_model_switch("Overlay disabled")
             self._reconcile_ai_runtime("Overlay disabled")
             self._render_runtime_controls()
             self.footer_var.set("Overlay disabled")
@@ -3565,7 +3585,7 @@ class JitterApp(tk.Tk):
             self.footer_var.set("Makcu device is not connected")
             return
 
-        self._cancel_pending_model_switch_for_runtime()
+        self._cancel_model_switch("Test Run started")
         self._deferred_motion_action = None
         self._test_restore_master = self.master_armed
         self.master_armed = False
@@ -3692,6 +3712,7 @@ class JitterApp(tk.Tk):
         self._test_restore_master = False
         self.trigger_gate.clear()
         self._sync_adaptive_zoom_gate()
+        self._cancel_model_switch(stop_reason)
         try:
             self._stop_motion_runtime(
                 stop_reason,
@@ -3723,6 +3744,7 @@ class JitterApp(tk.Tk):
         self._test_restore_master = False
         self.trigger_gate.clear()
         self._sync_adaptive_zoom_gate()
+        self._cancel_model_switch(reason)
         try:
             self._stop_motion_runtime(reason)
         except Exception:
@@ -4009,6 +4031,7 @@ class JitterApp(tk.Tk):
                 self._hide_overlay_fail_closed(
                     "Overlay hide failed after AI error"
                 )
+            self._cancel_model_switch("AI runtime error")
             try:
                 self._stop_ai_runtime("ai_error")
             except Exception:
@@ -4040,6 +4063,7 @@ class JitterApp(tk.Tk):
             self._hide_overlay_fail_closed(
                 "Overlay hide failed after AI error"
             )
+        self._cancel_model_switch("AI runtime error")
         try:
             self._stop_ai_runtime("ai_error")
         except Exception:
