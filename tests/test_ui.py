@@ -6,7 +6,7 @@ import unittest
 from unittest import mock
 
 from ai_service import AiEvent
-from ai_targeting import AimSettings
+from ai_targeting import AimSettings, DEFAULT_RESPONSE_CURVE
 from combined_motion import MotionSources
 from display_timing import RuntimeCadence
 from ui import JitterApp
@@ -603,6 +603,152 @@ class JitterLayoutTests(unittest.TestCase):
         self.app.update_idletasks()
         self.assertEqual(self.app.geometry().split("+")[0], "840x620")
         self.assertEqual(self.app.stop_button.winfo_manager(), "grid")
+
+    def test_response_curve_card_is_scrollable_and_keeps_window_fixed(self):
+        self.assertIs(self.app.ai_curve_card.master, self.app.motion_scroll_content)
+        self.assertEqual(self.app.ai_curve_card.winfo_manager(), "grid")
+        self.assertIsInstance(self.app.ai_curve_canvas, tk.Canvas)
+        self.app.update_idletasks()
+        self.assertEqual(self.app.geometry().split("+")[0], "840x620")
+        self.assertEqual(self.app.stop_button.winfo_manager(), "grid")
+
+    def test_curve_exact_edit_updates_live_snapshot_and_schedules_save(self):
+        self.app._cancel_after("_save_after_id")
+        self.app.ai_curve_vars[2].set("42")
+        self.app._curve_entry_changed(2)
+
+        self.assertEqual(self.app.get_ai_settings().response_curve[2], 0.42)
+        self.assertIsNotNone(self.app._save_after_id)
+
+    def test_reset_curve_restores_default(self):
+        self.app.ai_curve_vars[1].set("20")
+        self.app._curve_entry_changed(1)
+
+        self.app.ai_curve_reset_button.invoke()
+
+        self.assertEqual(
+            self.app.get_ai_settings().response_curve,
+            DEFAULT_RESPONSE_CURVE,
+        )
+
+    def test_curve_uses_four_exact_entries_and_a_fixed_zero_node(self):
+        self.assertNotIn("response_curve", self.app.ai_vars)
+        self.assertEqual(
+            {index: variable.get() for index, variable in self.app.ai_curve_vars.items()},
+            {1: "12", 2: "35", 3: "68", 4: "100"},
+        )
+        self.assertEqual(set(self.app.ai_curve_entries), {1, 2, 3, 4})
+        self.assertTrue(self.app.ai_curve_canvas.find_withtag("ai-curve-node-0"))
+        self.assertEqual(
+            self.app.ai_curve_canvas.tag_bind("ai-curve-node-0", "<ButtonPress-1>"),
+            "",
+        )
+        self.assertTrue(
+            self.app.ai_curve_canvas.tag_bind(
+                "ai-curve-node-1", "<ButtonPress-1>"
+            )
+        )
+        sampled_coords = self.app.ai_curve_canvas.coords("ai-curve-sample")
+        self.assertGreater(len(sampled_coords), 10)
+
+    def test_response_curve_restores_from_config(self):
+        self.app.close_app()
+        curve = (0.0, 0.2, 0.4, 0.8, 0.9)
+        app = self.make_app(config=AppConfig(
+            ai=AimSettings(response_curve=curve),
+        ))
+
+        self.assertEqual(app.get_ai_settings().response_curve, curve)
+        self.assertEqual(
+            {index: variable.get() for index, variable in app.ai_curve_vars.items()},
+            {1: "20", 2: "40", 3: "80", 4: "90"},
+        )
+
+    def test_curve_accepts_exact_zero_and_hundred_percent_boundaries(self):
+        self.app.ai_curve_vars[1].set("0")
+        self.app._curve_entry_changed(1)
+        self.app.ai_curve_vars[4].set("100")
+        self.app._curve_entry_changed(4)
+
+        self.assertEqual(
+            self.app.get_ai_settings().response_curve,
+            (0.0, 0.0, 0.35, 0.68, 1.0),
+        )
+        self.assertEqual(
+            self.app.ai_curve_entries[1].cget("style"),
+            "Liquid.Entry.TEntry",
+        )
+        self.assertEqual(
+            self.app.ai_curve_entries[4].cget("style"),
+            "Liquid.Entry.TEntry",
+        )
+
+    def test_invalid_curve_edits_style_only_affected_entry_without_mutation(self):
+        original = self.app.get_ai_settings()
+        for raw in ("not-a-number", "-1", "101", "5"):
+            with self.subTest(raw=raw):
+                self.app._cancel_after("_save_after_id")
+                self.app.ai_curve_vars[2].set(raw)
+                self.app._curve_entry_changed(2)
+
+                self.assertIs(self.app.get_ai_settings(), original)
+                self.assertIsNone(self.app._save_after_id)
+                self.assertEqual(
+                    self.app.ai_curve_entries[2].cget("style"),
+                    "Liquid.Invalid.TEntry",
+                )
+                for index in (1, 3, 4):
+                    self.assertEqual(
+                        self.app.ai_curve_entries[index].cget("style"),
+                        "Liquid.Entry.TEntry",
+                    )
+                self.assertIn("response curve", self.app.footer_var.get().lower())
+
+    def test_curve_drag_clamps_adjustable_node_between_neighbors(self):
+        self.app._curve_drag_started(2)
+        self.app._curve_dragged(SimpleNamespace(y=-1000))
+        self.assertEqual(self.app.get_ai_settings().response_curve[2], 0.68)
+
+        self.app._curve_dragged(SimpleNamespace(y=10000))
+        self.app._curve_drag_ended()
+        self.assertEqual(self.app.get_ai_settings().response_curve[2], 0.12)
+        self.assertEqual(self.app.get_ai_settings().response_curve[0], 0.0)
+
+    def test_curve_redraw_tracks_theme_palette(self):
+        self.app.update_idletasks()
+        canvas = self.app.ai_curve_canvas
+        self.assertEqual(canvas.cget("background"), "#FFFFFF")
+        self.assertEqual(canvas.itemcget("ai-curve-sample", "fill"), "#55DDF6")
+
+        self.app.toggle_theme()
+        self.app.update_idletasks()
+
+        self.assertEqual(canvas.cget("background"), "#202F43")
+        self.assertEqual(canvas.itemcget("ai-curve-sample", "fill"), "#63E6FF")
+
+    def test_curve_redraw_is_safe_after_canvas_destroy(self):
+        self.app.ai_curve_canvas.destroy()
+
+        self.app._redraw_ai_curve()
+        self.app._curve_drag_started(2)
+        self.app._curve_dragged(SimpleNamespace(y=10))
+        self.app._curve_drag_ended()
+
+        self.assertEqual(self.app.get_ai_settings().response_curve, DEFAULT_RESPONSE_CURVE)
+
+    def test_save_config_persists_curve_without_canvas_or_runtime_state(self):
+        curve = (0.0, 0.2, 0.42, 0.8, 1.0)
+        for index, value in enumerate(curve[1:], start=1):
+            self.app.ai_curve_vars[index].set(str(round(value * 100)))
+        self.app._curve_entry_changed(2)
+        self.app._cancel_after("_save_after_id")
+
+        self.app.save_config()
+
+        saved = self.store.saved[-1]
+        self.assertEqual(saved.ai.response_curve, curve)
+        self.assertFalse(hasattr(saved, "ai_curve_canvas"))
+        self.assertFalse(hasattr(saved, "ai_curve_vars"))
 
     def test_ai_numeric_controls_use_approved_ranges_and_exact_entries(self):
         expected = {
@@ -2438,6 +2584,20 @@ class JitterRuntimeTests(JitterLayoutTests):
                     self.service.composite_motion_calls[-1].duration_s,
                     3.0,
                 )
+
+    def test_ai_test_run_provider_reads_live_curve_with_zoom_disabled(self):
+        self.service.connected = True
+        self.app.ai_selected = True
+
+        self.app.start_test_run()
+        self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        call = self.service.composite_motion_calls[-1]
+
+        self.assertFalse(self.app.get_adaptive_zoom_gate())
+        self.app.ai_curve_vars[2].set("42")
+        self.app._curve_entry_changed(2)
+        self.assertEqual(call.aim_provider().response_curve[2], 0.42)
+        self.assertFalse(self.app.get_adaptive_zoom_gate())
 
     def test_test_run_rejects_no_sources(self):
         self.service.connected = True

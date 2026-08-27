@@ -22,8 +22,11 @@ from ai_service import AiEvent, AiService
 from ai_targeting import (
     AIM_LIMITS,
     AimSettings,
+    DEFAULT_RESPONSE_CURVE,
     aim_settings_from_mapping,
     aim_settings_to_mapping,
+    response_curve_value,
+    validated_response_curve,
 )
 from combined_motion import MotionSources
 from display_timing import RuntimeCadence, detect_runtime_cadence
@@ -246,6 +249,8 @@ class JitterApp(tk.Tk):
         self._invalid_motion_keys: set[str] = set()
         self._updating_ai_controls = False
         self._invalid_ai_keys: set[str] = set()
+        self._updating_ai_curve_controls = False
+        self._curve_drag_index: int | None = None
         self.jitter_selected = False
         self.ai_selected = False
         self.master_armed = False
@@ -809,9 +814,17 @@ class JitterApp(tk.Tk):
             ),
         )
         self.ai_zoom_var = tk.StringVar(self, "1.0×")
+        ai_mapping = aim_settings_to_mapping(self.config.ai)
         self.ai_vars = {
-            key: tk.StringVar(self, value)
-            for key, value in aim_settings_to_mapping(self.config.ai).items()
+            key: tk.StringVar(self, ai_mapping[key])
+            for key in _AI_CONTROL_SPECS
+        }
+        response_curve = validated_response_curve(self.config.ai.response_curve)
+        self.ai_curve_vars = {
+            index: tk.StringVar(
+                self, str(int(round(response_curve[index] * 100.0)))
+            )
+            for index in range(1, 5)
         }
         self.motion_summary_var = tk.StringVar(
             self, _motion_summary_text(self._motion_snapshot)
@@ -975,6 +988,7 @@ class JitterApp(tk.Tk):
         self.motion_scroll_canvas.configure(background=self._palette["window"])
         self._redraw_shell_art()
         self._redraw_connection_indicator()
+        self._redraw_ai_curve()
         self.nav.set_palette(self._navigation_palette())
         self.theme_button.icon = "☀" if self._theme == "dark" else "☾"
         self.theme_tooltip_text = (
@@ -1887,6 +1901,365 @@ class JitterApp(tk.Tk):
         self.overlay_head_button.grid(
             row=9, column=0, sticky="ew", pady=(6, 0)
         )
+
+        self._build_ai_curve_card()
+
+    def _build_ai_curve_card(self) -> None:
+        self.ai_curve_card = ttk.Frame(
+            self.motion_scroll_content,
+            style="Liquid.SettingsCard.TFrame",
+            padding=(18, 16, 18, 18),
+        )
+        self.ai_curve_card.grid(
+            row=2,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(8, 0),
+        )
+        self.ai_curve_card.columnconfigure(0, weight=1)
+
+        heading = ttk.Frame(
+            self.ai_curve_card, style="Liquid.SettingsCard.TFrame"
+        )
+        heading.grid(row=0, column=0, sticky="ew")
+        heading.columnconfigure(0, weight=1)
+        ttk.Label(
+            heading,
+            text="AI RESPONSE CURVE",
+            style="Liquid.CardTitle.TLabel",
+            font=(FONT_FAMILY, 12, "bold"),
+        ).grid(row=0, column=0, sticky="w")
+        self.ai_curve_reset_button = ttk.Button(
+            heading,
+            text="Reset Curve",
+            style="Liquid.Secondary.TButton",
+            command=self._reset_ai_curve,
+        )
+        self.ai_curve_reset_button.grid(row=0, column=1, sticky="e")
+        ttk.Label(
+            self.ai_curve_card,
+            text=(
+                "Shape how target distance becomes movement. Drag a node or "
+                "enter an exact percentage."
+            ),
+            style="Liquid.CardBody.TLabel",
+            justify="left",
+        ).grid(row=1, column=0, sticky="ew", pady=(5, 10))
+
+        self.ai_curve_canvas = tk.Canvas(
+            self.ai_curve_card,
+            height=176,
+            background=self._palette["raised"],
+            highlightthickness=0,
+            borderwidth=0,
+            takefocus=False,
+        )
+        self.ai_curve_canvas.grid(row=2, column=0, sticky="ew")
+        self.ai_curve_canvas.bind(
+            "<Configure>", self._redraw_ai_curve, add="+"
+        )
+
+        exact = ttk.Frame(
+            self.ai_curve_card, style="Liquid.SettingsCard.TFrame"
+        )
+        exact.grid(row=3, column=0, sticky="ew", pady=(10, 0))
+        for column in range(5):
+            exact.columnconfigure(column, weight=1, uniform="curve_exact")
+        fixed = ttk.Frame(exact, style="Liquid.SettingsCard.TFrame")
+        fixed.grid(row=0, column=0, sticky="ew", padx=(0, 5))
+        ttk.Label(
+            fixed, text="0% DISTANCE", style="Liquid.CardBody.TLabel"
+        ).pack(anchor="center")
+        ttk.Label(
+            fixed,
+            text="0%",
+            style="Liquid.CardText.TLabel",
+            font=(FONT_FAMILY, 11, "bold"),
+        ).pack(anchor="center", pady=(4, 0))
+
+        self.ai_curve_entries: dict[int, ttk.Entry] = {}
+        for index, distance in enumerate((25, 50, 75, 100), start=1):
+            block = ttk.Frame(exact, style="Liquid.SettingsCard.TFrame")
+            block.grid(row=0, column=index, sticky="ew", padx=5)
+            ttk.Label(
+                block,
+                text=f"{distance}% DISTANCE",
+                style="Liquid.CardBody.TLabel",
+            ).pack(anchor="center")
+            entry = ttk.Entry(
+                block,
+                textvariable=self.ai_curve_vars[index],
+                width=5,
+                style="Liquid.Entry.TEntry",
+                justify="right",
+            )
+            entry.pack(anchor="center", pady=(4, 0))
+            entry.bind(
+                "<FocusOut>",
+                lambda _event, node=index: self._curve_entry_changed(node),
+            )
+            entry.bind(
+                "<Return>",
+                lambda _event, node=index: self._curve_entry_changed(node),
+            )
+            self.ai_curve_entries[index] = entry
+        self._redraw_ai_curve()
+
+    def _ai_curve_canvas_alive(self) -> bool:
+        canvas = getattr(self, "ai_curve_canvas", None)
+        if canvas is None:
+            return False
+        try:
+            return bool(canvas.winfo_exists())
+        except tk.TclError:
+            if self._closing or self._closed:
+                return False
+            raise
+
+    def _curve_plot_bounds(self) -> tuple[float, float, float, float]:
+        canvas = self.ai_curve_canvas
+        width = max(280, canvas.winfo_width(), canvas.winfo_reqwidth())
+        height = max(140, canvas.winfo_height(), canvas.winfo_reqheight())
+        return 42.0, 16.0, float(width - 18), float(height - 28)
+
+    def _redraw_ai_curve(self, _event: tk.Event | None = None) -> None:
+        if self._closing or not self._ai_curve_canvas_alive():
+            return
+        canvas = self.ai_curve_canvas
+        p = self._palette
+        try:
+            canvas.configure(background=p["raised"])
+            canvas.delete("all")
+            left, top, right, bottom = self._curve_plot_bounds()
+            plot_width = right - left
+            plot_height = bottom - top
+
+            for percent in (0, 25, 50, 75, 100):
+                y = bottom - (percent / 100.0) * plot_height
+                canvas.create_line(
+                    left,
+                    y,
+                    right,
+                    y,
+                    fill=p["border"],
+                    width=1,
+                    tags=("ai-curve-grid",),
+                )
+                canvas.create_text(
+                    left - 7,
+                    y,
+                    text=str(percent),
+                    fill=p["muted"],
+                    font=SMALL_FONT,
+                    anchor="e",
+                    tags=("ai-curve-label",),
+                )
+                x = left + (percent / 100.0) * plot_width
+                canvas.create_line(
+                    x,
+                    top,
+                    x,
+                    bottom,
+                    fill=p["border"],
+                    width=1,
+                    tags=("ai-curve-grid",),
+                )
+                canvas.create_text(
+                    x,
+                    bottom + 13,
+                    text=str(percent),
+                    fill=p["muted"],
+                    font=SMALL_FONT,
+                    anchor="n",
+                    tags=("ai-curve-label",),
+                )
+
+            curve = self.get_ai_settings().response_curve
+            sample_points: list[float] = []
+            for sample in range(65):
+                normalized_x = sample / 64.0
+                normalized_y = response_curve_value(curve, normalized_x)
+                sample_points.extend((
+                    left + normalized_x * plot_width,
+                    bottom - normalized_y * plot_height,
+                ))
+            canvas.create_line(
+                *sample_points,
+                fill=p["accent"],
+                width=3,
+                smooth=True,
+                splinesteps=12,
+                tags=("ai-curve-sample",),
+            )
+
+            for index, value in enumerate(curve):
+                x = left + (index / 4.0) * plot_width
+                y = bottom - value * plot_height
+                node_tag = f"ai-curve-node-{index}"
+                if index:
+                    canvas.create_oval(
+                        x - 10,
+                        y - 10,
+                        x + 10,
+                        y + 10,
+                        fill=p["raised"],
+                        outline="",
+                        tags=("ai-curve-hit", node_tag),
+                    )
+                canvas.create_oval(
+                    x - 5,
+                    y - 5,
+                    x + 5,
+                    y + 5,
+                    fill=p["accent" if index else "muted"],
+                    outline=p["text"],
+                    width=1,
+                    tags=("ai-curve-node", node_tag),
+                )
+                if index:
+                    canvas.tag_bind(
+                        node_tag,
+                        "<ButtonPress-1>",
+                        lambda _event, node=index: self._curve_drag_started(node),
+                    )
+                    canvas.tag_bind(
+                        node_tag, "<B1-Motion>", self._curve_dragged
+                    )
+                    canvas.tag_bind(
+                        node_tag,
+                        "<ButtonRelease-1>",
+                        lambda _event: self._curve_drag_ended(),
+                    )
+        except tk.TclError:
+            if self._closing or not self._ai_curve_canvas_alive():
+                return
+            raise
+
+    def _curve_values_from_entries(
+        self,
+    ) -> tuple[float, float, float, float, float]:
+        percentages = [0]
+        for index in range(1, 5):
+            raw = self.ai_curve_vars[index].get().strip()
+            value = int(raw)
+            if not 0 <= value <= 100:
+                raise ValueError("curve percentage outside 0..100")
+            percentages.append(value)
+        if any(
+            current < previous
+            for previous, current in zip(percentages, percentages[1:])
+        ):
+            raise ValueError("curve percentages are out of order")
+        return validated_response_curve(
+            tuple(value / 100.0 for value in percentages)
+        )
+
+    def _current_ai_mapping(self) -> dict[str, Any]:
+        mapping: dict[str, Any] = {
+            name: variable.get() for name, variable in self.ai_vars.items()
+        }
+        mapping["response_curve"] = list(self._curve_values_from_entries())
+        return mapping
+
+    def _curve_entry_changed(self, index: int) -> None:
+        if self._updating_ai_curve_controls or self._closing:
+            return
+        try:
+            self._curve_values_from_entries()
+        except (TypeError, ValueError, OverflowError):
+            for node, entry in self.ai_curve_entries.items():
+                entry.configure(
+                    style=(
+                        "Liquid.Invalid.TEntry"
+                        if node == index else "Liquid.Entry.TEntry"
+                    )
+                )
+            self.footer_var.set(
+                "Response curve must use ordered whole percentages from 0 to 100"
+            )
+            return
+        for entry in self.ai_curve_entries.values():
+            entry.configure(style="Liquid.Entry.TEntry")
+        if self.footer_var.get().startswith("Response curve must "):
+            self.footer_var.set("Ready")
+        self._replace_ai_snapshot(
+            aim_settings_from_mapping(self._current_ai_mapping())
+        )
+        self._redraw_ai_curve()
+        self._schedule_save()
+
+    def _reset_ai_curve(self) -> None:
+        if self._closing:
+            return
+        self._updating_ai_curve_controls = True
+        try:
+            for index, value in enumerate(DEFAULT_RESPONSE_CURVE[1:], start=1):
+                self.ai_curve_vars[index].set(str(int(round(value * 100.0))))
+        finally:
+            self._updating_ai_curve_controls = False
+        for entry in self.ai_curve_entries.values():
+            entry.configure(style="Liquid.Entry.TEntry")
+        self._replace_ai_snapshot(
+            aim_settings_from_mapping(self._current_ai_mapping())
+        )
+        self.footer_var.set("Response curve reset")
+        self._redraw_ai_curve()
+        self._schedule_save()
+
+    def _curve_drag_started(self, index: int) -> None:
+        if (
+            self._closing
+            or index not in self.ai_curve_vars
+            or not self._ai_curve_canvas_alive()
+        ):
+            return
+        self._curve_drag_index = index
+
+    def _curve_dragged(self, event: Any) -> None:
+        index = self._curve_drag_index
+        if (
+            index is None
+            or self._closing
+            or not self._ai_curve_canvas_alive()
+        ):
+            return
+        _left, top, _right, bottom = self._curve_plot_bounds()
+        y = max(top, min(bottom, float(event.y)))
+        percentage = int(round((bottom - y) * 100.0 / (bottom - top)))
+        curve = self.get_ai_settings().response_curve
+        lower = int(math.ceil(curve[index - 1] * 100.0))
+        upper = (
+            int(math.floor(curve[index + 1] * 100.0))
+            if index < 4 else 100
+        )
+        percentage = max(lower, min(upper, percentage))
+        self._updating_ai_curve_controls = True
+        try:
+            self.ai_curve_vars[index].set(str(percentage))
+        finally:
+            self._updating_ai_curve_controls = False
+        self._curve_entry_changed(index)
+
+    def _curve_drag_ended(self) -> None:
+        self._curve_drag_index = None
+
+    def _cancel_ai_curve_callbacks(self) -> None:
+        self._curve_drag_index = None
+        if not self._ai_curve_canvas_alive():
+            return
+        try:
+            self.ai_curve_canvas.unbind("<Configure>")
+            for index in range(1, 5):
+                node_tag = f"ai-curve-node-{index}"
+                for sequence in (
+                    "<ButtonPress-1>", "<B1-Motion>", "<ButtonRelease-1>"
+                ):
+                    self.ai_curve_canvas.tag_unbind(node_tag, sequence)
+        except tk.TclError:
+            if self._closing or not self._ai_curve_canvas_alive():
+                return
+            raise
 
     def _refresh_motion_scrollregion(
         self, _event: tk.Event | None = None
@@ -3558,7 +3931,15 @@ class JitterApp(tk.Tk):
     def _ai_changed(self, key: str) -> None:
         if self._updating_ai_controls or self._closing:
             return
-        mapping = {name: variable.get() for name, variable in self.ai_vars.items()}
+        try:
+            mapping = self._current_ai_mapping()
+        except (TypeError, ValueError, OverflowError):
+            mapping = {
+                name: variable.get() for name, variable in self.ai_vars.items()
+            }
+            mapping["response_curve"] = list(
+                self.get_ai_settings().response_curve
+            )
         invalid = self._invalid_ai_values(mapping)
         if invalid:
             self._invalid_ai_keys = invalid
@@ -3706,6 +4087,7 @@ class JitterApp(tk.Tk):
             return
         self._closing = True
         self.nav.cancel_animation()
+        self._cancel_ai_curve_callbacks()
         for widget in self.winfo_children():
             self._cancel_slider_callbacks(widget)
         self._hide_action_tooltip()
