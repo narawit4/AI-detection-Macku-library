@@ -106,6 +106,13 @@ with the supported Windows Python installation.
 - Keep base-selection continuity separate from movement publication. Stability
   is local to one AI generation and resets when the movement zoom gate is
   false; combined Jitter continues when AI movement is unconfirmed.
+- Keep the last confirmed base target as the selection anchor. A candidate
+  that does not match both its class and 48-pixel association radius must
+  remain one class and stay within 18 pixels for three consecutive
+  observations before promotion.
+- While a replacement is pending, publish current Overlay detections but no AI
+  movement target. Cancel the pending switch if the confirmed target returns;
+  never send the saved anchor itself as stale movement.
 - Combined movement sums current source deltas; Jitter continues when AI Aim
   has no target.
 - The optional overlay starts off and is independent of source selection. It

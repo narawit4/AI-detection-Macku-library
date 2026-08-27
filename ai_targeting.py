@@ -46,6 +46,73 @@ class DetectionAnalysis:
     frame: DetectionFrameSnapshot
 
 
+TARGET_ASSOCIATION_RADIUS_PX = 48.0
+TARGET_SWITCH_STABLE_DISPLACEMENT_PX = 18.0
+TARGET_SWITCH_CONFIRMATION_COUNT = 3
+
+
+@dataclass(frozen=True)
+class TargetLockState:
+    confirmed_target: TargetSnapshot | None = None
+    pending_target: TargetSnapshot | None = None
+    pending_count: int = 0
+
+
+def _targets_are_near(
+    first: TargetSnapshot,
+    second: TargetSnapshot,
+    radius: float,
+) -> bool:
+    return (
+        first.target_class == second.target_class
+        and math.hypot(
+            first.aim_x - second.aim_x,
+            first.aim_y - second.aim_y,
+        ) <= radius
+    )
+
+
+def observe_target_lock(
+    state: TargetLockState,
+    candidate: TargetSnapshot | None,
+) -> TargetLockState:
+    confirmed = state.confirmed_target
+    if candidate is None:
+        return TargetLockState(confirmed_target=confirmed)
+    if confirmed is None or _targets_are_near(
+        confirmed,
+        candidate,
+        TARGET_ASSOCIATION_RADIUS_PX,
+    ):
+        return TargetLockState(confirmed_target=candidate)
+
+    pending = state.pending_target
+    pending_count = (
+        state.pending_count + 1
+        if pending is not None
+        and _targets_are_near(
+            pending,
+            candidate,
+            TARGET_SWITCH_STABLE_DISPLACEMENT_PX,
+        )
+        else 1
+    )
+    if pending_count >= TARGET_SWITCH_CONFIRMATION_COUNT:
+        return TargetLockState(confirmed_target=candidate)
+    return TargetLockState(confirmed, candidate, pending_count)
+
+
+def target_lock_allows(
+    state: TargetLockState,
+    candidate: TargetSnapshot | None,
+) -> bool:
+    return (
+        candidate is not None
+        and state.pending_target is None
+        and state.confirmed_target == candidate
+    )
+
+
 @dataclass(frozen=True)
 class AimSettings:
     confidence: float = 0.35
@@ -150,7 +217,7 @@ def analyze_detections(
                 if math.hypot(
                     item[1][1] - previous.aim_x,
                     item[1][2] - previous.aim_y,
-                ) <= 48.0
+                ) <= TARGET_ASSOCIATION_RADIUS_PX
             ]
             if associated:
                 candidates = associated

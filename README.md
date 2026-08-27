@@ -90,6 +90,13 @@ current Overlay boxes remain visible during the confirmation frame, but AI
 movement is withheld rather than reusing an old position. In combined mode,
 Jitter continues while that AI component is withheld.
 
+After acquisition, AI Aim keeps the last confirmed base target as its selection
+anchor. A candidate that does not match the anchor's class and 48-pixel
+association radius must remain one class and stay within 18 pixels for three
+consecutive observations before it can replace that anchor. Until then,
+current Overlay boxes remain visible but AI movement is withheld; if the
+original target returns, the pending switch is cancelled.
+
 A new or shaken small target starts with the wider 1.5x refinement. A confirmed
 target may return to 2.0x only after the fixed 100 ms recoil cooldown. A normal
 refinement miss also restarts confirmation and cooldown while preserving only

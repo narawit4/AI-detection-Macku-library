@@ -7,13 +7,16 @@ from ai_targeting import (
     AimSettings,
     Detection,
     DetectionFrameSnapshot,
+    TargetLockState,
     TargetSnapshot,
     AimMovementEngine,
     aim_settings_from_mapping,
     aim_settings_to_mapping,
     analyze_detections,
     detection_aim_point,
+    observe_target_lock,
     select_target,
+    target_lock_allows,
 )
 
 
@@ -64,6 +67,90 @@ class AimSettingsTests(unittest.TestCase):
             "smoothing": "0.25",
             "max_step": "20",
         })
+
+
+class TargetLockTests(unittest.TestCase):
+    def target(self, sequence, x, *, kind="head", y=160.0):
+        return TargetSnapshot(sequence, 10.0 + sequence / 100.0, kind, x, y)
+
+    def test_initial_target_is_confirmed_and_state_is_immutable(self):
+        target = self.target(1, 80.0)
+
+        state = observe_target_lock(TargetLockState(), target)
+
+        self.assertEqual(state.confirmed_target, target)
+        self.assertIsNone(state.pending_target)
+        self.assertEqual(state.pending_count, 0)
+        self.assertTrue(target_lock_allows(state, target))
+        with self.assertRaises(FrozenInstanceError):
+            state.pending_count = 1
+
+    def test_unassociated_target_requires_three_stable_observations(self):
+        original = self.target(1, 80.0)
+        state = TargetLockState(confirmed_target=original)
+        first = self.target(2, 155.0)
+        second = self.target(3, 156.0)
+        third = self.target(4, 154.0)
+
+        state = observe_target_lock(state, first)
+        self.assertEqual(state.confirmed_target, original)
+        self.assertEqual(state.pending_count, 1)
+        self.assertFalse(target_lock_allows(state, first))
+
+        state = observe_target_lock(state, second)
+        self.assertEqual(state.confirmed_target, original)
+        self.assertEqual(state.pending_count, 2)
+        self.assertFalse(target_lock_allows(state, second))
+
+        state = observe_target_lock(state, third)
+        self.assertEqual(state.confirmed_target, third)
+        self.assertIsNone(state.pending_target)
+        self.assertEqual(state.pending_count, 0)
+        self.assertTrue(target_lock_allows(state, third))
+
+    def test_pending_candidate_change_restarts_confirmation(self):
+        original = self.target(1, 80.0)
+        state = observe_target_lock(
+            TargetLockState(confirmed_target=original),
+            self.target(2, 155.0),
+        )
+
+        changed = self.target(3, 130.0)
+        state = observe_target_lock(state, changed)
+
+        self.assertEqual(state.confirmed_target, original)
+        self.assertEqual(state.pending_target, changed)
+        self.assertEqual(state.pending_count, 1)
+        self.assertFalse(target_lock_allows(state, changed))
+
+    def test_original_target_return_cancels_pending_switch(self):
+        original = self.target(1, 80.0)
+        state = observe_target_lock(
+            TargetLockState(confirmed_target=original),
+            self.target(2, 155.0),
+        )
+
+        returned = self.target(3, 82.0)
+        state = observe_target_lock(state, returned)
+
+        self.assertEqual(state.confirmed_target, returned)
+        self.assertIsNone(state.pending_target)
+        self.assertEqual(state.pending_count, 0)
+        self.assertTrue(target_lock_allows(state, returned))
+
+    def test_missing_target_keeps_anchor_without_allowing_movement(self):
+        original = self.target(1, 80.0)
+        state = observe_target_lock(
+            TargetLockState(confirmed_target=original),
+            self.target(2, 155.0),
+        )
+
+        state = observe_target_lock(state, None)
+
+        self.assertEqual(state.confirmed_target, original)
+        self.assertIsNone(state.pending_target)
+        self.assertEqual(state.pending_count, 0)
+        self.assertFalse(target_lock_allows(state, None))
 
 
 class TargetSelectionTests(unittest.TestCase):

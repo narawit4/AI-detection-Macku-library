@@ -14,8 +14,11 @@ from ai_targeting import (
     AimSettings,
     DetectionAnalysis,
     DetectionFrameSnapshot,
+    TargetLockState,
     TargetSnapshot,
     analyze_detections,
+    observe_target_lock,
+    target_lock_allows,
 )
 from ai_zoom import (
     ZoomStabilityState,
@@ -287,7 +290,7 @@ class AiService:
             self._emit_current(AiEvent("ready", provider), generation, stop_event)
 
             sequence = 0
-            selection_previous = None
+            target_lock = TargetLockState()
             stability = ZoomStabilityState()
             refinement_enabled = True
             published_factor = 1.0
@@ -311,9 +314,16 @@ class AiService:
                     settings,
                     sequence=sequence,
                     captured_at=captured_at,
-                    previous=selection_previous,
+                    previous=target_lock.confirmed_target,
                 )
-                selection_previous = base_analysis.target
+                target_lock = observe_target_lock(
+                    target_lock,
+                    base_analysis.target,
+                )
+                selection_confirmed = target_lock_allows(
+                    target_lock,
+                    base_analysis.target,
+                )
                 factor = 1.0
                 published = base_analysis
                 gate_active = False
@@ -392,6 +402,8 @@ class AiService:
                         stability = ZoomStabilityState()
                         factor = 1.0
                         published = base_analysis
+                if not selection_confirmed:
+                    published = DetectionAnalysis(None, published.frame)
                 with self._lock:
                     if not self._is_current_locked(generation, stop_event):
                         return
