@@ -7,6 +7,8 @@ import numpy as np
 
 from ai_service import AiEvent, AiService
 from ai_targeting import AimSettings, Detection
+from combined_motion import CombinedMotionEngine, MotionSources
+from motion import MotionSettings
 
 
 def wait_until(predicate, timeout=1.0):
@@ -386,6 +388,63 @@ class AiServiceTests(unittest.TestCase):
         self.release_and_wait(capture, service, 4)
         self.assertAlmostEqual(service.latest_snapshot().aim_x, 220.0)
         self.assertEqual(service.latest_detection_snapshot().selected_index, 0)
+
+    def test_pending_replacement_passes_none_to_aim_while_jitter_continues(self):
+        original = (self.small_head(100.0),)
+        replacement = (self.small_head(220.0),)
+        detector = SequentialDetector((
+            original,
+            replacement,
+        ))
+        capture = ControlledCapture([
+            np.zeros((320, 320, 3), dtype=np.uint8)
+            for _ in range(2)
+        ])
+        clock = MutableClock(10.0)
+        service, _events = self.make_zoom_service(
+            detector,
+            capture=capture,
+            clock=clock,
+        )
+        service.start(AimSettings, lambda: False)
+
+        self.release_and_wait(capture, service, 1)
+        clock.set(10.150)
+        self.release_and_wait(capture, service, 2)
+        pending = service.latest_detection_snapshot()
+        self.assertEqual(pending.detections, replacement)
+        self.assertIsNone(pending.selected_index)
+
+        class FixedJitter:
+            def step(self, _settings, _dt, _elapsed):
+                return 3, -2
+
+        class RecordingAim:
+            def __init__(self):
+                self.targets = []
+
+            def step(self, target, _settings, _now):
+                self.targets.append(target)
+                return (0, 0) if target is None else (40, 40)
+
+        aim = RecordingAim()
+        engine = CombinedMotionEngine(
+            MotionSources(jitter=True, ai=True),
+            jitter_engine_factory=FixedJitter,
+            aim_engine_factory=lambda: aim,
+        )
+
+        report = engine.step(
+            MotionSettings(),
+            service.latest_snapshot(),
+            AimSettings(),
+            dt=0.01,
+            elapsed=0.02,
+            now=10.151,
+        )
+
+        self.assertEqual(aim.targets, [None])
+        self.assertEqual(report, (3, -2))
 
     def test_old_generation_cannot_publish_tracker_recovery(self):
         tracking_head = self.tracking_head
