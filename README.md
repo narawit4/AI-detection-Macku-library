@@ -84,6 +84,18 @@ Overlay, while unrelated base boxes remain. Adaptive Zoom does not magnify the
 display and cannot recover a target that the base pass never detected. Zoom
 status is runtime-only; Schema 5 and its persisted settings are unchanged.
 
+While the movement gate is active, AI Aim confirms a base-pass target across
+two consecutive same-class observations no more than 18 pixels apart. The
+current Overlay boxes remain visible during the confirmation frame, but AI
+movement is withheld rather than reusing an old position. In combined mode,
+Jitter continues while that AI component is withheld.
+
+A new or shaken small target starts with the wider 1.5x refinement. A confirmed
+target may return to 2.0x only after the fixed 100 ms recoil cooldown. A normal
+refinement miss also restarts confirmation and cooldown while preserving only
+the current frame's base boxes. These constants are internal runtime policy,
+not saved settings.
+
 ## Requirements
 
 - Windows 10 or newer

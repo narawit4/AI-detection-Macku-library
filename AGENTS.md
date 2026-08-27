@@ -97,6 +97,15 @@ with the supported Windows Python installation.
   box; its box is mapped back to the original frame for Overlay rendering and
   unrelated base boxes remain. Adaptive Zoom does not magnify the display or
   recover targets the base pass never detected.
+- Recoil-stable zoom observes only base-pass targets. AI movement requires two
+  consecutive same-class observations within 18 pixels; current Overlay boxes
+  remain publishable while an unconfirmed movement target is `None`.
+- A requested 2.0x refinement is capped at 1.5x until confirmation and a fixed
+  100 ms cooldown both pass. A normal refinement miss resets confirmation and
+  extends cooldown without adding an inference call or holding a stale target.
+- Keep base-selection continuity separate from movement publication. Stability
+  is local to one AI generation and resets when the movement zoom gate is
+  false; combined Jitter continues when AI movement is unconfirmed.
 - Combined movement sums current source deltas; Jitter continues when AI Aim
   has no target.
 - The optional overlay starts off and is independent of source selection. It
