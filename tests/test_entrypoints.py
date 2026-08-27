@@ -320,7 +320,7 @@ class EntryPointTests(unittest.TestCase):
             "main.py", "ui.py", "motion.py", "combined_motion.py",
             "ai_targeting.py", "ai_detection.py", "ai_capture.py",
             "ai_zoom.py", "ai_service.py", "overlay.py", "makcu_service.py", "hotkeys.py",
-            "settings.py", "liquid_widgets.py", "distribution_metadata.py",
+            "settings.py", "liquid_widgets.py", "distribution_metadata.py", "display_timing.py",
         }
         expected_runtime_imports = {
             "makcu", "serial", "onnxruntime", "dxcam", "comtypes", "numpy",
