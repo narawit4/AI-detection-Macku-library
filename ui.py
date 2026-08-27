@@ -3040,12 +3040,22 @@ class JitterApp(tk.Tk):
 
     def _cancel_pending_model_switch_for_runtime(self) -> None:
         switch = self._model_switch
-        if switch is None:
+        if switch is None or switch.phase != "validating":
             return
         self.model_validator.cancel()
         self._finish_model_switch(
             switch.previous,
             "Model change cancelled because AI started",
+        )
+
+    def _cancel_model_switch_for_no_runtime_demand(self) -> None:
+        switch = self._model_switch
+        if switch is None:
+            return
+        self.model_validator.cancel()
+        self._finish_model_switch(
+            switch.previous,
+            f"Model change cancelled; restored {switch.previous.display_name}",
         )
 
     def queue_model_validation_event(self, event: ModelValidationEvent) -> None:
@@ -3329,6 +3339,8 @@ class JitterApp(tk.Tk):
             self._ai_provider = None
             self._ai_runtime_active = False
             self._sync_adaptive_zoom_gate()
+        if not required:
+            self._cancel_model_switch_for_no_runtime_demand()
         return True
 
     def _hide_overlay_after_ai_failure(self) -> None:

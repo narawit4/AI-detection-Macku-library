@@ -2584,6 +2584,61 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.assertEqual(self.app._model_switch.phase, "starting_rollback")
         self.assertEqual(self.ai.start_calls[-1][2], self.app._model_switch.previous.path)
 
+    def test_reconcile_preserves_started_candidate_until_its_ready_event(self):
+        self.prepare_armed_sources(MotionSources(False, True))
+        previous = self.app._model_choice
+        choice, token = self.begin_custom_model_switch("candidate.onnx")
+        self.model_validator.emit(ModelValidationEvent("ready", token, choice))
+        self.drain_ui_queue()
+
+        self.app.toggle_overlay()
+
+        self.assertIsNotNone(self.app._model_switch)
+        self.assertEqual(self.app._model_switch.phase, "starting_candidate")
+        self.assertEqual(self.app._model_choice, previous)
+        self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        self.assertIsNone(self.app._model_switch)
+        self.assertEqual(self.app._model_choice, choice)
+
+    def test_removing_demand_cancels_started_candidate_and_ignores_late_ready(self):
+        self.prepare_armed_sources(MotionSources(False, True))
+        choice, token = self.begin_custom_model_switch("candidate.onnx")
+        self.model_validator.emit(ModelValidationEvent("ready", token, choice))
+        self.drain_ui_queue()
+        previous = self.app._model_switch.previous
+        self.app.queue_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+
+        self.app.set_master(False)
+        self.drain_ui_queue()
+
+        self.assertIsNone(self.app._model_switch)
+        self.assertEqual(self.app._model_choice, previous)
+        self.assertFalse(self.app._ai_runtime_active)
+        self.assertFalse(self.app._ai_ready)
+        self.assertEqual(self.app.ai_model_var.get(), "Default · all_games_320.onnx")
+        self.assertEqual(str(self.app.model_browse_button.cget("state")), "normal")
+        self.assertFalse(self.app._normal_motion_started)
+
+    def test_stop_cancels_started_rollback_and_ignores_late_ready(self):
+        self.prepare_armed_sources(MotionSources(False, True))
+        choice, token = self.begin_custom_model_switch("rollback.onnx")
+        self.model_validator.emit(ModelValidationEvent("ready", token, choice))
+        self.drain_ui_queue()
+        self.app.handle_ai_event(AiEvent("error", "candidate failed"))
+        previous = self.app._model_switch.previous
+        self.app.queue_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+
+        self.app.emergency_stop("Stopped by user")
+        self.drain_ui_queue()
+
+        self.assertIsNone(self.app._model_switch)
+        self.assertEqual(self.app._model_choice, previous)
+        self.assertFalse(self.app._ai_runtime_active)
+        self.assertFalse(self.app._ai_ready)
+        self.assertEqual(self.app.ai_model_var.get(), "Default · all_games_320.onnx")
+        self.assertEqual(str(self.app.model_browse_button.cget("state")), "normal")
+        self.assertFalse(self.app._normal_motion_started)
+
     def test_rollback_error_enters_existing_fail_closed_path_without_retry(self):
         self.prepare_armed_sources(MotionSources(False, True))
         self.assertEqual(
