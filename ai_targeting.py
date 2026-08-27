@@ -379,15 +379,16 @@ class AimMovementEngine:
     DEAD_ZONE = 1.5
     MAX_AGE_S = 0.150
     MAX_ACCELERATION = 21_600.0
+    MAX_SMOOTHING_TAU_S = 0.200
     MAX_DT_S = 0.100
     REFERENCE_RADIUS = math.hypot(CENTER, CENTER)
 
     def __init__(self, nominal_hz: float = 240.0) -> None:
         self._nominal_hz = nominal_hz
-        self._settled_sequence = None
         self.reset()
 
     def reset(self) -> None:
+        self._settled_sequence = None
         self._last_sequence = None
         self._remaining_x = self._remaining_y = 0.0
         self._velocity_x = self._velocity_y = 0.0
@@ -450,7 +451,7 @@ class AimMovementEngine:
         desired_y = desired_speed * self._remaining_y / radius
 
         if settings.smoothing > 0.0:
-            tau = 0.200 * (settings.smoothing / 0.95) ** 2
+            tau = self.MAX_SMOOTHING_TAU_S * (settings.smoothing / 0.95) ** 2
             alpha = 1.0 - math.exp(-dt / tau)
         else:
             alpha = 1.0

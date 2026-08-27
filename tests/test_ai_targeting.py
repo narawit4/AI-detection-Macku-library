@@ -388,6 +388,15 @@ class AimMovementEngineTests(unittest.TestCase):
 
         self.assertEqual(immediate, (6, 0))
 
+    def test_servo_constants_match_exact_acceleration_and_maximum_tau_contract(self):
+        self.assertEqual(
+            (
+                AimMovementEngine.MAX_ACCELERATION,
+                AimMovementEngine.MAX_SMOOTHING_TAU_S,
+            ),
+            (21_600.0, 0.200),
+        )
+
     def test_point_ninety_five_smoothing_uses_exact_tau_over_multiple_ticks(self):
         engine = AimMovementEngine(nominal_hz=60)
         settings = AimSettings(
@@ -532,6 +541,36 @@ class AimMovementEngineTests(unittest.TestCase):
             ),
             (-6, 0),
         )
+
+    def test_public_reset_clears_settled_sequence_tombstone(self):
+        engine = AimMovementEngine(nominal_hz=60)
+        settings = AimSettings(
+            aim_strength=1.0,
+            smoothing=0.0,
+            max_step=127,
+            response_curve=self.LINEAR_CURVE,
+        )
+        target = TargetSnapshot(1, 100.0, "head", 166.0, 160.0)
+        self.assertEqual(engine.step(target, settings, 10.0), (6, 0))
+
+        engine.reset()
+
+        self.assertEqual(engine.step(target, settings, 10.001), (6, 0))
+
+    def test_none_after_settlement_clears_sequence_tombstone(self):
+        engine = AimMovementEngine(nominal_hz=60)
+        settings = AimSettings(
+            aim_strength=1.0,
+            smoothing=0.0,
+            max_step=127,
+            response_curve=self.LINEAR_CURVE,
+        )
+        target = TargetSnapshot(1, 100.0, "head", 166.0, 160.0)
+        self.assertEqual(engine.step(target, settings, 10.0), (6, 0))
+
+        self.assertEqual(engine.step(None, settings, 10.001), (0, 0))
+
+        self.assertEqual(engine.step(target, settings, 10.002), (6, 0))
 
     def test_none_target_resets_all_motion_state(self):
         engine = AimMovementEngine(nominal_hz=60)
