@@ -2946,7 +2946,6 @@ class JitterApp(tk.Tk):
     def _model_changes_unavailable(self) -> bool:
         return (
             self._model_switch is not None
-            or self._ai_runtime_required()
             or self._motion_mode in _TEST_MOTION_MODES
         )
 
@@ -3007,10 +3006,29 @@ class JitterApp(tk.Tk):
         self._model_switch = switch
         self.ai_model_var.set(f"Loading · {candidate.display_name}")
         self._render_model_controls()
+        if (
+            self._normal_motion_started
+            or self._expected_motion_generation is not None
+        ):
+            self._stop_motion_runtime("model_switch")
+            self._normal_motion_started = False
+            self._set_runtime_state(
+                "armed" if self.master_armed else "disabled"
+            )
+        self._ai_targeting_revision = self.ai_service.reset_targeting()
+        self.ai_zoom_var.set("1.0×")
+        if self._ai_runtime_active:
+            self._stop_ai_runtime("Model switch")
+        self._ai_ready = False
+        self._ai_provider = None
+        self._ai_runtime_active = False
+        self._sync_adaptive_zoom_gate()
+        self.ai_status_var.set("Loading")
+        self.ai_fps_var.set("0 FPS")
+        self.ai_provider_var.set("No provider")
         if not self.model_validator.start(candidate, switch.token):
-            self._finish_model_switch(
-                switch.previous,
-                f"Model rejected; restored {switch.previous.display_name}",
+            self._start_model_rollback(
+                switch, "validation worker could not start"
             )
 
     def _finish_model_switch(self, choice: ModelChoice, footer: str) -> None:
@@ -3044,14 +3062,8 @@ class JitterApp(tk.Tk):
         ):
             return
         if event.kind == "error":
-            logging.error(
-                "AI model validation failed for %s (%s)",
-                event.choice.path,
-                event.error_type,
-            )
-            self._finish_model_switch(
-                switch.previous,
-                f"Model rejected; restored {switch.previous.display_name}",
+            self._start_model_rollback(
+                switch, event.error_type or "validation failed"
             )
             return
         if event.kind != "ready":
@@ -3062,10 +3074,54 @@ class JitterApp(tk.Tk):
                 f"Using model: {switch.candidate.display_name}",
             )
             return
-        self._finish_model_switch(
-            switch.previous,
-            "Model change cancelled because AI started",
+        self._start_validated_model_generation(switch)
+
+    def _start_validated_model_generation(self, switch: _ModelSwitch) -> None:
+        if self._model_switch != switch or switch.phase != "validating":
+            return
+        starting = replace(switch, phase="starting_candidate")
+        self._model_switch = starting
+        self._render_model_controls()
+        if not self._start_ai_runtime(
+            "Model switch", model_choice=starting.candidate
+        ):
+            self._start_model_rollback(starting, "candidate startup failed")
+
+    def _start_model_rollback(
+        self,
+        switch: _ModelSwitch,
+        failure: str,
+    ) -> None:
+        if self._model_switch != switch:
+            return
+        logging.error(
+            "AI model %s rejected: %s",
+            switch.candidate.path,
+            failure,
         )
+        if self._ai_runtime_active:
+            self._stop_ai_runtime("Model rollback")
+        self._ai_ready = False
+        self._ai_provider = None
+        self._ai_runtime_active = False
+        self._sync_adaptive_zoom_gate()
+        if not self._ai_runtime_required():
+            self._finish_model_switch(
+                switch.previous,
+                f"Model rejected; restored {switch.previous.display_name}",
+            )
+            return
+        rollback = replace(switch, phase="starting_rollback")
+        self._model_switch = rollback
+        self.ai_model_var.set(f"Loading · {rollback.previous.display_name}")
+        self._render_model_controls()
+        if self._start_ai_runtime(
+            "Model rollback", model_choice=rollback.previous
+        ):
+            return
+        self._model_switch = None
+        self._render_model_controls()
+        self._handle_ai_runtime_error("AI model rollback failed")
 
     def _render_runtime_controls(self) -> None:
         testing = self._motion_mode in _TEST_MOTION_MODES
@@ -3361,7 +3417,13 @@ class JitterApp(tk.Tk):
         self._render_runtime_controls()
         self.footer_var.set("Overlay stopped; check app.log")
 
-    def _start_ai_runtime(self, context: str) -> bool:
+    def _start_ai_runtime(
+        self,
+        context: str,
+        *,
+        model_choice: ModelChoice | None = None,
+    ) -> bool:
+        choice = model_choice or self._model_choice
         if not self._ai_runtime_active:
             self._ai_event_epoch += 1
         self._ai_runtime_active = True
@@ -3370,7 +3432,7 @@ class JitterApp(tk.Tk):
             generation = self.ai_service.start(
                 self.get_ai_settings,
                 self.get_adaptive_zoom_gate,
-                model_path=self._model_choice.path,
+                model_path=choice.path,
             )
         except Exception:
             logging.exception("AI runtime could not start during %s", context)
@@ -3819,6 +3881,17 @@ class JitterApp(tk.Tk):
             self.ai_provider_var.set("No provider")
             self.ai_zoom_var.set("1.0×")
         elif kind == "ready":
+            switch = self._model_switch
+            if switch is not None and switch.phase == "starting_candidate":
+                self._finish_model_switch(
+                    switch.candidate,
+                    f"Using model: {switch.candidate.display_name}",
+                )
+            elif switch is not None and switch.phase == "starting_rollback":
+                self._finish_model_switch(
+                    switch.previous,
+                    f"Model rejected; restored {switch.previous.display_name}",
+                )
             raw_provider = str(event.payload or "Unknown")
             provider = {
                 "DmlExecutionProvider": "DirectML",
@@ -3874,50 +3947,40 @@ class JitterApp(tk.Tk):
                 factor = 1.0
             self.ai_zoom_var.set(f"{factor:.1f}×")
         elif kind == "error":
-            logging.error("AI runtime error: %s", event.payload)
+            switch = self._model_switch
+            if switch is not None and switch.phase == "starting_candidate":
+                failure = str(event.payload or "AI service failed")
+                self._start_model_rollback(switch, failure)
+                return
+            if switch is not None and switch.phase == "starting_rollback":
+                self._model_switch = None
+                self._render_model_controls()
+                self._handle_ai_runtime_error(event.payload)
+                return
+            self._handle_ai_runtime_error(event.payload)
+        elif kind == "stopped":
+            self._ai_ready = False
+            self._ai_provider = None
             self._ai_runtime_active = False
             self._sync_adaptive_zoom_gate()
-            test_sources = self._test_sources
-            ai_motion_demand = (
-                (self.master_armed and self.ai_selected)
-                or (
-                    self._motion_mode in _TEST_MOTION_MODES
-                    and test_sources is not None
-                    and test_sources.ai
-                )
-            )
-            if not ai_motion_demand:
-                was_overlay_visible = self.overlay_visible
-                self.overlay_visible = False
-                self._cancel_after("_overlay_after_id")
-                if was_overlay_visible:
-                    self._hide_overlay_fail_closed(
-                        "Overlay hide failed after AI error"
-                    )
-                try:
-                    self._stop_ai_runtime("ai_error")
-                except Exception:
-                    logging.exception("AI runtime stop failed after error")
-                self._ai_ready = False
-                self._ai_provider = None
-                self._ai_runtime_active = False
-                self._sync_adaptive_zoom_gate()
-                self.ai_status_var.set("Error")
-                self.ai_fps_var.set("0 FPS")
-                self.ai_provider_var.set("No provider")
-                self._render_runtime_controls()
-                self.footer_var.set("Overlay stopped; AI detection failed")
-                return
-            was_master_armed = self.master_armed
-            was_test_run = self._motion_mode in _TEST_MOTION_MODES
-            gate_active = self.trigger_gate.active
-            jitter_fallback = was_master_armed and self.jitter_selected
-            had_motion = (
-                self._normal_motion_started
-                or self._expected_motion_generation is not None
-            )
+            self.ai_status_var.set("Stopped")
+            self.ai_fps_var.set("0 FPS")
+            self.ai_provider_var.set("No provider")
 
-            self.ai_selected = False
+    def _handle_ai_runtime_error(self, payload: object) -> None:
+        logging.error("AI runtime error: %s", payload)
+        self._ai_runtime_active = False
+        self._sync_adaptive_zoom_gate()
+        test_sources = self._test_sources
+        ai_motion_demand = (
+            (self.master_armed and self.ai_selected)
+            or (
+                self._motion_mode in _TEST_MOTION_MODES
+                and test_sources is not None
+                and test_sources.ai
+            )
+        )
+        if not ai_motion_demand:
             was_overlay_visible = self.overlay_visible
             self.overlay_visible = False
             self._cancel_after("_overlay_after_id")
@@ -3936,44 +3999,67 @@ class JitterApp(tk.Tk):
             self.ai_status_var.set("Error")
             self.ai_fps_var.set("0 FPS")
             self.ai_provider_var.set("No provider")
-            self._normal_motion_started = False
-            self._motion_mode = None
-            self._test_sources = None
-            self._test_start_pending = False
-            self._deferred_motion_action = None
-            self._test_generation += 1
-            self._test_pending_generation = None
-            self._test_waiting_for_motion_stop = False
-            self._test_restore_master = False
-            if had_motion or was_test_run:
-                try:
-                    self._stop_motion_runtime("ai_error")
-                except Exception:
-                    logging.exception("Motion stop failed after AI error")
-
-            self.master_armed = bool(jitter_fallback and not was_test_run)
-            self._sync_adaptive_zoom_gate()
-            if self.master_armed:
-                self._set_runtime_state("armed")
-                if gate_active:
-                    self._normal_motion_started = self._start_gated_motion()
-                    if self._normal_motion_started:
-                        self._set_runtime_state("moving")
-            else:
-                self.trigger_gate.clear()
-                self._set_runtime_state("disabled")
-            self._advance_hotkey_epoch()
             self._render_runtime_controls()
-            self.test_button.set_enabled(True)
-            self.footer_var.set("AI Aim stopped; Jitter remains available")
-        elif kind == "stopped":
-            self._ai_ready = False
-            self._ai_provider = None
-            self._ai_runtime_active = False
-            self._sync_adaptive_zoom_gate()
-            self.ai_status_var.set("Stopped")
-            self.ai_fps_var.set("0 FPS")
-            self.ai_provider_var.set("No provider")
+            self.footer_var.set("Overlay stopped; AI detection failed")
+            return
+        was_master_armed = self.master_armed
+        was_test_run = self._motion_mode in _TEST_MOTION_MODES
+        gate_active = self.trigger_gate.active
+        jitter_fallback = was_master_armed and self.jitter_selected
+        had_motion = (
+            self._normal_motion_started
+            or self._expected_motion_generation is not None
+        )
+
+        self.ai_selected = False
+        was_overlay_visible = self.overlay_visible
+        self.overlay_visible = False
+        self._cancel_after("_overlay_after_id")
+        if was_overlay_visible:
+            self._hide_overlay_fail_closed(
+                "Overlay hide failed after AI error"
+            )
+        try:
+            self._stop_ai_runtime("ai_error")
+        except Exception:
+            logging.exception("AI runtime stop failed after error")
+        self._ai_ready = False
+        self._ai_provider = None
+        self._ai_runtime_active = False
+        self._sync_adaptive_zoom_gate()
+        self.ai_status_var.set("Error")
+        self.ai_fps_var.set("0 FPS")
+        self.ai_provider_var.set("No provider")
+        self._normal_motion_started = False
+        self._motion_mode = None
+        self._test_sources = None
+        self._test_start_pending = False
+        self._deferred_motion_action = None
+        self._test_generation += 1
+        self._test_pending_generation = None
+        self._test_waiting_for_motion_stop = False
+        self._test_restore_master = False
+        if had_motion or was_test_run:
+            try:
+                self._stop_motion_runtime("ai_error")
+            except Exception:
+                logging.exception("Motion stop failed after AI error")
+
+        self.master_armed = bool(jitter_fallback and not was_test_run)
+        self._sync_adaptive_zoom_gate()
+        if self.master_armed:
+            self._set_runtime_state("armed")
+            if gate_active:
+                self._normal_motion_started = self._start_gated_motion()
+                if self._normal_motion_started:
+                    self._set_runtime_state("moving")
+        else:
+            self.trigger_gate.clear()
+            self._set_runtime_state("disabled")
+        self._advance_hotkey_epoch()
+        self._render_runtime_controls()
+        self.test_button.set_enabled(True)
+        self.footer_var.set("AI Aim stopped; Jitter remains available")
 
     def queue_service_event(self, event: ServiceEvent) -> None:
         # This method is intentionally the only service-to-Tk handoff.

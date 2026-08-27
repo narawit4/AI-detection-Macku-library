@@ -2498,6 +2498,119 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.app._cancel_after("_ui_pump_after_id")
         self.app._drain_ui_queue()
 
+    def test_active_switch_stops_motion_and_ai_then_restarts_candidate_on_validation(self):
+        self.prepare_armed_sources(MotionSources(True, True), gate_active=True)
+        retiring = self.service.active_motion_generation
+        self.assertEqual(
+            str(self.app.model_browse_button.cget("state")), "normal"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "custom.onnx"
+            path.write_bytes(b"model")
+            self.model_dialog_result = str(path)
+            self.app.model_browse_button.invoke()
+            choice, token = self.model_validator.start_calls[-1]
+
+            self.assertIn("model_switch", self.service.cancel_reasons)
+            self.assertEqual(self.ai.stop_calls[-1], "Model switch")
+            self.assertEqual(self.ai.reset_targeting_calls, 1)
+            self.assertFalse(self.app._ai_ready)
+            self.assertEqual(self.app.ai_zoom_var.get(), "1.0×")
+            self.assertTrue(self.app.master_armed)
+            self.assertTrue(self.app.jitter_selected)
+            self.assertTrue(self.app.ai_selected)
+            self.assertFalse(self.app.overlay_visible)
+
+            self.model_validator.emit(ModelValidationEvent("ready", token, choice))
+            self.drain_ui_queue()
+
+        self.assertEqual(self.ai.start_calls[-1][2], choice.path)
+        self.assertEqual(self.app.ai_model_var.get(), "Loading · custom.onnx")
+        self.assertEqual(self.app._model_switch.phase, "starting_candidate")
+        self.assertFalse(self.app._normal_motion_started)
+
+        self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        self.assertEqual(self.app.ai_model_var.get(), "Custom · custom.onnx")
+        self.assertIsNone(self.app._model_switch)
+        self.assertTrue(self.app._ai_ready)
+        self.assertFalse(self.app._normal_motion_started)
+        self.service.emit(ServiceEvent(
+            "motion_stopped", "model_switch", retiring
+        ))
+        self.drain_ui_queue()
+        self.assertTrue(self.app._normal_motion_started)
+
+    def test_model_controls_remain_available_for_each_active_demand(self):
+        for sources, overlay in (
+            (MotionSources(False, True), False),
+            (MotionSources(True, True), False),
+            (MotionSources(False, False), True),
+        ):
+            with self.subTest(sources=sources, overlay=overlay):
+                self.make_app()
+                if overlay:
+                    self.app.toggle_overlay()
+                else:
+                    self.prepare_armed_sources(sources)
+                self.assertEqual(
+                    str(self.app.model_browse_button.cget("state")), "normal"
+                )
+
+    def test_validation_failure_restarts_previous_model_when_demand_still_exists(self):
+        self.prepare_armed_sources(MotionSources(False, True))
+        self.assertEqual(
+            str(self.app.model_browse_button.cget("state")), "normal"
+        )
+        choice, token = self.begin_custom_model_switch("bad.onnx")
+        self.model_validator.emit(
+            ModelValidationEvent("error", token, choice, "ModelContractError")
+        )
+        self.drain_ui_queue()
+        self.assertEqual(self.ai.start_calls[-1][2], self.app._model_choice.path)
+        self.assertEqual(self.app._model_switch.phase, "starting_rollback")
+        self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        self.assertIsNone(self.app._model_switch)
+        self.assertTrue(self.app.footer_var.get().startswith("Model rejected; restored "))
+
+    def test_candidate_runtime_error_rolls_back_once(self):
+        self.prepare_armed_sources(MotionSources(False, True))
+        self.assertEqual(
+            str(self.app.model_browse_button.cget("state")), "normal"
+        )
+        choice, token = self.begin_custom_model_switch("loads-then-fails.onnx")
+        self.model_validator.emit(ModelValidationEvent("ready", token, choice))
+        self.drain_ui_queue()
+        self.app.handle_ai_event(AiEvent("error", "RuntimeError: AI service failed"))
+        self.assertEqual(self.app._model_switch.phase, "starting_rollback")
+        self.assertEqual(self.ai.start_calls[-1][2], self.app._model_switch.previous.path)
+
+    def test_rollback_error_enters_existing_fail_closed_path_without_retry(self):
+        self.prepare_armed_sources(MotionSources(False, True))
+        self.assertEqual(
+            str(self.app.model_browse_button.cget("state")), "normal"
+        )
+        choice, token = self.begin_custom_model_switch("bad-runtime.onnx")
+        self.model_validator.emit(ModelValidationEvent("ready", token, choice))
+        self.drain_ui_queue()
+        self.app.handle_ai_event(AiEvent("error", "candidate failed"))
+        starts_before_failure = len(self.ai.start_calls)
+        with self.assertLogs(level="ERROR"):
+            self.app.handle_ai_event(AiEvent("error", "rollback failed"))
+        self.assertEqual(len(self.ai.start_calls), starts_before_failure)
+        self.assertIsNone(self.app._model_switch)
+        self.assertFalse(self.app.ai_selected)
+        self.assertFalse(self.app.master_armed)
+
+    def test_validation_thread_start_failure_restarts_previous_model_once(self):
+        self.prepare_armed_sources(MotionSources(False, True))
+        self.assertEqual(
+            str(self.app.model_browse_button.cget("state")), "normal"
+        )
+        self.model_validator.start_result = False
+        self.begin_custom_model_switch("thread-fails.onnx")
+        self.assertEqual(self.app._model_switch.phase, "starting_rollback")
+        self.assertEqual(self.ai.start_calls[-1][2], self.app._model_switch.previous.path)
+
     def test_test_run_invalidates_pending_model_validation(self):
         candidate, token = self.begin_custom_model_switch("custom.onnx")
         self.service.connected = True
