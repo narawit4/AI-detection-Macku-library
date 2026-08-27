@@ -250,6 +250,7 @@ class JitterApp(tk.Tk):
         self._updating_ai_controls = False
         self._invalid_ai_keys: set[str] = set()
         self._updating_ai_curve_controls = False
+        self._curve_order_error_owners: dict[int, int] = {}
         self._curve_drag_index: int | None = None
         self.jitter_selected = False
         self.ai_selected = False
@@ -2156,11 +2157,24 @@ class JitterApp(tk.Tk):
             current = percentages[index]
             if previous is None or current is None or current >= previous:
                 continue
-            invalid.add(
-                changed_index
-                if changed_index in {index - 1, index} and changed_index > 0
-                else index
+            owner = self._curve_order_error_owners.get(index)
+            if owner is None:
+                owner = (
+                    changed_index
+                    if changed_index in {index - 1, index} and changed_index > 0
+                    else index
+                )
+            self._curve_order_error_owners[index] = owner
+            invalid.add(owner)
+        self._curve_order_error_owners = {
+            index: owner
+            for index, owner in self._curve_order_error_owners.items()
+            if (
+                percentages[index - 1] is not None
+                and percentages[index] is not None
+                and percentages[index] < percentages[index - 1]
             )
+        }
         if invalid:
             return None, invalid
         curve = validated_response_curve(
@@ -2207,6 +2221,7 @@ class JitterApp(tk.Tk):
     def _reset_ai_curve(self) -> None:
         if self._closing:
             return
+        self._curve_order_error_owners.clear()
         self._updating_ai_curve_controls = True
         try:
             for index, value in enumerate(DEFAULT_RESPONSE_CURVE[1:], start=1):

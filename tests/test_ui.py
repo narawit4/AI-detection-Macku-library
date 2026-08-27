@@ -757,6 +757,48 @@ class JitterLayoutTests(unittest.TestCase):
             "Liquid.Entry.TEntry",
         )
 
+    def test_curve_order_error_owner_survives_unrelated_edit_until_corrected(self):
+        original = self.app.get_ai_settings()
+        self.app._cancel_after("_save_after_id")
+        self.app.ai_curve_vars[1].set("50")
+        self.app._curve_entry_changed(1)
+
+        self.assertIs(self.app.get_ai_settings(), original)
+        self.assertIsNone(self.app._save_after_id)
+        self.assertEqual(
+            self.app.ai_curve_entries[1].cget("style"),
+            "Liquid.Invalid.TEntry",
+        )
+        self.assertEqual(
+            self.app.ai_curve_entries[2].cget("style"),
+            "Liquid.Entry.TEntry",
+        )
+
+        self.app.ai_curve_vars[3].set("70")
+        self.app._curve_entry_changed(3)
+
+        self.assertIs(self.app.get_ai_settings(), original)
+        self.assertIsNone(self.app._save_after_id)
+        self.assertEqual(
+            self.app.ai_curve_entries[1].cget("style"),
+            "Liquid.Invalid.TEntry",
+        )
+        for index in (2, 3, 4):
+            self.assertEqual(
+                self.app.ai_curve_entries[index].cget("style"),
+                "Liquid.Entry.TEntry",
+            )
+
+        self.app.ai_curve_vars[1].set("30")
+        self.app._curve_entry_changed(1)
+
+        self.assertEqual(
+            self.app.get_ai_settings().response_curve,
+            (0.0, 0.3, 0.35, 0.7, 1.0),
+        )
+        for entry in self.app.ai_curve_entries.values():
+            self.assertEqual(entry.cget("style"), "Liquid.Entry.TEntry")
+
     def test_curve_drag_clamps_adjustable_node_between_neighbors(self):
         self.app._curve_drag_started(2)
         self.app._curve_dragged(SimpleNamespace(y=-1000))
