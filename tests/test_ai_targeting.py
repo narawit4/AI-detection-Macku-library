@@ -104,6 +104,16 @@ class AimSettingsTests(unittest.TestCase):
             (0.0, 0.2, 0.2, 0.7, 1.0),
         )
 
+    def test_flat_curve_segment_stays_at_its_knot_value(self):
+        curve = (0.0, 0.9, 0.9, 0.9, 1.0)
+        samples = [
+            response_curve_value(curve, distance)
+            for distance in (0.25, 0.2509, 0.5, 0.7499)
+        ]
+
+        self.assertEqual(samples, [0.9, 0.9, 0.9, 0.9])
+        self.assertEqual(samples, sorted(samples))
+
     def test_aim_settings_is_immutable_with_response_curve(self):
         settings = AimSettings(response_curve=(0, .2, .4, .7, 1))
         with self.assertRaises(FrozenInstanceError):

@@ -269,7 +269,7 @@ def response_curve_value(
         + (-2.0 * t_cubed + 3.0 * t_squared) * values[segment + 1]
         + (t_cubed - t_squared) * width * tangents[segment + 1]
     )
-    return max(0.0, min(1.0, value))
+    return max(values[segment], min(values[segment + 1], value))
 
 
 def _endpoint_tangent(
