@@ -14,11 +14,19 @@ import threading
 import time
 import tkinter as tk
 import tkinter.font as tkfont
-from tkinter import colorchooser, ttk
+from tkinter import colorchooser, filedialog, ttk
 import tokenize
 from typing import Any, Callable, Mapping
 
 from ai_service import AiEvent, AiService
+from ai_model_selection import (
+    ModelChoice,
+    ModelSelectionError,
+    ModelValidationEvent,
+    ModelValidator,
+    bundled_model_choice,
+    external_model_choice,
+)
 from ai_targeting import (
     AIM_LIMITS,
     AimSettings,
@@ -93,6 +101,14 @@ class _DeferredMotionAction:
     lifecycle_epoch: int
     sources: MotionSources
     test_generation: int | None = None
+
+
+@dataclass(frozen=True)
+class _ModelSwitch:
+    token: int
+    candidate: ModelChoice
+    previous: ModelChoice
+    phase: str
 
 DARK_PALETTE = {
     "window": "#0D1420", "surface": "#172232", "raised": "#202F43",
@@ -207,6 +223,10 @@ class JitterApp(tk.Tk):
         config_store: ConfigStore | None = None,
         service_factory: Callable[[Callable[[Any], None]], Any] | None = None,
         ai_service_factory: Callable[[Callable[[AiEvent], None]], Any] | None = None,
+        model_validator_factory: (
+            Callable[[Callable[[ModelValidationEvent], None]], Any] | None
+        ) = None,
+        model_file_chooser: Callable[..., str] | None = None,
         hotkey_factory: Callable[[int, Callable[[], None]], Any] | None = None,
         overlay_factory: Callable[[tk.Misc], Any] | None = None,
         sound_player: Any | None = None,
@@ -282,6 +302,9 @@ class JitterApp(tk.Tk):
         self._ai_ready = False
         self._ai_provider: str | None = None
         self._ai_runtime_active = False
+        self._model_choice = bundled_model_choice()
+        self._model_switch_token = 0
+        self._model_switch: _ModelSwitch | None = None
         self._test_generation = 0
         self._test_pending_generation: int | None = None
         self._test_waiting_for_motion_stop = False
@@ -300,6 +323,20 @@ class JitterApp(tk.Tk):
         self._configure_styles()
         self._create_variables()
         self._build_page()
+        self.model_validator_factory = (
+            model_validator_factory
+            if model_validator_factory is not None
+            else ModelValidator
+        )
+        self._model_file_chooser = (
+            model_file_chooser
+            if model_file_chooser is not None
+            else filedialog.askopenfilename
+        )
+        self.model_validator = self.model_validator_factory(
+            self.queue_model_validation_event
+        )
+        self._render_model_controls()
         self.overlay = (overlay_factory or DetectionOverlay)(self)
 
         cadence = self.runtime_cadence
@@ -818,6 +855,9 @@ class JitterApp(tk.Tk):
         self.ai_status_var = tk.StringVar(self, "Stopped")
         self.ai_fps_var = tk.StringVar(self, "0 FPS")
         self.ai_provider_var = tk.StringVar(self, "No provider")
+        self.ai_model_var = tk.StringVar(
+            self, self._model_label(self._model_choice)
+        )
         cadence = self.runtime_cadence
         self.ai_cadence_var = tk.StringVar(
             self,
@@ -1854,6 +1894,42 @@ class JitterApp(tk.Tk):
             "<<ComboboxSelected>>", self._target_area_changed
         )
 
+        self.ai_model_frame = ttk.Frame(
+            self.ai_settings_card,
+            style="Liquid.Surface.TFrame",
+            padding=(5, 10),
+        )
+        self.ai_model_frame.grid(row=4, column=0, sticky="ew")
+        self.ai_model_frame.columnconfigure(0, weight=1)
+        self.ai_model_frame.columnconfigure(1, weight=1)
+        ttk.Label(
+            self.ai_model_frame,
+            text="MODEL",
+            style="Liquid.CardBody.TLabel",
+        ).grid(row=0, column=0, columnspan=2, sticky="w")
+        ttk.Label(
+            self.ai_model_frame,
+            textvariable=self.ai_model_var,
+            style="Liquid.CardText.TLabel",
+            wraplength=300,
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 6))
+        self.model_browse_button = ttk.Button(
+            self.ai_model_frame,
+            text="Browse...",
+            style="Liquid.Secondary.TButton",
+            command=self.browse_ai_model,
+        )
+        self.model_browse_button.grid(row=2, column=0, sticky="ew", padx=(0, 3))
+        self.use_default_model_button = ttk.Button(
+            self.ai_model_frame,
+            text="Use Default",
+            style="Liquid.Secondary.TButton",
+            command=self.use_default_ai_model,
+        )
+        self.use_default_model_button.grid(
+            row=2, column=1, sticky="ew", padx=(3, 0)
+        )
+
         self.ai_status_card = ttk.Frame(
             self.motion_scroll_content,
             style="Liquid.SettingsCard.TFrame",
@@ -2862,6 +2938,125 @@ class JitterApp(tk.Tk):
     def _selected_sources(self) -> MotionSources:
         return MotionSources(self.jitter_selected, self.ai_selected)
 
+    @staticmethod
+    def _model_label(choice: ModelChoice) -> str:
+        prefix = "Default" if choice.is_default else "Custom"
+        return f"{prefix} · {choice.display_name}"
+
+    def _model_changes_unavailable(self) -> bool:
+        return (
+            self._model_switch is not None
+            or self._ai_runtime_required()
+            or self._motion_mode in _TEST_MOTION_MODES
+        )
+
+    def _render_model_controls(self) -> None:
+        unavailable = self._model_changes_unavailable()
+        self.model_browse_button.configure(
+            state="disabled" if unavailable else "normal"
+        )
+        self.use_default_model_button.configure(
+            state=(
+                "disabled"
+                if unavailable or self._model_choice.is_default
+                else "normal"
+            )
+        )
+
+    def browse_ai_model(self) -> None:
+        if self._model_changes_unavailable():
+            self.footer_var.set("Stop AI before changing the model")
+            return
+        try:
+            selected = self._model_file_chooser(
+                title="Select AI Aim ONNX Model",
+                filetypes=(("ONNX models", "*.onnx"), ("All files", "*.*")),
+                parent=self,
+            )
+        except Exception:
+            logging.exception("AI model chooser failed")
+            self.footer_var.set("Could not open the model chooser")
+            return
+        if not selected:
+            return
+        try:
+            candidate = external_model_choice(selected)
+        except ModelSelectionError as error:
+            logging.error("AI model selection rejected for %s", selected)
+            self.footer_var.set(str(error))
+            return
+        self._begin_model_switch(candidate)
+
+    def use_default_ai_model(self) -> None:
+        if self._model_changes_unavailable():
+            self.footer_var.set("Stop AI before changing the model")
+            return
+        self._begin_model_switch(bundled_model_choice())
+
+    def _begin_model_switch(self, candidate: ModelChoice) -> None:
+        if candidate.path == self._model_choice.path:
+            self.footer_var.set(f"Using model: {candidate.display_name}")
+            return
+        self._model_switch_token += 1
+        switch = _ModelSwitch(
+            self._model_switch_token,
+            candidate,
+            self._model_choice,
+            "validating",
+        )
+        self._model_switch = switch
+        self.ai_model_var.set(f"Loading · {candidate.display_name}")
+        self._render_model_controls()
+        if not self.model_validator.start(candidate, switch.token):
+            self._finish_model_switch(
+                switch.previous,
+                f"Model rejected; restored {switch.previous.display_name}",
+            )
+
+    def _finish_model_switch(self, choice: ModelChoice, footer: str) -> None:
+        self._model_choice = choice
+        self._model_switch = None
+        self.ai_model_var.set(self._model_label(choice))
+        self._render_model_controls()
+        self.footer_var.set(footer)
+
+    def queue_model_validation_event(self, event: ModelValidationEvent) -> None:
+        if self._closing or self._closed:
+            return
+        self._ui_queue.put(("model_validation", None, event))
+
+    def handle_model_validation_event(self, event: ModelValidationEvent) -> None:
+        switch = self._model_switch
+        if (
+            switch is None
+            or event.token != switch.token
+            or event.choice != switch.candidate
+        ):
+            return
+        if event.kind == "error":
+            logging.error(
+                "AI model validation failed for %s (%s)",
+                event.choice.path,
+                event.error_type,
+            )
+            self._finish_model_switch(
+                switch.previous,
+                f"Model rejected; restored {switch.previous.display_name}",
+            )
+            return
+        if event.kind != "ready":
+            return
+        if not self._ai_runtime_required():
+            self._finish_model_switch(
+                switch.candidate,
+                f"Using model: {switch.candidate.display_name}",
+            )
+            return
+        self._finish_model_switch(
+            switch.previous,
+            "Model change cancelled because AI started",
+        )
+
     def _render_runtime_controls(self) -> None:
         testing = self._motion_mode in _TEST_MOTION_MODES
         self.jitter_source_button.configure(
@@ -2903,6 +3098,7 @@ class JitterApp(tk.Tk):
                 if self.overlay_head_visible else "Liquid.Secondary.TButton"
             ),
         )
+        self._render_model_controls()
 
     def choose_overlay_color(self) -> None:
         try:
@@ -3162,6 +3358,7 @@ class JitterApp(tk.Tk):
             generation = self.ai_service.start(
                 self.get_ai_settings,
                 self.get_adaptive_zoom_gate,
+                model_path=self._model_choice.path,
             )
         except Exception:
             logging.exception("AI runtime could not start during %s", context)
@@ -3815,6 +4012,8 @@ class JitterApp(tk.Tk):
                         self.handle_service_event(payload)
                     elif kind == "ai":
                         self.handle_ai_event(payload)
+                    elif kind == "model_validation":
+                        self.handle_model_validation_event(payload)
                     elif kind == "hotkey":
                         was_enabled = self.enabled
                         self.toggle_enabled()
@@ -4185,6 +4384,10 @@ class JitterApp(tk.Tk):
             pass
         try:
             self.ai_service.close()
+        except Exception:
+            pass
+        try:
+            self.model_validator.close()
         except Exception:
             pass
         if self.sound_player is not None:

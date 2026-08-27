@@ -2,9 +2,12 @@ import tkinter as tk
 from tkinter import ttk
 from types import SimpleNamespace
 import threading
+import tempfile
 import unittest
 from unittest import mock
+from pathlib import Path
 
+from ai_model_selection import ModelChoice, ModelValidationEvent
 from ai_service import AiEvent
 from ai_targeting import (
     AimSettings,
@@ -220,8 +223,10 @@ class StubAiService:
         self.event_sink = event_sink
         return self
 
-    def start(self, settings_provider, zoom_gate_provider=None):
-        self.start_calls.append((settings_provider, zoom_gate_provider))
+    def start(self, settings_provider, zoom_gate_provider=None, *, model_path=None):
+        self.start_calls.append(
+            (settings_provider, zoom_gate_provider, model_path)
+        )
         if self.start_exception is not None:
             raise self.start_exception
         if not self.start_result:
@@ -261,6 +266,32 @@ class StubAiService:
         self.reset_targeting_calls += 1
         self.targeting_revision += 1
         return self.targeting_revision
+
+
+class StubModelValidator:
+    def __init__(self):
+        self.event_sink = None
+        self.start_calls = []
+        self.cancelled = 0
+        self.closed = 0
+        self.start_result = True
+
+    def with_sink(self, event_sink):
+        self.event_sink = event_sink
+        return self
+
+    def start(self, choice, token):
+        self.start_calls.append((choice, token))
+        return self.start_result
+
+    def cancel(self):
+        self.cancelled += 1
+
+    def close(self):
+        self.closed += 1
+
+    def emit(self, event):
+        self.event_sink(event)
 
 
 class StubHotkey:
@@ -389,6 +420,8 @@ class JitterLayoutTests(unittest.TestCase):
         self.service = None
         self.store = StubStore(config or AppConfig())
         self.ai = StubAiService()
+        self.model_validator = StubModelValidator()
+        self.model_dialog_result = ""
         self.overlay = StubOverlay()
         self.sounds = StubSounds()
         self.cancelled_callbacks = []
@@ -420,6 +453,8 @@ class JitterLayoutTests(unittest.TestCase):
                 if use_default_factories
                 else ai_service_factory
             ),
+            model_validator_factory=lambda sink: self.model_validator.with_sink(sink),
+            model_file_chooser=lambda **_kwargs: self.model_dialog_result,
             hotkey_factory=StubHotkey,
             overlay_factory=lambda _root: self.overlay,
             sound_player=self.sounds,
@@ -440,6 +475,19 @@ class JitterLayoutTests(unittest.TestCase):
         self.app.after_cancel = recording_after_cancel
         self.app.withdraw()
         return self.app
+
+    def drain_model_ui_queue(self):
+        self.app._cancel_after("_ui_pump_after_id")
+        self.app._drain_ui_queue()
+
+    def begin_custom_model_switch(self, filename):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        path = Path(temporary.name) / filename
+        path.write_bytes(b"model")
+        self.model_dialog_result = str(path)
+        self.app.browse_ai_model()
+        return self.model_validator.start_calls[-1]
 
     def test_app_default_factories_receive_runtime_cadence(self):
         self.app.close_app()
@@ -632,6 +680,103 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertIs(self.ai.event_sink.__self__, self.app)
         self.assertEqual(self.ai.event_sink.__func__, self.app.queue_ai_event.__func__)
         self.assertEqual(self.ai.start_calls, [])
+
+    def test_model_row_starts_with_bundled_default_and_keeps_fixed_shell(self):
+        self.assertEqual(
+            self.app.ai_model_var.get(),
+            "Default \u00b7 all_games_320.onnx",
+        )
+        self.assertEqual(
+            str(self.app.use_default_model_button.cget("state")), "disabled"
+        )
+        self.app.update_idletasks()
+        self.assertEqual(self.app.geometry().split("+")[0], "840x620")
+        self.assertEqual(self.app.stop_button.winfo_manager(), "grid")
+
+    def test_browse_cancel_does_not_change_model_or_schedule_save(self):
+        self.app._cancel_after("_save_after_id")
+
+        self.app.model_browse_button.invoke()
+
+        self.assertEqual(self.model_validator.start_calls, [])
+        self.assertEqual(
+            self.app.ai_model_var.get(), "Default \u00b7 all_games_320.onnx"
+        )
+        self.assertIsNone(self.app._save_after_id)
+
+    def test_idle_candidate_commits_after_matching_validation_ready(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "custom.onnx"
+            path.write_bytes(b"model")
+            self.model_dialog_result = str(path)
+            self.app.model_browse_button.invoke()
+            choice, token = self.model_validator.start_calls[-1]
+            self.assertEqual(self.app.ai_model_var.get(), "Loading \u00b7 custom.onnx")
+            self.assertEqual(
+                str(self.app.model_browse_button.cget("state")), "disabled"
+            )
+            self.model_validator.emit(ModelValidationEvent("ready", token, choice))
+            self.drain_model_ui_queue()
+
+        self.assertEqual(self.app.ai_model_var.get(), "Custom \u00b7 custom.onnx")
+        self.assertEqual(self.ai.start_calls, [])
+        self.assertIsNone(self.app._save_after_id)
+
+    def test_use_default_runs_the_same_validation_flow_without_saving(self):
+        custom, custom_token = self.begin_custom_model_switch("custom.onnx")
+        self.model_validator.emit(
+            ModelValidationEvent("ready", custom_token, custom)
+        )
+        self.drain_model_ui_queue()
+        self.app._cancel_after("_save_after_id")
+
+        self.app.use_default_model_button.invoke()
+        default, default_token = self.model_validator.start_calls[-1]
+        self.assertTrue(default.is_default)
+        self.assertEqual(
+            self.app.ai_model_var.get(), "Loading \u00b7 all_games_320.onnx"
+        )
+        self.model_validator.emit(
+            ModelValidationEvent("ready", default_token, default)
+        )
+        self.drain_model_ui_queue()
+
+        self.assertEqual(
+            self.app.ai_model_var.get(), "Default \u00b7 all_games_320.onnx"
+        )
+        self.assertIsNone(self.app._save_after_id)
+
+    def test_invalid_model_selection_keeps_previous_choice_without_path_leak(self):
+        for filename, expected_footer in (
+            ("wrong.txt", "Select an ONNX model file"),
+            ("missing.onnx", "Selected model file was not found"),
+        ):
+            with self.subTest(filename=filename), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / filename
+                if filename == "wrong.txt":
+                    path.write_bytes(b"not a model")
+                self.model_dialog_result = str(path)
+                with self.assertLogs(level="ERROR") as logs:
+                    self.app.browse_ai_model()
+
+                self.assertEqual(
+                    self.app.ai_model_var.get(), "Default \u00b7 all_games_320.onnx"
+                )
+                self.assertEqual(self.ai.start_calls, [])
+                self.assertEqual(self.app.footer_var.get(), expected_footer)
+                self.assertNotIn(str(path), self.app.footer_var.get())
+                self.assertIn(str(path), "\n".join(logs.output))
+
+    def test_model_switch_is_unavailable_while_test_run_is_active(self):
+        self.app._motion_mode = "test_jitter"
+        self.app._render_model_controls()
+
+        self.app.browse_ai_model()
+
+        self.assertEqual(self.model_validator.start_calls, [])
+        self.assertEqual(
+            self.app.footer_var.get(), "Stop AI before changing the model"
+        )
 
     def test_motion_scroll_keeps_both_source_settings_available(self):
         self.assertIsInstance(self.app.motion_scroll_canvas, tk.Canvas)
@@ -2373,7 +2518,8 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.app.toggle_ai_source()
         self.app.set_master(True)
         self.assertFalse(self.app.get_adaptive_zoom_gate())
-        _settings_provider, zoom_provider = self.ai.start_calls[-1]
+        _settings_provider, zoom_provider, model_path = self.ai.start_calls[-1]
+        self.assertEqual(model_path, self.app._model_choice.path)
         self.assertIs(zoom_provider.__self__, self.app)
         self.assertIs(
             zoom_provider.__func__, self.app.get_adaptive_zoom_gate.__func__
