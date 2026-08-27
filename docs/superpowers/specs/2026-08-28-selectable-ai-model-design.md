@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-28
 
-**Status:** Approved in chat; awaiting written-spec review
+**Status:** Approved
 
 ## Summary
 
