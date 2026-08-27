@@ -45,6 +45,16 @@ AI Aim exposes four controls on the Motion page:
 - **Smoothing:** interpolation strength, from 0.00 to 0.95.
 - **Max Step:** maximum Makcu movement per update, from 1 to 127 counts.
 
+Below those controls, the five-point response curve maps target distance to
+movement speed at `0%`, `25%`, `50%`, `75%`, and `100%` of the capture radius.
+The zero point stays fixed; the other four nodes can be dragged or entered as
+exact whole percentages, and must remain ordered from `0%` to `100%`. `Reset
+Curve` restores the conservative `0 / 12 / 35 / 68 / 100` default. The curve
+sets the distance response, Aim Strength scales it, Smoothing controls how
+quickly velocity follows it, and Max Step caps each reported update. Curve
+edits take effect continuously and are the only new persisted setting; tracker
+history and runtime cadence are never saved.
+
 Selecting AI Aim does not move the pointer. Master arms capture and inference;
 movement still requires the selected Trigger and optional Modifier. Status
 shows `Ready (DirectML)` when DirectML is active or `Ready (CPU)` when the
@@ -65,6 +75,31 @@ the approved detection runtime only while needed.
 An AI runtime error fails closed by hiding the Overlay and deselecting AI Aim.
 If Jitter remains selected under Master, Jitter continues or restarts through
 the same gate; an AI-only failure disarms Master.
+
+### Conservative tracking and movement
+
+AI Aim tracks the complete detection box, including class, overlap, size, and
+plausible predicted motion, instead of choosing independently from aim points
+on every frame. When two plausible candidates are too close to distinguish,
+the Overlay can continue showing current boxes but the AI movement component
+pauses. The original target must then be clear for two consecutive frames
+before AI movement resumes. If that target is lost, a replacement must remain
+the same class and follow a stable path for three consecutive observations
+before promotion; a saved box is never sent as stale movement.
+
+Capture cadence follows the primary display refresh rate, capped at 240 FPS.
+The movement servo runs at twice the detected display rate, clamped to the
+120-480 Hz range. If refresh detection is unavailable or invalid, Jitter uses
+the safe 120 FPS capture / 240 Hz servo fallback. The Motion page reports the
+detected display and servo cadence, while measured inference FPS remains a
+separate runtime status; none of these values are persisted.
+
+One fresh AI target can be consumed as multiple time-based microsteps, so the
+servo remains smooth between capture frames. Smoothing and acceleration are
+computed from elapsed time, and an unconsumed target is discarded after 150
+ms. These AI changes do not alter paired Jitter pulses, combined-source
+composition, or the immediate STOP, disable, disconnect, source-change, and
+shutdown cancellation rules.
 
 ### Adaptive Zoom
 
@@ -148,21 +183,25 @@ overlay is click-through and absent from capture.
 ## User data and diagnostics
 
 `config.json` and its backup `config.json.bak` are stored beside the source
-script (or beside a packaged executable). Schema 5 stores validated settings;
-settings are loaded without overwriting existing user data and writes are
-atomic. Overlay color and head-box visibility persist, but motion-source
-selection, Master state, overlay visibility, targets, snapshots, FPS, and
-provider status are runtime-only. `app.log` in the same folder contains
-timestamped diagnostics. These files are intentionally ignored by Git.
+script (or beside a packaged executable). Schema 5 stores validated settings,
+including the optional AI response curve; a missing or malformed curve loads
+the complete safe default. Schemas 1-4 also use that default. Schema 6 and
+newer files are treated as unsupported future data: Jitter runs with safe
+in-memory defaults, disables saving, and leaves the file unchanged. Writes to
+supported schemas are atomic. Overlay color and head-box visibility persist,
+but motion-source selection, Master state, overlay visibility, tracker state,
+targets, snapshots, FPS, provider, cadence, and zoom status are runtime-only.
+`app.log` in the same folder contains timestamped diagnostics. These files are
+intentionally ignored by Git.
 
 ## Verification
 
 ```powershell
-python -m py_compile main.py ui.py motion.py combined_motion.py ai_targeting.py ai_detection.py ai_capture.py ai_zoom.py ai_service.py overlay.py makcu_service.py hotkeys.py settings.py sound_service.py liquid_widgets.py distribution_metadata.py
+python -m py_compile main.py ui.py motion.py combined_motion.py ai_targeting.py ai_tracking.py ai_detection.py ai_capture.py ai_zoom.py ai_service.py display_timing.py overlay.py makcu_service.py hotkeys.py settings.py sound_service.py liquid_widgets.py distribution_metadata.py
 python -m unittest discover -s tests -v
 python -c "import makcu, serial, pygame, onnxruntime, dxcam, comtypes, numpy"
-python -c "from ai_detection import OnnxDetector, model_resource_path; print(OnnxDetector(model_resource_path()).provider)"
-Get-FileHash -Algorithm SHA256 models\all_games_320.onnx
+python .\main.py --ai-runtime-self-check
+python .\distribution_metadata.py --review-json
 git diff --check
 ```
 

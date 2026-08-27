@@ -24,7 +24,7 @@ from motion import (
 )
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 5
 VALID_BUTTONS = ("Left", "Right", "Middle", "Mouse4", "Mouse5")
 VALID_THEMES = ("light", "dark")
 DEFAULT_OVERLAY_COLOR = "#ff2b2b"
@@ -195,6 +195,12 @@ class ConfigStore:
             ai = AimSettings()
         else:
             ai_raw = document.get("ai")
+            if schema < 5 and isinstance(ai_raw, Mapping):
+                ai_raw = {
+                    key: value
+                    for key, value in ai_raw.items()
+                    if key != "response_curve"
+                }
             ai = aim_settings_from_mapping(
                 ai_raw if isinstance(ai_raw, Mapping) else None
             )

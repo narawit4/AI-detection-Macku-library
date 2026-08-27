@@ -108,7 +108,7 @@ class ConfigStoreTests(unittest.TestCase):
             document = json.loads(path.read_text(encoding="utf-8"))
             restored = store.load().config
 
-        self.assertEqual(document["schema_version"], 6)
+        self.assertEqual(document["schema_version"], 5)
         self.assertEqual(document.get("overlay_color"), "#00cc88")
         self.assertIs(document.get("overlay_head_visible"), False)
         self.assertNotIn("overlay_visible", document)
@@ -215,7 +215,7 @@ class ConfigStoreTests(unittest.TestCase):
             MotionSettings(4.0, 45.0, "Instant"),
         )
 
-    def test_schema_six_round_trips_response_curve(self):
+    def test_schema_five_round_trips_response_curve(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.json"
             config = AppConfig(ai=AimSettings(
@@ -226,7 +226,7 @@ class ConfigStoreTests(unittest.TestCase):
             document = json.loads(path.read_text(encoding="utf-8"))
             restored = store.load().config
 
-        self.assertEqual(document["schema_version"], 6)
+        self.assertEqual(document["schema_version"], 5)
         self.assertEqual(
             document["ai"]["response_curve"],
             ["0", "0.1", "0.4", "0.8", "0.9"],
@@ -247,19 +247,22 @@ class ConfigStoreTests(unittest.TestCase):
         self.assertEqual(restored.ai.response_curve, DEFAULT_RESPONSE_CURVE)
         self.assertEqual(after, original)
 
-    def test_schemas_one_through_four_default_missing_response_curve(self):
+    def test_schemas_one_through_four_default_response_curve(self):
         for schema in range(1, 5):
             with self.subTest(schema=schema), tempfile.TemporaryDirectory() as directory:
                 path = Path(directory) / "config.json"
                 path.write_text(json.dumps({
                     "schema_version": schema,
-                    "ai": {"aim_strength": "0.8"},
+                    "ai": {
+                        "aim_strength": "0.8",
+                        "response_curve": [0.0, 0.1, 0.4, 0.8, 0.9],
+                    },
                 }), encoding="utf-8")
                 config = ConfigStore(path).load().config
 
             self.assertEqual(config.ai.response_curve, DEFAULT_RESPONSE_CURVE)
 
-    def test_schema_six_malformed_response_curves_use_default(self):
+    def test_schema_five_malformed_response_curves_use_default(self):
         malformed_curves = (
             None,
             "0,0.1,0.4,0.8,0.9",
@@ -270,14 +273,14 @@ class ConfigStoreTests(unittest.TestCase):
             with self.subTest(response_curve=response_curve), tempfile.TemporaryDirectory() as directory:
                 path = Path(directory) / "config.json"
                 path.write_text(json.dumps({
-                    "schema_version": 6,
+                    "schema_version": 5,
                     "ai": {"response_curve": response_curve},
                 }), encoding="utf-8")
                 config = ConfigStore(path).load().config
 
             self.assertEqual(config.ai.response_curve, DEFAULT_RESPONSE_CURVE)
 
-    def test_schema_six_round_trips_ai_settings_without_mode(self):
+    def test_schema_five_round_trips_ai_settings_without_mode(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.json"
             config = AppConfig(ai=AimSettings(0.5, 0.6, 0.7, 30))
@@ -383,7 +386,7 @@ class ConfigStoreTests(unittest.TestCase):
             store.save(second)
             backup = json.loads((Path(str(path) + ".bak")).read_text(encoding="utf-8"))
         self.assertEqual(backup, first_document)
-        self.assertEqual(backup["schema_version"], 6)
+        self.assertEqual(backup["schema_version"], 5)
         self.assertEqual(
             backup["ai"]["response_curve"],
             ["0", "0.1", "0.4", "0.8", "0.9"],
@@ -392,15 +395,17 @@ class ConfigStoreTests(unittest.TestCase):
     def test_future_schema_is_not_overwritten(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.json"
-            original = {"schema_version": 7, "future": True}
-            path.write_text(json.dumps(original), encoding="utf-8")
+            original_text = '{"schema_version": 6, "future": true}\n'
+            path.write_text(original_text, encoding="utf-8")
             store = ConfigStore(path)
             outcome = store.load()
             self.assertFalse(outcome.save_allowed)
+            self.assertEqual(outcome.config, AppConfig())
+            self.assertEqual(outcome.warning, "Unsupported configuration schema: 6")
             with self.assertRaises(PermissionError):
                 store.save(outcome.config)
-            restored = json.loads(path.read_text(encoding="utf-8"))
-        self.assertEqual(restored, original)
+            restored_text = path.read_text(encoding="utf-8")
+        self.assertEqual(restored_text, original_text)
 
     def test_fractional_newer_schema_is_not_truncated_or_overwritten(self):
         with tempfile.TemporaryDirectory() as directory:

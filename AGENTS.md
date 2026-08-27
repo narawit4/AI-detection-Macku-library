@@ -23,10 +23,12 @@ tray behavior, or other upstream features.
 - `motion.py`: settings, validation, presets, and pure motion engine.
 - `combined_motion.py`: pure composition of selected Jitter and AI Aim deltas.
 - `ai_targeting.py`: immutable AI settings, target selection, and movement.
+- `ai_tracking.py`: pure conservative full-box temporal target tracking.
 - `ai_zoom.py`: pure adaptive zoom geometry and same-frame refinement composition.
 - `ai_detection.py`: fixed-contract ONNX Runtime detector.
 - `ai_capture.py`: centered DXCam capture wrapper.
 - `ai_service.py`: generation-safe capture and inference worker.
+- `display_timing.py`: primary-display cadence detection and pure runtime policy.
 - `overlay.py`: centered, click-through, capture-excluded detection view.
 - `distribution_metadata.py`: validates, reviews, and executes the canonical
   packaging command and release-material plan.
@@ -66,6 +68,9 @@ with the supported Windows Python installation.
 - Keep combined-motion composition pure and independent of Tkinter and Makcu.
 - Keep adaptive zoom geometry and refinement composition pure and independent
   of Tkinter and Makcu.
+- Keep conservative tracking pure and independent of Tkinter and Makcu.
+- Keep display-cadence policy pure; display detection stays at the Windows
+  boundary and its result is runtime-only.
 - Share immutable motion snapshots with the mover under a short lock.
 - Use daemon workers and explicit stop events/generation identifiers for
   connection, movement, Test Run, and hotkey polling.
@@ -85,6 +90,23 @@ with the supported Windows Python installation.
   requires Trigger plus the configured Modifier, if any.
 - AI Aim uses only the fixed centered 320-by-320 capture and bundled model,
   prefers heads over players, and shares the same Trigger/Modifier gate.
+- Track the complete detection box using class, overlap, area, and plausible
+  predicted motion. When plausible candidates are ambiguous, keep current
+  Overlay boxes publishable but pause AI movement. Require two consecutive
+  clear observations of the original target to recover after ambiguity and
+  three stable same-class observations to promote a replacement.
+- Derive runtime cadence from the primary display: cap capture at 240 FPS and
+  run the servo at twice display refresh, clamped to 120-480 Hz. Fall back to
+  120 FPS capture and a 240 Hz servo when detection is unavailable or invalid.
+  Display, servo, and measured inference cadence are runtime status only.
+- AI Aim uses a five-point distance-to-speed response curve at 0%, 25%, 50%,
+  75%, and 100% distance. The first point is fixed at zero; the other four are
+  adjustable exact ordered percentages. Curve output is scaled by Strength,
+  approached using time-based Smoothing, and bounded by Max Step. Reset Curve
+  restores the complete default.
+- Consume each fresh AI target through time-based servo microsteps and discard
+  any unconsumed target after 150 ms. This does not change Jitter composition
+  or immediate cancellation behavior.
 - Adaptive Zoom is automatic and has no persisted control. Every frame first
   performs full-field 1.0× target acquisition; only an already-selected small
   target may receive a same-frame 1.5× or 2.0× refinement pass. That second
@@ -158,10 +180,15 @@ with the supported Windows Python installation.
 - Validate loaded values and preserve safe defaults for malformed data.
 - Never overwrite a config with a newer unsupported schema; run with safe
   in-memory defaults and leave that file untouched.
-- Schema 5 persists validated settings, including overlay color and head-box
-  visibility; do not persist motion-source selection, Master state, overlay
-  visibility, AI targets, snapshots, FPS, provider, zoom status, or other
-  runtime status. Adaptive Zoom makes no schema or persisted-control change.
+- Schema 5 persists validated settings, including overlay color, head-box
+  visibility, and the optional AI response curve. A missing or malformed curve
+  uses the complete default, and schemas 1-4 also use that curve default.
+  Schema 6 is an unsupported future schema: load safe in-memory defaults,
+  disable saving, and leave its source file byte-for-byte unchanged.
+- The response curve is the only new persisted setting. Do not persist
+  motion-source selection, Master state, overlay visibility, tracker history,
+  AI targets, snapshots, FPS, provider, cadence, zoom status, or other runtime
+  state. Adaptive Zoom and adaptive cadence add no persisted control.
 - Write configuration through a temporary file, flush and `fsync`, keep a
   backup, and replace atomically.
 - Do not persist held-button or Moving state.
@@ -195,7 +222,7 @@ with the supported Windows Python installation.
 After implementation changes, run:
 
 ```powershell
-python -m py_compile main.py ui.py motion.py combined_motion.py ai_targeting.py ai_detection.py ai_capture.py ai_zoom.py ai_service.py overlay.py makcu_service.py hotkeys.py settings.py sound_service.py liquid_widgets.py distribution_metadata.py
+python -m py_compile main.py ui.py motion.py combined_motion.py ai_targeting.py ai_tracking.py ai_detection.py ai_capture.py ai_zoom.py ai_service.py display_timing.py overlay.py makcu_service.py hotkeys.py settings.py sound_service.py liquid_widgets.py distribution_metadata.py
 python -m unittest discover -s tests -v
 python -c "import makcu, serial, onnxruntime, dxcam, comtypes, numpy"
 python .\main.py --ai-runtime-self-check
