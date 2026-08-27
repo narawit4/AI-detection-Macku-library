@@ -212,8 +212,8 @@ class StubAiService:
         self.event_sink = event_sink
         return self
 
-    def start(self, settings_provider):
-        self.start_calls.append(settings_provider)
+    def start(self, settings_provider, zoom_gate_provider=None):
+        self.start_calls.append((settings_provider, zoom_gate_provider))
         if self.start_exception is not None:
             raise self.start_exception
         if not self.start_result:
@@ -1949,6 +1949,125 @@ class JitterRuntimeTests(JitterLayoutTests):
             self.app.handle_service_event(
                 ServiceEvent("button", ("Left", True))
             )
+
+    def test_adaptive_zoom_gate_requires_connected_normal_ai_movement_gate(self):
+        self.service.connected = True
+        self.app.toggle_ai_source()
+        self.app.set_master(True)
+        self.assertFalse(self.app.get_adaptive_zoom_gate())
+        _settings_provider, zoom_provider = self.ai.start_calls[-1]
+        self.assertIs(zoom_provider.__self__, self.app)
+        self.assertIs(
+            zoom_provider.__func__, self.app.get_adaptive_zoom_gate.__func__
+        )
+        self.assertFalse(zoom_provider())
+
+        self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        self.assertTrue(self.app.get_adaptive_zoom_gate())
+
+        self.app.handle_service_event(ServiceEvent("button", ("Left", False)))
+        self.assertFalse(self.app.get_adaptive_zoom_gate())
+
+    def test_overlay_only_jitter_only_and_test_run_never_enable_zoom_gate(self):
+        self.service.connected = True
+        self.app.toggle_overlay()
+        self.assertFalse(self.app.get_adaptive_zoom_gate())
+        self.app.toggle_overlay()
+        self.app.toggle_jitter_source()
+        self.app.set_master(True)
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        self.assertFalse(self.app.get_adaptive_zoom_gate())
+        self.app.emergency_stop()
+        self.app.ai_selected = True
+        self.app.start_test_run()
+        self.assertFalse(self.app.get_adaptive_zoom_gate())
+
+    def test_configured_modifier_requires_both_buttons_for_zoom_gate(self):
+        self.app.modifier_var.set("Right")
+        self.app.on_bindings_changed()
+        self.prepare_armed_sources(MotionSources(False, True))
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        self.assertFalse(self.app.get_adaptive_zoom_gate())
+        self.app.handle_service_event(ServiceEvent("button", ("Right", True)))
+        self.assertTrue(self.app.get_adaptive_zoom_gate())
+        self.app.handle_service_event(ServiceEvent("button", ("Right", False)))
+        self.assertFalse(self.app.get_adaptive_zoom_gate())
+
+    def test_source_removal_and_hotkey_disable_clear_zoom_gate(self):
+        self.prepare_armed_sources(MotionSources(False, True), gate_active=True)
+        self.assertTrue(self.app.get_adaptive_zoom_gate())
+        self.app.toggle_ai_source()
+        self.assertFalse(self.app.get_adaptive_zoom_gate())
+
+        self.app.close_app()
+        self.make_app()
+        self.prepare_armed_sources(MotionSources(False, True), gate_active=True)
+        self.app._cancel_after("_ui_pump_after_id")
+        self.app._hotkey_pressed()
+        self.drain_ui_queue()
+        self.assertFalse(self.app.get_adaptive_zoom_gate())
+
+    def test_disconnect_clears_zoom_gate(self):
+        self.prepare_armed_sources(MotionSources(False, True), gate_active=True)
+        self.app.handle_service_event(ServiceEvent("disconnected", "lost"))
+        self.assertFalse(self.app.get_adaptive_zoom_gate())
+
+    def test_ai_error_clears_zoom_gate(self):
+        self.prepare_armed_sources(MotionSources(False, True), gate_active=True)
+        with self.assertLogs(level="ERROR"):
+            self.app.handle_ai_event(AiEvent("error", "failed"))
+        self.assertFalse(self.app.get_adaptive_zoom_gate())
+
+    def test_stop_clears_zoom_gate(self):
+        self.prepare_armed_sources(MotionSources(False, True), gate_active=True)
+        self.app.emergency_stop("Stopped")
+        self.assertFalse(self.app.get_adaptive_zoom_gate())
+
+    def test_close_clears_zoom_gate(self):
+        self.prepare_armed_sources(MotionSources(False, True), gate_active=True)
+        self.app.close_app()
+        self.assertFalse(self.app.get_adaptive_zoom_gate())
+
+    def test_zoom_metric_starts_one_x_and_tracks_valid_events(self):
+        self.assertEqual(self.app.ai_zoom_var.get(), "1.0×")
+        self.assertIn("ZOOM", widget_texts(self.app))
+        self.app.handle_ai_event(AiEvent("zoom", 2.0))
+        self.assertEqual(self.app.ai_zoom_var.get(), "1.0×")
+        self.app._ai_runtime_active = True
+        self.app.handle_ai_event(AiEvent("zoom", 1.5))
+        self.assertEqual(self.app.ai_zoom_var.get(), "1.5×")
+        self.app.handle_ai_event(AiEvent("zoom", 2.0))
+        self.assertEqual(self.app.ai_zoom_var.get(), "2.0×")
+        self.app.handle_ai_event(AiEvent("zoom", "invalid"))
+        self.assertEqual(self.app.ai_zoom_var.get(), "1.0×")
+
+    def test_stop_disconnect_and_ai_stop_reset_zoom_metric(self):
+        self.app.ai_zoom_var.set("2.0×")
+        self.app.emergency_stop()
+        self.assertEqual(self.app.ai_zoom_var.get(), "1.0×")
+        self.app.ai_zoom_var.set("1.5×")
+        self.app.handle_service_event(ServiceEvent("disconnected", "lost"))
+        self.assertEqual(self.app.ai_zoom_var.get(), "1.0×")
+        self.app._ai_runtime_active = True
+        self.app.ai_zoom_var.set("2.0×")
+        self.app.handle_ai_event(AiEvent("stopped", "manual"))
+        self.assertEqual(self.app.ai_zoom_var.get(), "1.0×")
+
+    def test_trigger_release_resets_zoom_metric_without_waiting_for_ai_frame(self):
+        self.prepare_armed_sources(MotionSources(False, True), gate_active=True)
+        self.app.handle_ai_event(AiEvent("zoom", 1.5))
+        self.app.handle_service_event(ServiceEvent("button", ("Left", False)))
+        self.assertFalse(self.app.get_adaptive_zoom_gate())
+        self.assertEqual(self.app.ai_zoom_var.get(), "1.0×")
+
+    def test_stale_queued_zoom_event_cannot_change_metric_after_stop(self):
+        self.prepare_armed_sources(MotionSources(False, True), gate_active=True)
+        self.app._cancel_after("_ui_pump_after_id")
+        self.app.queue_ai_event(AiEvent("zoom", 2.0))
+        self.app.emergency_stop("Stopped")
+        self.drain_ui_queue()
+        self.assertEqual(self.app.ai_zoom_var.get(), "1.0×")
 
     def test_ai_error_falls_back_to_jitter_after_exact_retiring_generation(self):
         self.prepare_armed_sources(

@@ -272,6 +272,7 @@ class JitterApp(tk.Tk):
         self._motion_snapshot: MotionSettings = self.config.motion
         self._ai_lock = threading.RLock()
         self._ai_snapshot: AimSettings = self.config.ai
+        self._adaptive_zoom_gate = False
         self._hotkey_vk = int(self.config.hotkey_vk)
 
         self._configure_styles()
@@ -786,6 +787,7 @@ class JitterApp(tk.Tk):
         self.ai_status_var = tk.StringVar(self, "Stopped")
         self.ai_fps_var = tk.StringVar(self, "0 FPS")
         self.ai_provider_var = tk.StringVar(self, "No provider")
+        self.ai_zoom_var = tk.StringVar(self, "1.0×")
         self.ai_vars = {
             key: tk.StringVar(self, value)
             for key, value in aim_settings_to_mapping(self.config.ai).items()
@@ -1813,6 +1815,7 @@ class JitterApp(tk.Tk):
             ("STATUS", self.ai_status_var),
             ("INFERENCE", self.ai_fps_var),
             ("PROVIDER", self.ai_provider_var),
+            ("ZOOM", self.ai_zoom_var),
         ), start=2):
             metric = ttk.Frame(
                 self.ai_status_card,
@@ -1837,7 +1840,7 @@ class JitterApp(tk.Tk):
             style="Liquid.Secondary.TButton",
             command=lambda: self.toggle_overlay(),
         )
-        self.overlay_button.grid(row=5, column=0, sticky="ew", pady=(4, 0))
+        self.overlay_button.grid(row=6, column=0, sticky="ew", pady=(4, 0))
         self.overlay_color_button = ttk.Button(
             self.ai_status_card,
             text=f"Box Color {self.overlay_color.upper()}",
@@ -1845,7 +1848,7 @@ class JitterApp(tk.Tk):
             command=self.choose_overlay_color,
         )
         self.overlay_color_button.grid(
-            row=6, column=0, sticky="ew", pady=(6, 0)
+            row=7, column=0, sticky="ew", pady=(6, 0)
         )
         self.overlay_head_button = ttk.Button(
             self.ai_status_card,
@@ -1860,7 +1863,7 @@ class JitterApp(tk.Tk):
             command=self.toggle_overlay_heads,
         )
         self.overlay_head_button.grid(
-            row=7, column=0, sticky="ew", pady=(6, 0)
+            row=8, column=0, sticky="ew", pady=(6, 0)
         )
 
     def _refresh_motion_scrollregion(
@@ -2477,6 +2480,7 @@ class JitterApp(tk.Tk):
             self.master_armed = False
             self._normal_motion_started = False
             self.trigger_gate.clear()
+            self._sync_adaptive_zoom_gate()
             self._stop_motion_runtime("Disabled by user")
             self._reconcile_ai_runtime("Master disabled")
             self._set_runtime_state("disabled")
@@ -2502,10 +2506,12 @@ class JitterApp(tk.Tk):
         self._expected_motion_generation = None
         self._deferred_motion_action = None
         self.trigger_gate.clear()
+        self._sync_adaptive_zoom_gate()
         if not self._reconcile_ai_runtime("Master enabled"):
             self._handle_ai_start_failure()
             self._render_runtime_controls()
             return
+        self._sync_adaptive_zoom_gate()
         self._set_runtime_state("armed")
         self._render_runtime_controls()
         self.footer_var.set("Selected sources armed")
@@ -2528,6 +2534,7 @@ class JitterApp(tk.Tk):
         else:
             raise ValueError(f"unknown motion source: {source_name}")
         sources = self._selected_sources()
+        self._sync_adaptive_zoom_gate()
         if not self.master_armed:
             self._render_runtime_controls()
             self.footer_var.set("Motion sources updated")
@@ -2553,6 +2560,7 @@ class JitterApp(tk.Tk):
 
         if not adding_ai:
             self._reconcile_ai_runtime("Motion sources updated")
+        self._sync_adaptive_zoom_gate()
         if self.trigger_gate.active and not was_moving:
             self._normal_motion_started = self._start_gated_motion()
             if self._normal_motion_started:
@@ -2580,10 +2588,12 @@ class JitterApp(tk.Tk):
                 self._hide_overlay_after_ai_failure()
             return started
         if not required and self._ai_runtime_active:
+            self._sync_adaptive_zoom_gate()
             self._stop_ai_runtime(context)
             self._ai_ready = False
             self._ai_provider = None
             self._ai_runtime_active = False
+            self._sync_adaptive_zoom_gate()
         return True
 
     def _hide_overlay_after_ai_failure(self) -> None:
@@ -2676,13 +2686,18 @@ class JitterApp(tk.Tk):
         if not self._ai_runtime_active:
             self._ai_event_epoch += 1
         self._ai_runtime_active = True
+        self._sync_adaptive_zoom_gate()
         try:
-            generation = self.ai_service.start(self.get_ai_settings)
+            generation = self.ai_service.start(
+                self.get_ai_settings,
+                self.get_adaptive_zoom_gate,
+            )
         except Exception:
             logging.exception("AI runtime could not start during %s", context)
             self._ai_ready = False
             self._ai_provider = None
             self._ai_runtime_active = False
+            self._sync_adaptive_zoom_gate()
             self.ai_status_var.set("Error")
             self.ai_fps_var.set("0 FPS")
             self.ai_provider_var.set("No provider")
@@ -2692,6 +2707,7 @@ class JitterApp(tk.Tk):
             self._ai_ready = False
             self._ai_provider = None
             self._ai_runtime_active = False
+            self._sync_adaptive_zoom_gate()
             self.ai_status_var.set("Error")
             self.ai_fps_var.set("0 FPS")
             self.ai_provider_var.set("No provider")
@@ -2704,6 +2720,7 @@ class JitterApp(tk.Tk):
         self._ai_ready = False
         self._ai_provider = None
         self._ai_runtime_active = False
+        self._sync_adaptive_zoom_gate()
         if self.jitter_selected and self.master_armed:
             self._set_runtime_state(
                 "moving" if self._normal_motion_started else "armed"
@@ -2717,6 +2734,7 @@ class JitterApp(tk.Tk):
         self._advance_hotkey_epoch()
 
     def _stop_ai_runtime(self, reason: str) -> None:
+        self._sync_adaptive_zoom_gate()
         try:
             self.ai_service.stop(reason)
         finally:
@@ -2801,6 +2819,8 @@ class JitterApp(tk.Tk):
         else:
             self._motion_mode = "test_jitter_pending"
 
+        self._sync_adaptive_zoom_gate()
+
         if self._normal_motion_started:
             self._stop_motion_runtime("test_run")
             self._normal_motion_started = False
@@ -2877,6 +2897,7 @@ class JitterApp(tk.Tk):
         else:
             self.trigger_gate.clear()
             self._set_runtime_state("disabled")
+        self._sync_adaptive_zoom_gate()
         self._reconcile_ai_runtime("Test Run complete")
         self._render_runtime_controls()
 
@@ -2888,6 +2909,7 @@ class JitterApp(tk.Tk):
     ) -> None:
         stop_reason = str(reason or "Stopped")
         self.master_armed = False
+        self._sync_adaptive_zoom_gate()
         was_overlay_visible = self.overlay_visible
         self.overlay_visible = False
         self._cancel_after("_overlay_after_id")
@@ -2905,6 +2927,7 @@ class JitterApp(tk.Tk):
         self._test_waiting_for_motion_stop = False
         self._test_restore_master = False
         self.trigger_gate.clear()
+        self._sync_adaptive_zoom_gate()
         try:
             self._stop_motion_runtime(
                 stop_reason,
@@ -2924,6 +2947,7 @@ class JitterApp(tk.Tk):
 
     def _handle_disconnect(self, reason: str) -> None:
         self.master_armed = False
+        self._sync_adaptive_zoom_gate()
         self._normal_motion_started = False
         self._deferred_motion_action = None
         self._motion_mode = None
@@ -2934,6 +2958,7 @@ class JitterApp(tk.Tk):
         self._test_waiting_for_motion_stop = False
         self._test_restore_master = False
         self.trigger_gate.clear()
+        self._sync_adaptive_zoom_gate()
         try:
             self._stop_motion_runtime(reason)
         except Exception:
@@ -3030,6 +3055,7 @@ class JitterApp(tk.Tk):
             except (TypeError, ValueError):
                 return
             self.trigger_gate.update_button(str(button), bool(pressed))
+            self._sync_adaptive_zoom_gate()
             if not self.trigger_gate.active:
                 action = self._deferred_motion_action
                 if action is not None and action.kind == "normal":
@@ -3098,17 +3124,19 @@ class JitterApp(tk.Tk):
             return
         kind = event.kind
         if (
-            kind in {"loading", "ready", "fps", "error"}
+            kind in {"loading", "ready", "fps", "zoom", "error"}
             and not self._ai_runtime_active
         ):
             return
         if kind == "loading":
             self._ai_runtime_active = True
+            self._sync_adaptive_zoom_gate()
             self._ai_ready = False
             self._ai_provider = None
             self.ai_status_var.set("Loading")
             self.ai_fps_var.set("0 FPS")
             self.ai_provider_var.set("No provider")
+            self.ai_zoom_var.set("1.0×")
         elif kind == "ready":
             raw_provider = str(event.payload or "Unknown")
             provider = {
@@ -3118,6 +3146,7 @@ class JitterApp(tk.Tk):
             self._ai_ready = True
             self._ai_provider = raw_provider
             self._ai_runtime_active = True
+            self._sync_adaptive_zoom_gate()
             self.ai_status_var.set(f"Ready ({provider})")
             self.ai_provider_var.set(provider)
             if (
@@ -3147,8 +3176,18 @@ class JitterApp(tk.Tk):
                 fps = 0.0
             rendered = f"{fps:.1f}".rstrip("0").rstrip(".")
             self.ai_fps_var.set(f"{rendered} FPS")
+        elif kind == "zoom":
+            try:
+                factor = float(event.payload)
+                if not math.isfinite(factor) or factor not in {1.0, 1.5, 2.0}:
+                    raise ValueError
+            except (TypeError, ValueError, OverflowError):
+                factor = 1.0
+            self.ai_zoom_var.set(f"{factor:.1f}×")
         elif kind == "error":
             logging.error("AI runtime error: %s", event.payload)
+            self._ai_runtime_active = False
+            self._sync_adaptive_zoom_gate()
             test_sources = self._test_sources
             ai_motion_demand = (
                 (self.master_armed and self.ai_selected)
@@ -3173,6 +3212,7 @@ class JitterApp(tk.Tk):
                 self._ai_ready = False
                 self._ai_provider = None
                 self._ai_runtime_active = False
+                self._sync_adaptive_zoom_gate()
                 self.ai_status_var.set("Error")
                 self.ai_fps_var.set("0 FPS")
                 self.ai_provider_var.set("No provider")
@@ -3203,6 +3243,7 @@ class JitterApp(tk.Tk):
             self._ai_ready = False
             self._ai_provider = None
             self._ai_runtime_active = False
+            self._sync_adaptive_zoom_gate()
             self.ai_status_var.set("Error")
             self.ai_fps_var.set("0 FPS")
             self.ai_provider_var.set("No provider")
@@ -3222,6 +3263,7 @@ class JitterApp(tk.Tk):
                     logging.exception("Motion stop failed after AI error")
 
             self.master_armed = bool(jitter_fallback and not was_test_run)
+            self._sync_adaptive_zoom_gate()
             if self.master_armed:
                 self._set_runtime_state("armed")
                 if gate_active:
@@ -3239,6 +3281,7 @@ class JitterApp(tk.Tk):
             self._ai_ready = False
             self._ai_provider = None
             self._ai_runtime_active = False
+            self._sync_adaptive_zoom_gate()
             self.ai_status_var.set("Stopped")
             self.ai_fps_var.set("0 FPS")
             self.ai_provider_var.set("No provider")
@@ -3402,6 +3445,7 @@ class JitterApp(tk.Tk):
             self._restore_after_test(restore_master=False)
             self.footer_var.set("Bindings changed; Test Run canceled")
         self.trigger_gate.configure(trigger, modifier)
+        self._sync_adaptive_zoom_gate()
         if self._normal_motion_started:
             self._stop_motion_runtime("bindings_changed")
             self._normal_motion_started = False
@@ -3416,6 +3460,25 @@ class JitterApp(tk.Tk):
     def get_ai_settings(self) -> AimSettings:
         with self._ai_lock:
             return self._ai_snapshot
+
+    def get_adaptive_zoom_gate(self) -> bool:
+        with self._ai_lock:
+            return self._adaptive_zoom_gate
+
+    def _sync_adaptive_zoom_gate(self) -> None:
+        active = bool(
+            not self._closing
+            and self.service.connected
+            and self._ai_runtime_active
+            and self.master_armed
+            and self.ai_selected
+            and self._motion_mode is None
+            and self.trigger_gate.active
+        )
+        with self._ai_lock:
+            self._adaptive_zoom_gate = active
+        if not active:
+            self.ai_zoom_var.set("1.0×")
 
     def _replace_ai_snapshot(self, settings: AimSettings) -> None:
         with self._ai_lock:
