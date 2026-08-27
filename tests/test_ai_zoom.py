@@ -1,7 +1,9 @@
+import hashlib
 import unittest
 
 import numpy as np
 
+import ai_zoom
 from ai_targeting import (
     AimSettings,
     Detection,
@@ -71,6 +73,34 @@ class ZoomFactorTests(unittest.TestCase):
 
 
 class ZoomGeometryTests(unittest.TestCase):
+    def test_resize_reuses_cached_coordinate_plan(self):
+        plan_builder = getattr(ai_zoom, "_resize_plan", None)
+        self.assertTrue(
+            callable(plan_builder),
+            "resize must expose its internal cached coordinate plan",
+        )
+        plan_builder.cache_clear()
+        first = plan_builder(160, 160, 320)
+        second = plan_builder(160, 160, 320)
+        self.assertIs(first, second)
+
+    def test_zoom_size_resizes_match_frozen_pixel_outputs(self):
+        expected_hashes = {
+            160: "73fff29a5890f0cdad009470c7ade901489fcc096309af53489d1812cf23e5a5",
+            213: "d3876b8a91d71fcd2303a1f5e94c551761191e534b8861c623a908a1c3a4bd32",
+        }
+        random = np.random.default_rng(20260827)
+        for size, expected_hash in expected_hashes.items():
+            with self.subTest(size=size):
+                source = random.integers(
+                    0, 256, (size, size, 3), dtype=np.uint8
+                )
+                resized = resize_rgb_bilinear(source)
+                self.assertEqual(
+                    hashlib.sha256(resized.tobytes()).hexdigest(),
+                    expected_hash,
+                )
+
     def test_bilinear_resize_has_hand_derived_center_and_owned_rgb_output(self):
         source = np.array(
             [

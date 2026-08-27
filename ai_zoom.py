@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 import math
 from typing import Iterable
 
@@ -32,6 +33,29 @@ class ZoomTransform:
     top: int
     size: int
     factor: float
+
+
+@lru_cache(maxsize=16)
+def _resize_plan(
+    source_height: int,
+    source_width: int,
+    output_size: int,
+) -> tuple[np.ndarray, ...]:
+    source_x = np.linspace(0.0, source_width - 1, output_size)
+    source_y = np.linspace(0.0, source_height - 1, output_size)
+    x0 = np.floor(source_x).astype(np.intp)
+    y0 = np.floor(source_y).astype(np.intp)
+    plan = (
+        x0,
+        np.minimum(x0 + 1, source_width - 1),
+        y0,
+        np.minimum(y0 + 1, source_height - 1),
+        (source_x - x0)[None, :, None],
+        (source_y - y0)[:, None, None],
+    )
+    for values in plan:
+        values.flags.writeable = False
+    return plan
 
 
 def select_zoom_factor(
@@ -79,23 +103,17 @@ def resize_rgb_bilinear(
         raise ValueError("Output size must be a positive integer")
 
     source_height, source_width = image.shape[:2]
-    source_x = np.linspace(0.0, source_width - 1, output_size)
-    source_y = np.linspace(0.0, source_height - 1, output_size)
-    x0 = np.floor(source_x).astype(np.intp)
-    y0 = np.floor(source_y).astype(np.intp)
-    x1 = np.minimum(x0 + 1, source_width - 1)
-    y1 = np.minimum(y0 + 1, source_height - 1)
-    wx = (source_x - x0)[None, :, None]
-    wy = (source_y - y0)[:, None, None]
-    top_left = image[y0[:, None], x0[None, :]].astype(np.float32)
-    top_right = image[y0[:, None], x1[None, :]].astype(np.float32)
-    bottom_left = image[y1[:, None], x0[None, :]].astype(np.float32)
-    bottom_right = image[y1[:, None], x1[None, :]].astype(np.float32)
+    x0, x1, y0, y1, wx, wy = _resize_plan(
+        source_height, source_width, output_size
+    )
+    source = image.astype(np.float64)
+    horizontal = (
+        source[:, x0, :] * (1.0 - wx)
+        + source[:, x1, :] * wx
+    )
     blended = (
-        top_left * (1.0 - wx) * (1.0 - wy)
-        + top_right * wx * (1.0 - wy)
-        + bottom_left * (1.0 - wx) * wy
-        + bottom_right * wx * wy
+        horizontal[y0, :, :] * (1.0 - wy)
+        + horizontal[y1, :, :] * wy
     )
     rounded = np.floor(np.clip(blended, 0.0, 255.0) + 0.5)
     return np.ascontiguousarray(rounded.astype(np.uint8))
