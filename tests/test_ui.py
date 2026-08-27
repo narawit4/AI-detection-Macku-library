@@ -2034,7 +2034,7 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.assertIn("ZOOM", widget_texts(self.app))
         self.app.handle_ai_event(AiEvent("zoom", 2.0))
         self.assertEqual(self.app.ai_zoom_var.get(), "1.0×")
-        self.app._ai_runtime_active = True
+        self.prepare_armed_sources(MotionSources(False, True), gate_active=True)
         self.app.handle_ai_event(AiEvent("zoom", 1.5))
         self.assertEqual(self.app.ai_zoom_var.get(), "1.5×")
         self.app.handle_ai_event(AiEvent("zoom", 2.0))
@@ -2057,7 +2057,18 @@ class JitterRuntimeTests(JitterLayoutTests):
     def test_trigger_release_resets_zoom_metric_without_waiting_for_ai_frame(self):
         self.prepare_armed_sources(MotionSources(False, True), gate_active=True)
         self.app.handle_ai_event(AiEvent("zoom", 1.5))
+        self.assertEqual(self.app.ai_zoom_var.get(), "1.5×")
         self.app.handle_service_event(ServiceEvent("button", ("Left", False)))
+        self.assertFalse(self.app.get_adaptive_zoom_gate())
+        self.assertEqual(self.app.ai_zoom_var.get(), "1.0×")
+
+    def test_late_same_epoch_zoom_after_trigger_release_keeps_metric_reset(self):
+        self.prepare_armed_sources(MotionSources(False, True), gate_active=True)
+        self.app._cancel_after("_ui_pump_after_id")
+        self.app.handle_service_event(ServiceEvent("button", ("Left", False)))
+        self.app.queue_ai_event(AiEvent("zoom", 2.0))
+        self.drain_ui_queue()
+
         self.assertFalse(self.app.get_adaptive_zoom_gate())
         self.assertEqual(self.app.ai_zoom_var.get(), "1.0×")
 

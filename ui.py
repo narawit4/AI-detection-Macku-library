@@ -3177,6 +3177,9 @@ class JitterApp(tk.Tk):
             rendered = f"{fps:.1f}".rstrip("0").rstrip(".")
             self.ai_fps_var.set(f"{rendered} FPS")
         elif kind == "zoom":
+            if not self.get_adaptive_zoom_gate():
+                self.ai_zoom_var.set("1.0×")
+                return
             try:
                 factor = float(event.payload)
                 if not math.isfinite(factor) or factor not in {1.0, 1.5, 2.0}:
