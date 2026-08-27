@@ -324,82 +324,80 @@ class AiService:
                 base_analysis = tracked.analysis
                 factor = 1.0
                 published = base_analysis
-                gate_active = False
-                if refinement_enabled:
+                gate_active = bool(zoom_gate_provider())
+                if not gate_active:
+                    stability = ZoomStabilityState()
+                else:
+                    stability = observe_zoom_stability(
+                        stability,
+                        tracked.stability_target,
+                        captured_at,
+                    )
+                if refinement_enabled and gate_active:
                     try:
-                        gate_active = bool(zoom_gate_provider())
-                        if not gate_active:
-                            stability = ZoomStabilityState()
-                        else:
-                            stability = observe_zoom_stability(
+                        selected = base_analysis.frame.selected_index
+                        if selected is not None and base_analysis.target is not None:
+                            seed = base_analysis.frame.detections[selected]
+                            requested_factor = select_zoom_factor(
+                                seed,
+                                base_analysis.target,
+                            )
+                            applied_factor = limit_zoom_factor(
+                                requested_factor,
                                 stability,
-                                tracked.stability_target,
                                 captured_at,
                             )
-                            selected = base_analysis.frame.selected_index
-                            if selected is not None and base_analysis.target is not None:
-                                seed = base_analysis.frame.detections[selected]
-                                requested_factor = select_zoom_factor(
-                                    seed,
-                                    base_analysis.target,
-                                )
-                                applied_factor = limit_zoom_factor(
-                                    requested_factor,
-                                    stability,
-                                    captured_at,
-                                )
-                                if applied_factor > 1.0:
-                                    if not bool(zoom_gate_provider()):
+                            if applied_factor > 1.0:
+                                if not bool(zoom_gate_provider()):
+                                    gate_active = False
+                                    stability = ZoomStabilityState()
+                                else:
+                                    if not self._is_current(
+                                        generation, stop_event
+                                    ):
+                                        return
+                                    zoomed, transform = build_zoom_input(
+                                        frame,
+                                        base_analysis.target,
+                                        applied_factor,
+                                    )
+                                    if not self._is_current(
+                                        generation, stop_event
+                                    ):
+                                        return
+                                    refined_detections = detector.detect(zoomed)
+                                    if not self._is_current(
+                                        generation, stop_event
+                                    ):
+                                        return
+                                    if bool(zoom_gate_provider()):
+                                        refined = compose_zoom_refinement(
+                                            base_analysis,
+                                            refined_detections,
+                                            transform,
+                                            settings,
+                                        )
+                                        if refined is None:
+                                            stability = record_zoom_refinement_miss(
+                                                stability,
+                                                self._clock(),
+                                            )
+                                        else:
+                                            published = refined
+                                            factor = applied_factor
+                                    else:
                                         gate_active = False
                                         stability = ZoomStabilityState()
-                                    else:
-                                        if not self._is_current(
-                                            generation, stop_event
-                                        ):
-                                            return
-                                        zoomed, transform = build_zoom_input(
-                                            frame,
-                                            base_analysis.target,
-                                            applied_factor,
-                                        )
-                                        if not self._is_current(
-                                            generation, stop_event
-                                        ):
-                                            return
-                                        refined_detections = detector.detect(zoomed)
-                                        if not self._is_current(
-                                            generation, stop_event
-                                        ):
-                                            return
-                                        if bool(zoom_gate_provider()):
-                                            refined = compose_zoom_refinement(
-                                                base_analysis,
-                                                refined_detections,
-                                                transform,
-                                                settings,
-                                            )
-                                            if refined is None:
-                                                stability = record_zoom_refinement_miss(
-                                                    stability,
-                                                    self._clock(),
-                                                )
-                                            else:
-                                                published = refined
-                                                factor = applied_factor
-                                        else:
-                                            gate_active = False
-                                            stability = ZoomStabilityState()
-                            if gate_active and not movement_is_confirmed(stability):
-                                published = DetectionAnalysis(None, published.frame)
                     except Exception:
                         LOGGER.exception(
                             "Adaptive AI zoom disabled for generation %s",
                             generation,
                         )
                         refinement_enabled = False
-                        stability = ZoomStabilityState()
                         factor = 1.0
                         published = base_analysis
+                if gate_active and not movement_is_confirmed(stability):
+                    published = DetectionAnalysis(None, published.frame)
                 with self._lock:
                     if not self._is_current_locked(generation, stop_event):
                         return

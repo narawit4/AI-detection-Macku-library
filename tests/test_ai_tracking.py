@@ -177,6 +177,28 @@ class ConservativeTrackingTests(unittest.TestCase):
         self.assertEqual(results[:2], [None, None])
         self.assertAlmostEqual(results[2].aim_x, 220)
 
+    def test_returning_original_cancels_center_favoured_pending_replacement(self):
+        original = head_box(60)
+        competitor = head_box(160)
+        acquired = observe(TrackerState(), (original,), 1, 0.0)
+        first = observe(acquired.state, (competitor,), 2, 0.150)
+        second = observe(first.state, (competitor,), 3, 0.167)
+
+        returned = observe(
+            second.state,
+            (competitor, original),
+            4,
+            0.184,
+        )
+
+        self.assertEqual(second.state.pending_count, 2)
+        self.assertEqual(returned.analysis.frame.detections, (competitor, original))
+        self.assertEqual(returned.analysis.frame.selected_index, 1)
+        self.assertEqual(returned.analysis.target.sequence, 4)
+        self.assertAlmostEqual(returned.analysis.target.aim_x, 60)
+        self.assertIsNone(returned.state.pending_candidate)
+        self.assertEqual(returned.state.pending_count, 0)
+
     def test_exact_initial_score_margin_is_ambiguous(self):
         center_to_corner = math.hypot(160.0, 160.0)
         runner_x = 160.0 + 0.15 * center_to_corner

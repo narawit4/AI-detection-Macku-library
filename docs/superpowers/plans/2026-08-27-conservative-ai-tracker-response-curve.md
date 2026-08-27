@@ -2,9 +2,14 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Binding schema supersession:** Extend the existing schema 5 document with
+> the response curve. Schema 6 is unsupported future data, saving stays
+> disabled after it is loaded, and its source bytes remain unchanged. This
+> ruling supersedes every schema-6 instruction in earlier plan revisions.
+
 **Goal:** Prevent close or overlapping detections from stealing the active AI target, and replace burst-per-inference mouse movement with a configurable five-point, display-adaptive time servo.
 
-**Architecture:** A pure `ai_tracking.py` state machine scores full base boxes using predicted position, IoU, and area continuity, publishing no target when identity is ambiguous. `ai_targeting.py` owns validated curve settings, monotone interpolation, and a `dt`-based movement servo; `display_timing.py` derives immutable capture/servo cadence from the primary Windows display. `AiService`, Makcu composition, schema 6, and the scrollable Tk Motion page consume those narrow interfaces without weakening generation or cancellation barriers.
+**Architecture:** A pure `ai_tracking.py` state machine scores full base boxes using predicted position, IoU, and area continuity, publishing no target when identity is ambiguous. `ai_targeting.py` owns validated curve settings, monotone interpolation, and a `dt`-based movement servo; `display_timing.py` derives immutable capture/servo cadence from the primary Windows display. `AiService`, Makcu composition, schema 5, and the scrollable Tk Motion page consume those narrow interfaces without weakening generation or cancellation barriers.
 
 **Tech Stack:** Python 3.12, dataclasses, ctypes/Win32, Tkinter Canvas/ttk, NumPy/DXCam, ONNX Runtime DirectML, Makcu, `unittest`.
 
@@ -21,7 +26,7 @@
 - Tracker predictive hold and movement freshness both expire at elapsed time `>= 0.150` seconds.
 - Valid display rates are finite 24..500 Hz inclusive; capture is capped at 240 FPS, servo is `clamp(2 * display_hz, 120, 480)`, and fallback is 120/240.
 - Response X positions are fixed at 0/25/50/75/100%; Y values are finite, 0..1, monotonic, exactly five long, and begin at zero.
-- Keep Confidence, Aim Strength, Smoothing, and Max Step; persist only the response curve in schema 6, never cadence/tracker/runtime state.
+- Keep Confidence, Aim Strength, Smoothing, and Max Step; persist only the response curve in schema 5, never cadence/tracker/runtime state.
 - Tk widgets and variables stay on the main thread; workers receive immutable snapshots and injected runtime values.
 - STOP, disconnect, hotkey disable, source change, Trigger/Modifier release, error, restart, and shutdown retain immediate signaling and the existing Makcu move barrier.
 - Preserve fractional accumulation, per-report clamping, no overshoot, and discard obsolete/excess movement instead of queuing it.
@@ -37,7 +42,7 @@
 - Modify `combined_motion.py`: injected AI servo cadence and default cadence-aware aim engine.
 - Modify `makcu_service.py`: pass validated AI servo cadence into its default combined-engine factory.
 - Modify `ui.py`: runtime cadence injection/status and the scrollable response-curve editor.
-- Modify `settings.py`: schema 6 response-curve migration and persistence.
+- Modify `settings.py`: schema 5 response-curve extension and persistence.
 - Modify `README.md` and `AGENTS.md`: behavior, schema, layout, and verification inventory.
 - Create `tests/test_display_timing.py` and `tests/test_ai_tracking.py`; extend the existing targeting, capture, service, composition, Makcu, settings, entrypoint, and UI tests.
 
@@ -255,13 +260,14 @@ class AimSettings:
     response_curve: tuple[float, float, float, float, float] = DEFAULT_RESPONSE_CURVE
 ```
 
-Reject the entire input unless it is a non-string iterable of exactly five
-finite non-boolean numbers, begins exactly at zero, stays within 0..1, and is
-non-decreasing. Serialize it as a five-element list of compact strings while
-keeping the four scalar mapping values unchanged. Update the serializer return
-annotation to `dict[str, str | list[str]]`; consumers that need only scalar Tk
-variables must select `_AI_CONTROL_SPECS` keys rather than iterating the whole
-mapping.
+Reject the entire input unless it is an ordered, non-string sequence of exactly
+five finite non-boolean numbers or numeric strings, begins exactly at zero,
+stays within 0..1, and is non-decreasing. Mappings and unordered iterables use
+the complete default. Serialize valid data as a five-element list of compact
+strings while keeping the four scalar mapping values unchanged. Update the
+serializer return annotation to `dict[str, str | list[str]]`; consumers that
+need only scalar Tk variables must select `_AI_CONTROL_SPECS` keys rather than
+iterating the whole mapping.
 
 - [ ] **Step 4: Implement monotone cubic Hermite evaluation**
 
@@ -285,7 +291,7 @@ git commit -m "feat: add validated AI response curves"
 
 ---
 
-### Task 3: Schema 6 response-curve persistence
+### Task 3: Schema 5 response-curve persistence
 
 **Files:**
 - Modify: `settings.py`
@@ -293,12 +299,12 @@ git commit -m "feat: add validated AI response curves"
 
 **Interfaces:**
 - Consumes: `AimSettings.response_curve` and its mapping helpers from Task 2.
-- Produces: `SCHEMA_VERSION = 6`, safe schema 1-5 migration, and atomic schema 6 round trip.
+- Produces: `SCHEMA_VERSION = 5`, safe schema 1-4 migration, an atomic schema 5 round trip, and schema-6 future-data protection.
 
-- [ ] **Step 1: Write failing schema 6 tests**
+- [ ] **Step 1: Write failing schema 5 tests**
 
 ```python
-def test_schema_six_round_trips_response_curve(self):
+def test_schema_five_round_trips_response_curve(self):
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "config.json"
         config = AppConfig(ai=AimSettings(
@@ -308,7 +314,7 @@ def test_schema_six_round_trips_response_curve(self):
         store.save(config)
         document = json.loads(path.read_text(encoding="utf-8"))
         restored = store.load().config
-    self.assertEqual(document["schema_version"], 6)
+    self.assertEqual(document["schema_version"], 5)
     self.assertEqual(document["ai"]["response_curve"], ["0", "0.1", "0.4", "0.8", "0.9"])
     self.assertEqual(restored, config)
 
@@ -326,22 +332,25 @@ def test_schema_five_receives_default_curve_without_rewrite(self):
     self.assertEqual(after, original)
 ```
 
-Add cases for malformed schema 6 curves, schemas 1-4 defaulting the curve,
-unsupported schema 7 disabling save without overwrite, and second-save backup
-retaining the complete preceding schema 6 document.
+Add cases for malformed schema 5 curves, schemas 1-4 defaulting the curve,
+unsupported schema 6 disabling save without overwrite, and second-save backup
+retaining the complete preceding schema 5 document.
 
 - [ ] **Step 2: Run settings tests and confirm RED**
 
 Run: `python -m unittest tests.test_settings -v`
 
-Expected: schema assertions fail because the current version is 5 and no curve is serialized.
+Expected: response-curve assertions fail because schema 5 does not yet
+serialize the curve.
 
-- [ ] **Step 3: Migrate to schema 6 minimally**
+- [ ] **Step 3: Extend schema 5 minimally**
 
-Set `SCHEMA_VERSION = 6`. Keep schema 1/2 AI defaults and let schemas 3-6 pass
-their mapping through `aim_settings_from_mapping`; missing curve data naturally
-uses Task 2's default. Keep future-schema save prohibition, temp cleanup,
-flush, `fsync`, backup, and `os.replace` unchanged.
+Keep `SCHEMA_VERSION = 5`. Keep schema 1/2 AI defaults, let schemas 3/4 retain
+their scalar AI settings while ignoring any response curve, and let schema 5
+pass its mapping through `aim_settings_from_mapping`; missing curve data
+naturally uses Task 2's default. Treat schema 6 as unsupported future data and
+keep save prohibition, byte preservation, temp cleanup, flush, `fsync`, backup,
+and `os.replace` unchanged.
 
 - [ ] **Step 4: Run settings and UI config tests**
 
@@ -349,11 +358,11 @@ Run: `python -m unittest tests.test_settings tests.test_ui.JitterLayoutTests.tes
 
 Expected: PASS; no cadence, target, or runtime key appears in JSON.
 
-- [ ] **Step 5: Commit schema 6**
+- [ ] **Step 5: Commit schema 5 persistence**
 
 ```powershell
 git add settings.py tests/test_settings.py
-git commit -m "feat: persist response curves in schema six"
+git commit -m "feat: persist response curves in schema five"
 ```
 
 ---
@@ -481,14 +490,19 @@ def head_box(center_x, center_y=100, size=10):
     )
 
 def test_crossing_does_not_follow_the_nearest_competitor(self):
-    state = TrackerState()
+    acquired = observe_detections(
+        TrackerState(), (head_box(130),), AimSettings(),
+        sequence=1, captured_at=1 / 60,
+    )
+    self.assertAlmostEqual(acquired.analysis.target.aim_x, 130)
+    state = acquired.state
     observations = []
     for sequence, (person_a, person_b) in enumerate(
-        ((140, 220), (150, 190), (160, 160), (175, 145), (190, 130)), 1
+        ((140, 220), (150, 190), (160, 160), (175, 145), (190, 130)), 2
     ):
         result = observe_detections(
             state,
-            (head_box(person_a), head_box(person_b)),
+            (head_box(person_b), head_box(person_a)),
             AimSettings(), sequence=sequence, captured_at=sequence / 60,
         )
         state = result.state
@@ -496,6 +510,7 @@ def test_crossing_does_not_follow_the_nearest_competitor(self):
     self.assertIsNone(observations[2].analysis.target)
     self.assertEqual(observations[2].analysis.frame.selected_index, None)
     self.assertAlmostEqual(observations[-1].analysis.target.aim_x, 190)
+    self.assertEqual(observations[-1].analysis.frame.selected_index, 1)
 
 def test_replacement_waits_for_three_stable_observations(self):
     state = TrackerState()
@@ -859,8 +874,9 @@ Document in README:
 - time-based microsteps, 150 ms stale discard, and unchanged Jitter/STOP behavior.
 
 Update AGENTS planned layout with `ai_tracking.py` and `display_timing.py`, set
-schema text to 6, state that curve alone is persisted, describe adaptive
-cadence as runtime-only, and add both modules to the canonical compile command.
+schema text to 5 with schema 6 reserved as unsupported future data, state that
+the curve alone is persisted, describe adaptive cadence as runtime-only, and
+add both modules to the canonical compile command.
 
 - [ ] **Step 2: Run focused regression groups**
 

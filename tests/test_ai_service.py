@@ -1106,6 +1106,56 @@ class AiServiceTests(unittest.TestCase):
         )
         self.assertEqual(len(detector.frames), 5)
 
+    def test_refinement_error_keeps_stability_gate_active_after_rearm(self):
+        base = (self.small_head(),)
+        refined = (Detection(142, 142, 178, 178, 0.93, 7),)
+        detector = SequentialDetector((
+            base,
+            refined,
+            base,
+            RuntimeError("refine failed"),
+            base,
+            base,
+        ))
+        capture = ControlledCapture([
+            np.zeros((320, 320, 3), dtype=np.uint8)
+            for _ in range(4)
+        ])
+        gate = {"active": True}
+        clock = MutableClock(10.0)
+        service, events = self.make_zoom_service(
+            detector,
+            capture=capture,
+            clock=clock,
+        )
+
+        with self.assertLogs("ai_service", level="ERROR") as logs:
+            service.start(AimSettings, lambda: gate["active"])
+            self.release_and_wait(capture, service, 1)
+            self.assertIsNone(service.latest_snapshot())
+
+            clock.set(10.05)
+            self.release_and_wait(capture, service, 2)
+            self.assertIsNotNone(service.latest_snapshot())
+
+            gate["active"] = False
+            clock.set(10.06)
+            self.release_and_wait(capture, service, 3)
+            self.assertIsNotNone(service.latest_snapshot())
+
+            gate["active"] = True
+            clock.set(10.07)
+            self.release_and_wait(capture, service, 4)
+
+        self.assertIsNone(service.latest_snapshot())
+        self.assertEqual(service.latest_detection_snapshot().selected_index, 0)
+        self.assertEqual(len(detector.frames), 6)
+        self.assertFalse(any(event.kind == "error" for event in events))
+        self.assertEqual(
+            sum("Adaptive AI zoom disabled" in line for line in logs.output),
+            1,
+        )
+
     def test_reentrant_loading_stop_or_close_does_not_launch_worker(self):
         for action in ("stop", "close"):
             with self.subTest(action=action):

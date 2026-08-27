@@ -1,5 +1,6 @@
 """Pure settings validation and target selection for AI aim mode."""
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 import math
 from typing import Any, Iterable, Mapping
@@ -91,12 +92,9 @@ def _bounded_integer(raw: Any, default: int, key: str) -> int:
 
 
 def validated_response_curve(raw: Any) -> tuple[float, float, float, float, float]:
-    if isinstance(raw, (str, bytes)):
+    if isinstance(raw, (str, bytes, bytearray)) or not isinstance(raw, Sequence):
         return DEFAULT_RESPONSE_CURVE
-    try:
-        values = tuple(raw)
-    except TypeError:
-        return DEFAULT_RESPONSE_CURVE
+    values = tuple(raw)
     if len(values) != len(RESPONSE_CURVE_X):
         return DEFAULT_RESPONSE_CURVE
     try:

@@ -280,6 +280,32 @@ class ConfigStoreTests(unittest.TestCase):
 
             self.assertEqual(config.ai.response_curve, DEFAULT_RESPONSE_CURVE)
 
+    def test_schema_five_response_curve_object_uses_default_without_rewrite(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            original = json.dumps({
+                "schema_version": 5,
+                "ai": {
+                    "response_curve": {
+                        "0": "ignored",
+                        "0.1": "ignored",
+                        "0.4": "ignored",
+                        "0.8": "ignored",
+                        "0.9": "ignored",
+                    },
+                },
+            })
+            path.write_text(original, encoding="utf-8")
+
+            outcome = ConfigStore(path).load()
+
+            self.assertTrue(outcome.save_allowed)
+            self.assertEqual(
+                outcome.config.ai.response_curve,
+                DEFAULT_RESPONSE_CURVE,
+            )
+            self.assertEqual(path.read_text(encoding="utf-8"), original)
+
     def test_schema_five_round_trips_ai_settings_without_mode(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.json"

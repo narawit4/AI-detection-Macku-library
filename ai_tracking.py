@@ -475,7 +475,8 @@ def observe_detections(
 
     last_clear_at = state.last_clear_at
     expired = last_clear_at is None or captured_at - last_clear_at >= HOLD_EXPIRY_S
-    if expired:
+    ranked = _tracked_rank(state, candidates, captured_at)
+    if expired and (not ranked or _is_ambiguous(ranked)):
         return _observe_replacement(
             state,
             candidates,
@@ -484,7 +485,6 @@ def observe_detections(
             captured_at=captured_at,
         )
 
-    ranked = _tracked_rank(state, candidates, captured_at)
     if not ranked:
         held = TrackerState(
             confirmed_detection=state.confirmed_detection,

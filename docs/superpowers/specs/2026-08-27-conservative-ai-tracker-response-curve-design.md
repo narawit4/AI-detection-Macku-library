@@ -2,6 +2,11 @@
 
 Date: 2026-08-27
 
+> **Binding schema supersession:** The response curve extends the existing
+> schema 5 document. Schema 6 is unsupported future data and must remain
+> byte-for-byte unchanged with saving disabled. This ruling supersedes every
+> earlier schema-6 proposal for this feature.
+
 ## Context
 
 Live Makcu testing exposed two related AI Aim problems. First, two same-class
@@ -151,9 +156,12 @@ deciding identity at the crossing boundary.
 If the confirmed track has no clear plausible match for 150 ms, its predictive
 hold expires. A replacement must then remain the same class, within 18 pixels
 of its preceding pending aim point, and clear of ambiguity for three
-consecutive observations. The third observation becomes confirmed. The
-original track returning before expiry cancels replacement. Missing detections
-never publish a held coordinate.
+consecutive observations. The third observation becomes confirmed. Before a
+pending replacement advances, a clear current full-box match for the confirmed
+original cancels that pending replacement and follows the normal recovery or
+publication path, even after hold expiry. Only that current detection may be
+published; the saved anchor never becomes a stale movement target. Missing
+detections never publish a held coordinate.
 
 The 150 ms hold is measured from the last clear confirmed observation and is
 expired when elapsed time is greater than or equal to 0.150 seconds. The
@@ -307,28 +315,33 @@ All Canvas and Tk-variable access remains on the main thread. Theme changes
 redraw the graph with shared palette colors, keyboard focus remains visible,
 and exact entries provide a non-pointer editing path.
 
-## Configuration schema 6
+## Configuration schema 5
 
-Schema 6 persists `ai.response_curve` and no cadence/tracker runtime state.
+Schema 5 persists `ai.response_curve` and no cadence/tracker runtime state.
 The JSON value is an exact five-element array, for example
 `["0", "0.12", "0.35", "0.68", "1"]`; ordinary scalar AI controls remain
 strings as today. Curve Tk variables are separate from the existing scalar
 `ai_vars` mapping.
-Schemas 1 through 5 retain their existing migration behavior and receive the
-default curve in memory. A normal later save writes schema 6 through the
+Schemas 1 through 4 retain their existing migration behavior and receive the
+default curve in memory. A normal later save writes schema 5 through the
 existing temporary-file, flush, `fsync`, backup, and atomic-replace path.
 
 Malformed response curves use the complete safe default rather than partially
-repairing a shape. A schema identifier newer than 6 still disables saving and
-leaves the source file untouched. Selected sources, Master, held inputs,
-targets, boxes, tracker state, ambiguity, display Hz, capture FPS, servo Hz,
-velocity, fractions, and curve-render state are never persisted.
+repairing a shape. Only ordered sequence containers with five numeric or
+numeric-string elements are accepted; mappings and unordered iterables use the
+complete default. Schema 6 and every newer identifier disable saving and leave
+the source file untouched. Selected sources, Master, held inputs, targets,
+boxes, tracker state, ambiguity, display Hz, capture FPS, servo Hz, velocity,
+fractions, and curve-render state are never persisted.
 
 ## Error handling and safety
 
 - Refresh-query failures log detailed diagnostics and use the fallback cadence;
   they do not prevent startup or create an AI runtime error.
 - DXCam/model/capture/inference failures retain the existing AI failure path.
+- A caught adaptive-refinement failure disables only crop/refinement work for
+  that AI generation; movement-gate polling, stability reset/observation, and
+  confirmation masking continue on every base frame.
 - Invalid curve data never reaches the motion worker.
 - Ambiguity, a normal tracker miss, or replacement confirmation is normal
   state and is not logged as an exception.
@@ -357,11 +370,11 @@ velocity, fractions, and curve-render state are never persisted.
   cadence without weakening cancellation.
 - `ui.py`: obtain/inject cadence, render/edit the curve, show runtime cadence,
   and publish immutable settings.
-- `settings.py`: schema 6 migration and atomic response-curve persistence.
+- `settings.py`: schema 5 extension and atomic response-curve persistence.
 - `main.py`: no eager UI/AI import changes; ordinary startup continues through
   `JitterApp` and self-check isolation remains intact.
 - `README.md` and `AGENTS.md`: document tracker ambiguity, curve semantics,
-  adaptive cadence, schema 6, new modules, and updated verification commands.
+  adaptive cadence, schema 5, new modules, and updated verification commands.
 - `tests/`: hardware-free pure, service, movement, UI, schema, cadence,
   cancellation, and integration coverage.
 
@@ -382,13 +395,16 @@ changes.
   candidate resets the count.
 - A missing/implausible original cannot publish stale movement, and a
   replacement becomes confirmed only on its third stable observation.
+- A clear current original cancels a center-favoured pending replacement and
+  publishes only the current detection through normal recovery rules.
 - Head-first initial and replacement behavior remains intact.
 - Tracker state is immutable and independent across AI generations.
 
 ### Curve and servo tests
 
 - Default and custom curves pass through all fixed points, are monotonic, and
-  never overshoot; malformed curves use the complete default.
+  never overshoot; malformed, mapping, and unordered-iterable curves use the
+  complete default.
 - Repeated use of one fresh snapshot yields multiple bounded microsteps rather
   than one nonzero report followed only by zeros.
 - Equal elapsed time at 120, 288, and 480 Hz produces equivalent intended
@@ -409,10 +425,12 @@ changes.
 - AiService crossing/ambiguity/recovery tests verify current-frame Overlay,
   no refinement while ambiguous, no stale movement, and at most two detector
   calls per captured frame.
+- A refinement exception followed by gate release and re-arm still withholds
+  the first re-armed movement target while publishing its current Overlay box.
 - Combined/Makcu workers use the injected interval and retain immediate
   cancellation and final report clamping.
-- Schema 1-5 migration, schema 6 round trip, malformed curve fallback, atomic
-  backup, and unsupported-future no-overwrite behavior are covered.
+- Schema 1-4 migration, schema 5 round trip, malformed curve fallback, atomic
+  backup, and schema-6 unsupported-future no-overwrite behavior are covered.
 - Graph layout, theme redraw, pointer drag, keyboard/exact entry, validation,
   Reset Curve, live snapshot replacement, debounced save, fixed window, scroll,
   and always-visible STOP behavior are covered without real hardware.
@@ -450,7 +468,7 @@ detected display cadence:
 - Total intended speed is time-based and materially invariant across supported
   display/servo rates.
 - The five-point graph is live, monotonic, exactly editable, resettable, themed,
-  and persisted only as validated schema 6 AI settings.
+  and persisted only as validated schema 5 AI settings.
 - Display/capture/servo cadence follows the approved caps and safe fallback and
   remains runtime-only.
 - Jitter, adaptive zoom limits, Overlay capture exclusion, fixed model/runtime,

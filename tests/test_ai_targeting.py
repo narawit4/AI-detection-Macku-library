@@ -101,6 +101,14 @@ class AimSettingsTests(unittest.TestCase):
             (0.0, 0.2, 0.2, 0.7, 1.0),
         )
 
+    def test_unordered_curve_iterable_uses_complete_default(self):
+        unordered = frozenset((0.0, 0.08, 0.18, 0.30, 0.33))
+
+        self.assertEqual(
+            validated_response_curve(unordered),
+            DEFAULT_RESPONSE_CURVE,
+        )
+
     def test_flat_curve_segment_stays_at_its_knot_value(self):
         curve = (0.0, 0.9, 0.9, 0.9, 1.0)
         samples = [
