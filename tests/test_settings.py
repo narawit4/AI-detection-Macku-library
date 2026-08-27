@@ -354,6 +354,39 @@ class ConfigStoreTests(unittest.TestCase):
         })
         self.assertEqual(restored, config)
 
+    def test_schema_five_ignores_and_never_rewrites_model_selection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            path.write_text(json.dumps({
+                "schema_version": 5,
+                "model_path": "C:/private/custom.onnx",
+                "ai": {"model_path": "nested.onnx"},
+            }), encoding="utf-8")
+            store = ConfigStore(path)
+            outcome = store.load()
+            self.assertFalse(hasattr(outcome.config, "model_path"))
+            store.save(outcome.config)
+            document = json.loads(path.read_text(encoding="utf-8"))
+        self.assertNotIn("model_path", document)
+        self.assertNotIn("model_path", document["ai"])
+        self.assertEqual(document["schema_version"], 5)
+
+    def test_schema_five_generated_config_and_backup_never_contain_model_data(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            store = ConfigStore(path)
+            store.save(AppConfig(theme="dark"))
+            store.save(AppConfig(theme="light"))
+            current = json.loads(path.read_text(encoding="utf-8"))
+            backup = json.loads(
+                path.with_name("config.json.bak").read_text(encoding="utf-8")
+            )
+        for document in (current, backup):
+            self.assertNotIn("model_path", document)
+            self.assertNotIn("model_name", document)
+            self.assertNotIn("model_hash", document)
+            self.assertNotIn("model_path", document["ai"])
+
     def test_schema_three_malformed_ai_settings_use_safe_defaults(self):
         cases = (
             None,

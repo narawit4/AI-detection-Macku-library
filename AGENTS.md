@@ -12,9 +12,11 @@ are held.
 
 This repository is independent from EverFall Jitter. Do not import its source
 or read its configuration. The approved AI Aim scope is a clean-room
-implementation using only the fixed bundled model, independent motion sources,
-and the constrained overlay described below; do not add training, profiles,
-tray behavior, or other upstream features.
+implementation using the bundled startup-default model, independent motion
+sources, and the constrained overlay described below. Only runtime browsing of
+contract-compatible external `.onnx` files is allowed; do not add training,
+profiles, downloads, copying, persistence, tray behavior, or other upstream
+features.
 
 ## Planned repository layout
 
@@ -28,6 +30,7 @@ tray behavior, or other upstream features.
 - `ai_detection.py`: fixed-contract ONNX Runtime detector.
 - `ai_capture.py`: centered DXCam capture wrapper.
 - `ai_service.py`: generation-safe capture and inference worker.
+- `ai_model_selection.py`: runtime-only external ONNX selection and validation.
 - `display_timing.py`: primary-display cadence detection and pure runtime policy.
 - `overlay.py`: centered, click-through, capture-excluded detection view.
 - `distribution_metadata.py`: validates, reviews, and executes the canonical
@@ -36,7 +39,7 @@ tray behavior, or other upstream features.
 - `makcu_service.py`: Makcu connection, callbacks, movement, and cleanup.
 - `hotkeys.py`: Windows global-hotkey polling.
 - `settings.py`: independent schema-aware atomic configuration.
-- `models/all_games_320.onnx`: approved fixed AI Aim model resource.
+- `models/all_games_320.onnx`: approved bundled startup-default AI Aim model resource.
 - `licenses/`: exact dependency notices, provenance manifest, and required
   GPL/LGPL source archives.
 - `tests/`: hardware-free unit and integration-style tests.
@@ -88,8 +91,14 @@ with the supported Windows Python installation.
 - Jitter and AI Aim are independent selected sources; both start unselected.
   Master and the global hotkey arm the selected sources, while actual movement
   requires Trigger plus the configured Modifier, if any.
-- AI Aim uses only the fixed centered 320-by-320 capture and bundled model,
-  prefers heads over players, and shares the same Trigger/Modifier gate.
+- AI Aim uses the fixed centered 320-by-320 capture and bundled startup-default
+  model, prefers heads over players, and shares the same Trigger/Modifier gate.
+  `Browse...` may select only an external runtime `.onnx` with the exact
+  `images` `[1,3,320,320]` and `output0` `[1,300,6]` float contract, class 0
+  players, and class 7 heads. Validate off the UI thread, pause AI during a
+  switch, and restore the previous model after validation or startup failure.
+  Never download, copy, package, or persist an external model or its path;
+  every launch starts with the bundled model.
 - Track the complete detection box using predicted position, a plausibility
   radius of `max(48 pixels, 1.5 × box diagonal)`, an inclusive 0.4-2.5 area
   ratio, IoU, and area-change scoring. Hold identity for at most 150 ms without
@@ -151,7 +160,8 @@ with the supported Windows Python installation.
   an AI-only failure disarms Master.
 - `Test 3s` uses the production engine for the sources selected at test start,
   bypasses Trigger temporarily, requires Makcu, and remains immediately
-  interruptible by STOP or disconnect.
+  interruptible by STOP or disconnect. Model changes are unavailable during a
+  Test 3s run.
 - The configurable global hotkey defaults to `-` and toggles once per press.
 - Makcu connection uses the supported `makcu` library with automatic
   reconnection and button monitoring.
@@ -188,8 +198,9 @@ with the supported Windows Python installation.
   disable saving, and leave its source file byte-for-byte unchanged.
 - The response curve is the only new persisted setting. Do not persist
   motion-source selection, Master state, overlay visibility, tracker history,
-  AI targets, snapshots, FPS, provider, cadence, zoom status, or other runtime
-  state. Adaptive Zoom and adaptive cadence add no persisted control.
+  AI targets, model selection or external model paths, snapshots, FPS, provider,
+  cadence, zoom status, or other runtime state. Adaptive Zoom and adaptive
+  cadence add no persisted control.
 - Write configuration through a temporary file, flush and `fsync`, keep a
   backup, and replace atomically.
 - Do not persist held-button or Moving state.
@@ -214,16 +225,16 @@ with the supported Windows Python installation.
 - The canonical Nuitka plan must load `nuitka-package.config.yml`, then run
   `build-output\Jitter.exe --ai-runtime-self-check` successfully with
   `DmlExecutionProvider` before copying release materials or reporting success.
-- Do not add alternate AI models, training, profiles, tray, Pillow,
-  Pystray, Torch, Ultralytics, OpenCV, or other unapproved ML dependencies
-  without an explicit new design decision.
+- Do not add alternate bundled or packaged AI models, training, profiles,
+  downloads, copying, tray, Pillow, Pystray, Torch, Ultralytics, OpenCV, or
+  other unapproved ML dependencies without an explicit new design decision.
 
 ## Verification
 
 After implementation changes, run:
 
 ```powershell
-python -m py_compile main.py ui.py motion.py combined_motion.py ai_targeting.py ai_tracking.py ai_detection.py ai_capture.py ai_zoom.py ai_service.py display_timing.py overlay.py makcu_service.py hotkeys.py settings.py sound_service.py liquid_widgets.py distribution_metadata.py
+python -m py_compile main.py ui.py motion.py combined_motion.py ai_targeting.py ai_tracking.py ai_detection.py ai_capture.py ai_zoom.py ai_service.py ai_model_selection.py display_timing.py overlay.py makcu_service.py hotkeys.py settings.py sound_service.py liquid_widgets.py distribution_metadata.py
 python -m unittest discover -s tests -v
 python -c "import makcu, serial, pygame, onnxruntime, dxcam, comtypes, numpy"
 python .\main.py --ai-runtime-self-check

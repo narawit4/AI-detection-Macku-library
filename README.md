@@ -35,8 +35,18 @@ components are equal in magnitude along the 45-degree pulse axis.
 Select `AI Aim` to use the fixed centered 320-by-320 capture and the bundled
 `models/all_games_320.onnx` model. AI Aim prefers the nearest valid head
 detection; when no head is detected, it targets the upper portion of the
-nearest valid player detection. It does not support arbitrary models, training,
-or profiles.
+nearest valid player detection.
+
+The `MODEL` row starts with `Default · all_games_320.onnx`. `Browse...` can
+select an external `.onnx` file for this process only, and `Use Default`
+returns to the bundled model. A custom model must keep the exact `images`
+`[1,3,320,320]` and `output0` `[1,300,6]` float contract and use class 0 for
+players and class 7 for heads. Jitter validates it off the UI thread, pauses
+AI during the switch, and restores the previous model if validation or startup
+fails. The selected path is never saved, copied, packaged, or used by the
+release self-check; every launch starts with the bundled model. Model changes
+are unavailable while `Test 3s` is active. Jitter does not support training or
+profiles.
 
 AI Aim exposes four controls on the Motion page:
 
