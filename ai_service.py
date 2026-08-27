@@ -301,15 +301,18 @@ class AiService:
                 captured_at = self._clock()
                 sequence += 1
                 settings = settings_provider()
+                if not self._is_current(generation, stop_event):
+                    return
+                base_detections = detector.detect(frame)
+                if not self._is_current(generation, stop_event):
+                    return
                 base_analysis = analyze_detections(
-                    detector.detect(frame),
+                    base_detections,
                     settings,
                     sequence=sequence,
                     captured_at=captured_at,
                     previous=selection_previous,
                 )
-                if not self._is_current(generation, stop_event):
-                    return
                 selection_previous = base_analysis.target
                 factor = 1.0
                 published = base_analysis

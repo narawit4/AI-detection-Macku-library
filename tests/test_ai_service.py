@@ -291,6 +291,28 @@ class AiServiceTests(unittest.TestCase):
             and service.latest_detection_snapshot().sequence == sequence
         ))
 
+    def test_stop_after_capture_prevents_base_detector_call(self):
+        detector = BlockingDetector()
+        stopped = threading.Event()
+        capture = FakeCapture([np.zeros((320, 320, 3), dtype=np.uint8)])
+        service = AiService(
+            lambda _event: None,
+            detector_factory=lambda _path: detector,
+            capture_factory=lambda: capture,
+        )
+        self.addCleanup(service.close)
+        self.addCleanup(detector.release.set)
+
+        def stop_before_base_inference():
+            service.stop("settings race")
+            stopped.set()
+            return AimSettings()
+
+        service.start(stop_before_base_inference)
+
+        self.assertTrue(stopped.wait(1.0))
+        self.assertFalse(detector.entered.wait(0.1))
+
     def test_zoom_gate_false_publishes_base_with_one_inference(self):
         detector = SequentialDetector(((Detection(140, 80, 180, 160, 0.9, 0),),))
         service, events = self.make_zoom_service(detector)
