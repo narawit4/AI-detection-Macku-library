@@ -2,7 +2,7 @@ import math
 import unittest
 from dataclasses import FrozenInstanceError
 
-from ai_targeting import AimSettings, Detection
+from ai_targeting import AimSettings, Detection, TargetSnapshot
 from ai_tracking import TrackerState, observe_detections
 
 
@@ -54,24 +54,49 @@ def observe(state, detections, sequence, captured_at, settings=None):
 
 class ConservativeTrackingTests(unittest.TestCase):
     def test_crossing_does_not_follow_the_nearest_competitor(self):
-        state = TrackerState()
+        acquired = observe(
+            TrackerState(), (head_box(130),), 1, 1 / 60
+        )
+        self.assertAlmostEqual(acquired.analysis.target.aim_x, 130)
+        state = acquired.state
         observations = []
         for sequence, (person_a, person_b) in enumerate(
-            ((140, 220), (150, 190), (160, 160), (175, 145), (190, 130)), 1
+            ((140, 220), (150, 190), (160, 160), (175, 145), (190, 130)), 2
         ):
             result = observe_detections(
                 state,
-                (head_box(person_a), head_box(person_b)),
+                (head_box(person_b), head_box(person_a)),
                 AimSettings(),
                 sequence=sequence,
                 captured_at=sequence / 60,
             )
             state = result.state
             observations.append(result)
+        self.assertAlmostEqual(observations[0].analysis.target.aim_x, 140)
+        self.assertAlmostEqual(observations[1].analysis.target.aim_x, 150)
         self.assertIsNone(observations[2].analysis.target)
         self.assertEqual(observations[2].analysis.frame.selected_index, None)
+        self.assertIsNone(observations[3].analysis.target)
         self.assertAlmostEqual(observations[-1].analysis.target.aim_x, 190)
-        self.assertEqual(observations[-1].analysis.frame.selected_index, 0)
+        self.assertEqual(observations[-1].analysis.frame.selected_index, 1)
+
+    def test_ambiguous_initial_frames_never_create_confirmed_geometry_or_velocity(self):
+        state = TrackerState()
+        for sequence in range(1, 4):
+            result = observe(
+                state,
+                (head_box(180), head_box(140)),
+                sequence,
+                sequence / 60,
+            )
+            state = result.state
+            self.assertIsNone(result.analysis.target)
+            self.assertIsNone(result.analysis.frame.selected_index)
+            self.assertIsNone(state.confirmed_detection)
+            self.assertIsNone(state.confirmed_target)
+            self.assertIsNone(state.preceding_target)
+            self.assertIsNone(state.last_clear_at)
+        self.assertEqual(state.pending_count, 3)
 
     def test_ambiguous_frame_keeps_every_current_accepted_box(self):
         state = observe(
@@ -112,6 +137,21 @@ class ConservativeTrackingTests(unittest.TestCase):
         self.assertIsNone(changed.analysis.target)
         self.assertEqual(changed.state.recovery_count, 1)
         self.assertAlmostEqual(confirmed.analysis.target.aim_x, 131)
+
+    def test_recovery_started_before_expiry_can_finish_across_boundary(self):
+        state = observe(TrackerState(), (head_box(100),), 1, 0.0).state
+        state = observe(
+            state, (head_box(99), head_box(101)), 2, 0.100
+        ).state
+
+        first = observe(state, (head_box(102),), 3, 0.149)
+        second = observe(first.state, (head_box(103),), 4, 0.151)
+
+        self.assertIsNone(first.analysis.target)
+        self.assertEqual(first.state.recovery_count, 1)
+        self.assertAlmostEqual(first.state.last_clear_at, 0.149)
+        self.assertAlmostEqual(second.analysis.target.aim_x, 103)
+        self.assertEqual(second.analysis.frame.selected_index, 0)
 
     def test_replacement_waits_for_three_stable_observations(self):
         state = TrackerState()
@@ -165,17 +205,51 @@ class ConservativeTrackingTests(unittest.TestCase):
         self.assertAlmostEqual(result.analysis.target.aim_x, 160)
         self.assertEqual(result.analysis.frame.selected_index, 0)
 
-    def test_initial_ties_have_deterministic_order_independent_output(self):
+    def test_initial_ties_choose_deterministic_pending_candidate_across_input_order(self):
         first = observe(
             TrackerState(), (head_box(180), head_box(140)), 1, 0.0
         )
-        second = observe(
+        reordered = observe(
             TrackerState(), (head_box(140), head_box(180)), 1, 0.0
         )
 
-        self.assertEqual(first.analysis.target, second.analysis.target)
+        self.assertAlmostEqual(first.state.pending_candidate.aim_x, 140)
+        self.assertEqual(first.state.pending_count, 1)
+        self.assertAlmostEqual(reordered.state.pending_candidate.aim_x, 140)
+        self.assertEqual(reordered.state.pending_count, 1)
         self.assertIsNone(first.analysis.frame.selected_index)
+        self.assertIsNone(reordered.analysis.frame.selected_index)
+
+    def test_ambiguous_initial_choice_still_requires_three_total_observations(self):
+        first = observe(
+            TrackerState(), (head_box(180), head_box(140)), 1, 0.0
+        )
+        second = observe(first.state, (head_box(140),), 2, 0.010)
+        third = observe(second.state, (head_box(140),), 3, 0.020)
+
+        self.assertIsNone(second.analysis.target)
         self.assertIsNone(second.analysis.frame.selected_index)
+        self.assertEqual(second.state.pending_count, 2)
+        self.assertAlmostEqual(third.analysis.target.aim_x, 140)
+        self.assertEqual(third.analysis.frame.selected_index, 0)
+
+    def test_exact_tracked_composite_score_margin_is_ambiguous(self):
+        confirmed_detection = head_rectangle(100, 100, 4, 1.75)
+        confirmed_target = TargetSnapshot(1, 0.0, "head", 100, 100)
+        state = TrackerState(
+            confirmed_detection=confirmed_detection,
+            confirmed_target=confirmed_target,
+            last_clear_at=0.0,
+        )
+        exact_match = confirmed_detection
+        exact_margin = head_rectangle(100, 100, 7, 1)
+
+        result = observe(state, (exact_match, exact_margin), 2, 0.010)
+
+        self.assertIsNone(result.analysis.target)
+        self.assertIsNone(result.analysis.frame.selected_index)
+        self.assertEqual(result.analysis.frame.detections, (exact_match, exact_margin))
+        self.assertEqual(result.state.confirmed_detection, confirmed_detection)
 
     def test_plausibility_radius_is_inclusive(self):
         initial = observe(TrackerState(), (head_box(100),), 1, 0.0)
@@ -191,6 +265,31 @@ class ConservativeTrackingTests(unittest.TestCase):
         self.assertAlmostEqual(boundary.analysis.target.aim_x, 148)
         self.assertIsNone(outside.analysis.target)
         self.assertAlmostEqual(outside.state.confirmed_target.aim_x, 100)
+
+    def test_large_box_plausibility_uses_one_and_a_half_times_diagonal(self):
+        confirmed_detection = head_rectangle(100, 100, 40, 30)
+        confirmed_target = TargetSnapshot(1, 0.0, "head", 100, 100)
+        state = TrackerState(
+            confirmed_detection=confirmed_detection,
+            confirmed_target=confirmed_target,
+            last_clear_at=0.0,
+        )
+
+        boundary = observe(
+            state,
+            (head_rectangle(175, 100, 40, 30),),
+            2,
+            0.010,
+        )
+        outside = observe(
+            state,
+            (head_rectangle(175.000001, 100, 40, 30),),
+            2,
+            0.010,
+        )
+
+        self.assertAlmostEqual(boundary.analysis.target.aim_x, 175)
+        self.assertIsNone(outside.analysis.target)
 
     def test_area_ratio_boundaries_are_inclusive(self):
         initial = observe(TrackerState(), (head_box(100, size=10),), 1, 0.0)

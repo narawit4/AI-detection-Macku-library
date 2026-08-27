@@ -331,7 +331,8 @@ def _observe_initial(
             captured_at=captured_at,
         )
     best = ranked[0][1]
-    if not _is_ambiguous(ranked):
+    ambiguous = _is_ambiguous(ranked)
+    if state.pending_candidate is None and not ambiguous:
         confirmed = _confirmed_state(
             best,
             preceding=None,
@@ -352,22 +353,24 @@ def _observe_initial(
         if _same_path(state.pending_candidate, best.target)
         else 1
     )
-    if pending_count >= REPLACEMENT_CONFIRMATION_COUNT:
+    if not ambiguous and pending_count >= REPLACEMENT_CONFIRMATION_COUNT:
         confirmed = _confirmed_state(
             best,
-            preceding=state.pending_candidate,
+            preceding=None,
             last_clear_at=captured_at,
-            recovery_required=True,
         )
-        return _without_publication(
+        return TrackingObservation(
             confirmed,
-            accepted,
-            sequence=sequence,
-            captured_at=captured_at,
+            _analysis(
+                accepted,
+                best,
+                sequence=sequence,
+                captured_at=captured_at,
+            ),
         )
     pending_state = TrackerState(
         pending_candidate=best.target,
-        pending_count=pending_count,
+        pending_count=min(pending_count, REPLACEMENT_CONFIRMATION_COUNT),
     )
     return _without_publication(
         pending_state,
@@ -516,7 +519,7 @@ def observe_detections(
                 confirmed_detection=state.confirmed_detection,
                 confirmed_target=state.confirmed_target,
                 preceding_target=state.preceding_target,
-                last_clear_at=state.last_clear_at,
+                last_clear_at=captured_at,
                 recovery_required=True,
                 recovery_candidate=best.target,
                 recovery_count=recovery_count,
