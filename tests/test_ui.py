@@ -2884,6 +2884,101 @@ class JitterRuntimeTests(JitterLayoutTests):
             str(self.app.model_browse_button.cget("state")), "normal"
         )
 
+    def test_adding_ai_source_cancels_idle_validation_before_starting_committed_model(self):
+        self.prepare_armed_sources(MotionSources(True, False))
+        previous = self.app._model_choice
+        choice, token = self.begin_custom_model_switch("addition.onnx")
+        starts_before_addition = len(self.ai.start_calls)
+
+        self.app.toggle_ai_source()
+        self.model_validator.emit(ModelValidationEvent("ready", token, choice))
+        self.drain_ui_queue()
+
+        self.assertIsNone(self.app._model_switch)
+        self.assertEqual(self.app._model_choice, previous)
+        self.assertEqual(len(self.ai.start_calls), starts_before_addition + 1)
+        self.assertEqual(self.ai.start_calls[-1][2], previous.path)
+
+    def test_unarmed_ai_removal_restarts_committed_model_for_overlay_demand(self):
+        self.app.toggle_overlay()
+        self.app.ai_selected = True
+        previous = self.app._model_choice
+        choice, token = self.begin_custom_model_switch("unarmed.onnx")
+        self.model_validator.emit(ModelValidationEvent("ready", token, choice))
+        self.drain_ui_queue()
+        starts_before_removal = len(self.ai.start_calls)
+
+        self.app.toggle_ai_source()
+
+        self.assertFalse(self.app.master_armed)
+        self.assertTrue(self.app.overlay_visible)
+        self.assertEqual(self.app._model_choice, previous)
+        self.assertIsNone(self.app._model_switch)
+        self.assertEqual(len(self.ai.start_calls), starts_before_removal + 1)
+        self.assertEqual(self.ai.start_calls[-1][2], previous.path)
+        self.assertEqual(self.service.composite_motion_calls, [])
+
+    def test_rollback_terminal_error_invalidates_switch_and_restores_label(self):
+        self.prepare_armed_sources(MotionSources(False, True))
+        choice, token = self.begin_custom_model_switch("rollback-terminal.onnx")
+        self.model_validator.emit(ModelValidationEvent("ready", token, choice))
+        self.drain_ui_queue()
+        self.app.handle_ai_event(AiEvent("error", "candidate failed"))
+
+        with self.assertLogs(level="ERROR"):
+            self.app.handle_ai_event(AiEvent("error", "rollback failed"))
+
+        self.assertIsNone(self.app._model_switch)
+        self.assertGreater(self.app._model_switch_token, token)
+        self.assertEqual(
+            self.app.ai_model_var.get(), "Default \u00b7 all_games_320.onnx"
+        )
+        self.assertEqual(self.app.ai_status_var.get(), "Error")
+        self.assertEqual(
+            str(self.app.model_browse_button.cget("state")), "normal"
+        )
+
+    def test_synchronous_rollback_start_failure_invalidates_switch_and_restores_label(self):
+        self.prepare_armed_sources(MotionSources(False, True))
+        choice, token = self.begin_custom_model_switch("rollback-start.onnx")
+        self.model_validator.emit(ModelValidationEvent("ready", token, choice))
+        self.drain_ui_queue()
+        self.ai.start_result = False
+
+        with self.assertLogs(level="ERROR"):
+            self.app.handle_ai_event(AiEvent("error", "candidate failed"))
+
+        self.assertIsNone(self.app._model_switch)
+        self.assertGreater(self.app._model_switch_token, token)
+        self.assertEqual(
+            self.app.ai_model_var.get(), "Default \u00b7 all_games_320.onnx"
+        )
+        self.assertEqual(self.app.ai_status_var.get(), "Error")
+        self.assertEqual(
+            str(self.app.model_browse_button.cget("state")), "normal"
+        )
+
+    def test_candidate_error_contains_stop_failure_and_starts_one_rollback(self):
+        self.prepare_armed_sources(MotionSources(False, True))
+        choice, token = self.begin_custom_model_switch("stop-error.onnx")
+        self.model_validator.emit(ModelValidationEvent("ready", token, choice))
+        self.drain_ui_queue()
+        previous = self.app._model_switch.previous
+        self.ai.stop_exception = RuntimeError("stop failed")
+        starts_before_error = len(self.ai.start_calls)
+
+        failure = None
+        try:
+            self.app.handle_ai_event(AiEvent("error", "candidate failed"))
+        except RuntimeError as error:
+            failure = error
+
+        self.assertIsNone(failure)
+        self.assertEqual(self.app._model_switch.phase, "starting_rollback")
+        self.assertEqual(len(self.ai.start_calls), starts_before_error + 1)
+        self.assertEqual(self.ai.start_calls[-1][2], previous.path)
+        self.assertEqual(self.app._model_switch.token, token)
+
     def prepare_armed_sources(self, sources, *, gate_active=False):
         self.service.connected = True
         self.app.jitter_selected = sources.jitter

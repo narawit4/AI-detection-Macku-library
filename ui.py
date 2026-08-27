@@ -3125,12 +3125,16 @@ class JitterApp(tk.Tk):
             switch.candidate.path,
             failure,
         )
-        if self._ai_runtime_active:
-            self._stop_ai_runtime("Model rollback")
-        self._ai_ready = False
-        self._ai_provider = None
-        self._ai_runtime_active = False
-        self._sync_adaptive_zoom_gate()
+        try:
+            if self._ai_runtime_active:
+                self._stop_ai_runtime("Model rollback")
+        except Exception:
+            logging.exception("AI model rollback cleanup failed")
+        finally:
+            self._ai_ready = False
+            self._ai_provider = None
+            self._ai_runtime_active = False
+            self._sync_adaptive_zoom_gate()
         if not self._ai_runtime_required():
             self._finish_model_switch(
                 switch.previous,
@@ -3145,8 +3149,6 @@ class JitterApp(tk.Tk):
             "Model rollback", model_choice=rollback.previous
         ):
             return
-        self._model_switch = None
-        self._render_model_controls()
         self._handle_ai_runtime_error("AI model rollback failed")
 
     def _render_runtime_controls(self) -> None:
@@ -3296,9 +3298,10 @@ class JitterApp(tk.Tk):
             raise ValueError(f"unknown motion source: {source_name}")
         sources = self._selected_sources()
         self._sync_adaptive_zoom_gate()
-        if source_name == "ai" and not sources.ai:
-            self._cancel_model_switch("AI Aim deselected")
+        self._cancel_model_switch("Motion sources changed")
         if not self.master_armed:
+            if self._ai_runtime_required():
+                self._reconcile_ai_runtime("Motion sources updated")
             self._render_runtime_controls()
             self.footer_var.set("Motion sources updated")
             return
@@ -3996,8 +3999,6 @@ class JitterApp(tk.Tk):
                 self._start_model_rollback(switch, failure)
                 return
             if switch is not None and switch.phase == "starting_rollback":
-                self._model_switch = None
-                self._render_model_controls()
                 self._handle_ai_runtime_error(event.payload)
                 return
             self._handle_ai_runtime_error(event.payload)
