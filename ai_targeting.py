@@ -384,6 +384,7 @@ class AimMovementEngine:
 
     def __init__(self, nominal_hz: float = 240.0) -> None:
         self._nominal_hz = nominal_hz
+        self._settled_sequence = None
         self.reset()
 
     def reset(self) -> None:
@@ -403,16 +404,18 @@ class AimMovementEngine:
         if snapshot is None:
             self.reset()
             return 0, 0
+        if snapshot.sequence == self._settled_sequence:
+            return 0, 0
         fresh_sequence = snapshot.sequence != self._last_sequence
         target_captured_at = (
             snapshot.captured_at if fresh_sequence else self._target_captured_at
         )
-        age = max(0.0, now - target_captured_at)
-        if age > self.MAX_AGE_S:
+        if now > target_captured_at + self.MAX_AGE_S:
             self.reset()
             return 0, 0
 
         if fresh_sequence:
+            self._settled_sequence = None
             self._last_sequence = snapshot.sequence
             self._remaining_x = snapshot.aim_x - self.CENTER
             self._remaining_y = snapshot.aim_y - self.CENTER
@@ -474,6 +477,10 @@ class AimMovementEngine:
         report_y = self._clamp_report(candidate_y, self._remaining_y, settings.max_step)
         self._remaining_x -= report_x
         self._remaining_y -= report_y
+        if math.hypot(self._remaining_x, self._remaining_y) <= self.DEAD_ZONE:
+            settled_sequence = self._last_sequence
+            self.reset()
+            self._settled_sequence = settled_sequence
         return report_x, report_y
 
     @staticmethod

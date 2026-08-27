@@ -374,7 +374,7 @@ class AimMovementEngineTests(unittest.TestCase):
         self.assertEqual(engine.step(replacement, settings, 1.1), (-2, 0))
         self.assertEqual(engine.step(replacement, settings, 1.2), (0, 0))
 
-    def test_smoothing_zero_and_point_ninety_five_use_exact_time_constants(self):
+    def test_smoothing_zero_is_immediate(self):
         target = TargetSnapshot(1, 10.0, "head", 176.0, 160.0)
         common = dict(
             aim_strength=1.0,
@@ -385,22 +385,47 @@ class AimMovementEngineTests(unittest.TestCase):
         immediate = AimMovementEngine(nominal_hz=60).step(
             target, AimSettings(smoothing=0.0, **common), 10.0
         )
-        softened = AimMovementEngine(nominal_hz=60).step(
-            target, AimSettings(smoothing=0.95, **common), 10.0
-        )
 
         self.assertEqual(immediate, (6, 0))
-        self.assertEqual(softened, (1, 0))
 
-    def test_acceleration_is_limited_to_21600_pixels_per_second_squared_by_vector(self):
+    def test_point_ninety_five_smoothing_uses_exact_tau_over_multiple_ticks(self):
         engine = AimMovementEngine(nominal_hz=60)
-        settings = AimSettings(aim_strength=2.0, smoothing=0.0, max_step=127)
+        settings = AimSettings(
+            aim_strength=1.0,
+            smoothing=0.95,
+            max_step=5,
+            response_curve=self.LINEAR_CURVE,
+        )
+        target = TargetSnapshot(1, 100.0, "head", 320.0, 160.0)
 
-        report = engine.step(
-            TargetSnapshot(1, 1.0, "head", 320.0, 320.0), settings, 1.0
+        reports = [
+            engine.step(target, settings, 10.0 + index / 60)
+            for index in range(12)
+        ]
+
+        self.assertEqual(
+            reports,
+            [
+                (0, 0), (1, 0), (1, 0), (1, 0),
+                (2, 0), (2, 0), (2, 0), (3, 0),
+                (2, 0), (3, 0), (3, 0), (3, 0),
+            ],
         )
 
-        self.assertEqual(report, (4, 4))
+    def test_acceleration_uses_exact_21600_vector_limit_over_multiple_ticks(self):
+        engine = AimMovementEngine(nominal_hz=60)
+        settings = AimSettings(aim_strength=2.0, smoothing=0.0, max_step=127)
+        target = TargetSnapshot(1, 100.0, "head", 320.0, 320.0)
+
+        reports = [
+            engine.step(target, settings, 10.0 + index / 60)
+            for index in range(5)
+        ]
+
+        self.assertEqual(
+            reports,
+            [(4, 4), (8, 8), (13, 13), (17, 17), (21, 21)],
+        )
 
     def test_each_report_is_clamped_to_max_step(self):
         engine = AimMovementEngine(nominal_hz=10)
@@ -448,17 +473,64 @@ class AimMovementEngineTests(unittest.TestCase):
             (1, 0),
         )
 
-    def test_target_is_fresh_at_exactly_150_milliseconds_and_stale_after(self):
+    def test_nonzero_target_is_fresh_at_exact_deadline_and_stale_epsilon_after(self):
         settings = AimSettings(aim_strength=2.0, smoothing=0.0, max_step=20)
-        target = TargetSnapshot(1, 0.0, "head", 320.0, 160.0)
+        target = TargetSnapshot(1, 10.0, "head", 320.0, 160.0)
 
         self.assertNotEqual(
-            AimMovementEngine(nominal_hz=10).step(target, settings, 0.150),
+            AimMovementEngine(nominal_hz=10).step(target, settings, 10.15),
             (0, 0),
         )
         self.assertEqual(
-            AimMovementEngine(nominal_hz=10).step(target, settings, 0.150001),
+            AimMovementEngine(nominal_hz=10).step(
+                target, settings, math.nextafter(10.15, math.inf)
+            ),
             (0, 0),
+        )
+
+    def test_settled_sequence_cannot_reload_and_next_same_direction_uses_nominal_dt(self):
+        engine = AimMovementEngine(nominal_hz=60)
+        settings = AimSettings(
+            aim_strength=1.0,
+            smoothing=0.0,
+            max_step=127,
+            response_curve=self.LINEAR_CURVE,
+        )
+        settled = TargetSnapshot(1, 100.0, "head", 166.0, 160.0)
+
+        self.assertEqual(engine.step(settled, settings, 10.0), (6, 0))
+        self.assertEqual(engine.step(settled, settings, 10.001), (0, 0))
+        self.assertEqual(
+            engine.step(
+                TargetSnapshot(2, 100.0, "head", 166.0, 160.0),
+                settings,
+                10.002,
+            ),
+            (6, 0),
+        )
+
+    def test_distinct_reverse_target_uses_nominal_dt_after_emitted_settlement(self):
+        engine = AimMovementEngine(nominal_hz=60)
+        settings = AimSettings(
+            aim_strength=1.0,
+            smoothing=0.0,
+            max_step=127,
+            response_curve=self.LINEAR_CURVE,
+        )
+
+        self.assertEqual(
+            engine.step(
+                TargetSnapshot(1, 100.0, "head", 166.0, 160.0), settings, 10.0
+            ),
+            (6, 0),
+        )
+        self.assertEqual(
+            engine.step(
+                TargetSnapshot(2, 100.0, "head", 154.0, 160.0),
+                settings,
+                10.001,
+            ),
+            (-6, 0),
         )
 
     def test_none_target_resets_all_motion_state(self):
