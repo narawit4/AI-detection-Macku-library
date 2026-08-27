@@ -2498,6 +2498,31 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.app._cancel_after("_ui_pump_after_id")
         self.app._drain_ui_queue()
 
+    def test_test_run_invalidates_pending_model_validation(self):
+        candidate, token = self.begin_custom_model_switch("custom.onnx")
+        self.service.connected = True
+        self.app.jitter_selected = True
+
+        self.app.start_test_run()
+        self.model_validator.emit(ModelValidationEvent("ready", token, candidate))
+        self.drain_model_ui_queue()
+
+        self.assertEqual(
+            self.app.ai_model_var.get(), "Default \u00b7 all_games_320.onnx"
+        )
+
+    def test_transient_ai_demand_invalidates_pending_model_validation(self):
+        candidate, token = self.begin_custom_model_switch("custom.onnx")
+
+        self.app.toggle_overlay()
+        self.app.toggle_overlay()
+        self.model_validator.emit(ModelValidationEvent("ready", token, candidate))
+        self.drain_model_ui_queue()
+
+        self.assertEqual(
+            self.app.ai_model_var.get(), "Default \u00b7 all_games_320.onnx"
+        )
+
     def prepare_armed_sources(self, sources, *, gate_active=False):
         self.service.connected = True
         self.app.jitter_selected = sources.jitter

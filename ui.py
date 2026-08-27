@@ -3020,6 +3020,16 @@ class JitterApp(tk.Tk):
         self._render_model_controls()
         self.footer_var.set(footer)
 
+    def _cancel_pending_model_switch_for_runtime(self) -> None:
+        switch = self._model_switch
+        if switch is None:
+            return
+        self.model_validator.cancel()
+        self._finish_model_switch(
+            switch.previous,
+            "Model change cancelled because AI started",
+        )
+
     def queue_model_validation_event(self, event: ModelValidationEvent) -> None:
         if self._closing or self._closed:
             return
@@ -3249,6 +3259,8 @@ class JitterApp(tk.Tk):
 
     def _reconcile_ai_runtime(self, context: str) -> bool:
         required = self._ai_runtime_required()
+        if required:
+            self._cancel_pending_model_switch_for_runtime()
         if required and not self._ai_runtime_active:
             started = self._start_ai_runtime(context)
             if not started:
@@ -3470,6 +3482,7 @@ class JitterApp(tk.Tk):
             self.footer_var.set("Makcu device is not connected")
             return
 
+        self._cancel_pending_model_switch_for_runtime()
         self._deferred_motion_action = None
         self._test_restore_master = self.master_armed
         self.master_armed = False
