@@ -145,8 +145,10 @@ There remain at most two detector calls for one captured frame.
 `AiService` creates a fresh stability state inside each worker generation. For
 each captured frame, the worker:
 
-1. Runs base inference and base analysis using the stability state's previous
-   base target only as the existing 48-pixel selection-association origin.
+1. Runs base inference and base analysis using a separate per-generation
+   `selection_previous` target as the existing 48-pixel
+   selection-association origin, then updates that target from the current base
+   analysis regardless of whether AI movement is confirmed.
 2. Reads the existing generation-safe zoom gate.
 3. If the gate is false, resets stability state and follows the one-pass base
    path.
@@ -162,11 +164,12 @@ each captured frame, the worker:
    frame with a `None` movement target after composition or fallback.
 9. Atomically publishes one movement target and one detection-frame snapshot.
 
-The previous base target may guide only the next frame's existing target
-association. It is never published for movement while confirmation is pending.
-This separates selection continuity from the atomic movement target and avoids
-losing the candidate merely because one confirmation frame intentionally
-publishes `None`.
+The stability state's previous base target is used only for displacement and
+class confirmation. The separate `selection_previous` target may guide only
+the next frame's existing target association. Neither is published for
+movement while confirmation is pending. This keeps Overlay-only selection
+continuity unchanged when the zoom gate is false and avoids losing a candidate
+merely because one confirmation frame intentionally publishes `None`.
 
 ## Runtime and generation safety
 
