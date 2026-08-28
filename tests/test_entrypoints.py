@@ -320,7 +320,7 @@ class EntryPointTests(unittest.TestCase):
             "main.py", "ui.py", "motion.py", "combined_motion.py",
             "ai_targeting.py", "ai_tracking.py", "ai_detection.py",
             "ai_model_selection.py", "ai_capture.py",
-            "ai_zoom.py", "ai_service.py", "overlay.py", "makcu_service.py", "hotkeys.py",
+            "ai_zoom.py", "image_resize.py", "ai_service.py", "overlay.py", "makcu_service.py", "hotkeys.py",
             "settings.py", "liquid_widgets.py", "distribution_metadata.py", "display_timing.py",
         }
         expected_runtime_imports = {
