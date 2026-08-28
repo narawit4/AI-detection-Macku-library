@@ -48,6 +48,49 @@ def valid_output():
 
 
 class DetectionFunctionTests(unittest.TestCase):
+    def test_preprocess_resizes_canonical_frame_to_each_supported_input(self):
+        frame = np.zeros((320, 320, 3), dtype=np.uint8)
+        frame[0, 0] = (255, 128, 0)
+        for input_size in (160, 320, 640):
+            with self.subTest(input_size=input_size):
+                tensor = preprocess_frame(frame, input_size)
+                self.assertEqual(tensor.shape, (1, 3, input_size, input_size))
+                self.assertEqual(tensor.dtype, np.float32)
+                self.assertTrue(tensor.flags.c_contiguous)
+                np.testing.assert_allclose(
+                    tensor[0, :, 0, 0], [1.0, 128 / 255, 0.0]
+                )
+
+    def test_output_coordinates_map_from_model_space_to_canonical_space(self):
+        cases = (
+            (160, (10, 20, 30, 40), (20.0, 40.0, 60.0, 80.0)),
+            (320, (10, 20, 30, 40), (10.0, 20.0, 30.0, 40.0)),
+            (640, (10, 20, 30, 40), (5.0, 10.0, 15.0, 20.0)),
+        )
+        for input_size, raw_box, expected in cases:
+            with self.subTest(input_size=input_size):
+                output = np.zeros((1, 300, 6), dtype=np.float32)
+                output[0, 0] = (*raw_box, 0.75, 7)
+                detection = parse_output(output, input_size)[0]
+                self.assertEqual(
+                    (detection.x1, detection.y1, detection.x2, detection.y2),
+                    expected,
+                )
+
+    def test_output_scales_before_canonical_clipping_and_empty_rejection(self):
+        output = np.zeros((1, 300, 6), dtype=np.float32)
+        output[0, :2] = (
+            (-20, -20, 80, 80, 0.8, 7),
+            (-20, 2, -4, 20, 0.9, 0),
+        )
+        detections = parse_output(output, 640)
+        self.assertEqual(len(detections), 1)
+        self.assertEqual(
+            (detections[0].x1, detections[0].y1,
+             detections[0].x2, detections[0].y2),
+            (0.0, 0.0, 40.0, 40.0),
+        )
+
     def test_preprocess_returns_normalized_nchw_float32(self):
         frame = np.zeros((320, 320, 3), dtype=np.uint8)
         frame[0, 0] = (255, 128, 0)
@@ -100,6 +143,58 @@ class DetectionFunctionTests(unittest.TestCase):
 
 
 class OnnxDetectorTests(unittest.TestCase):
+    def test_accepts_only_exact_supported_static_square_input_sizes(self):
+        for input_size in (160, 320, 640):
+            with self.subTest(input_size=input_size):
+                session = Session(inputs=[NodeArg(
+                    "images", "tensor(float)",
+                    [1, 3, input_size, input_size],
+                )])
+                detector = OnnxDetector(
+                    "model.onnx",
+                    session_factory=lambda *_args, **_kwargs: session,
+                )
+                self.assertEqual(detector.input_size, input_size)
+
+        rejected_shapes = (
+            [1, 3, 128, 128],
+            [1, 3, 256, 256],
+            [1, 3, 160, 320],
+            [1, 3, "height", "width"],
+            [1, 160, 160, 3],
+        )
+        for shape in rejected_shapes:
+            with self.subTest(shape=shape):
+                session = Session(inputs=[NodeArg(
+                    "images", "tensor(float)", shape
+                )])
+                with self.assertRaisesRegex(
+                    ModelContractError, "160, 320, or 640"
+                ):
+                    OnnxDetector(
+                        "model.onnx",
+                        session_factory=lambda *_args, **_kwargs: session,
+                    )
+
+    def test_detect_uses_validated_size_for_tensor_and_output_mapping(self):
+        output = np.zeros((1, 300, 6), dtype=np.float32)
+        output[0, 0] = (300, 300, 340, 340, 0.9, 7)
+        session = Session(
+            inputs=[NodeArg("images", "tensor(float)", [1, 3, 640, 640])],
+            result=output,
+        )
+        detector = OnnxDetector(
+            "model.onnx",
+            session_factory=lambda *_args, **_kwargs: session,
+        )
+        detections = detector.detect(np.zeros((320, 320, 3), dtype=np.uint8))
+        self.assertEqual(session.run_calls[0][1]["images"].shape, (1, 3, 640, 640))
+        self.assertEqual(
+            (detections[0].x1, detections[0].y1,
+             detections[0].x2, detections[0].y2),
+            (150.0, 150.0, 170.0, 170.0),
+        )
+
     def test_detector_uses_fixed_contract_and_dml_first(self):
         calls = []
         session = Session()
