@@ -5,6 +5,7 @@ from dataclasses import FrozenInstanceError
 from pathlib import Path
 from unittest import mock
 
+from ai_detection import ModelContractError
 from ai_model_selection import (
     ModelChoice,
     ModelSelectionError,
@@ -16,6 +17,14 @@ from ai_model_selection import (
 
 
 class ModelChoiceTests(unittest.TestCase):
+    def test_bundled_choice_has_known_320_input_size(self):
+        with mock.patch(
+            "ai_model_selection.model_resource_path",
+            return_value=Path("models/all_games_320.onnx"),
+        ):
+            choice = bundled_model_choice()
+        self.assertEqual(choice.input_size, 320)
+
     def test_bundled_choice_uses_resolved_default_resource(self):
         with mock.patch(
             "ai_model_selection.model_resource_path",
@@ -28,6 +37,13 @@ class ModelChoiceTests(unittest.TestCase):
         self.assertTrue(choice.is_default)
         with self.assertRaises(FrozenInstanceError):
             choice.display_name = "changed.onnx"
+
+    def test_external_choice_has_no_trusted_size_before_validation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "custom.onnx"
+            path.write_bytes(b"model")
+            choice = external_model_choice(path)
+        self.assertIsNone(choice.input_size)
 
     def test_external_choice_accepts_case_insensitive_onnx_and_resolves_path(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -62,6 +78,7 @@ class ModelValidatorTests(unittest.TestCase):
 
         class ContractOnlyDetector:
             provider = "DmlExecutionProvider"
+            input_size = 320
 
         def detector_factory(path):
             thread = threading.current_thread()
@@ -77,7 +94,32 @@ class ModelValidatorTests(unittest.TestCase):
         self.assertTrue(validator.start(choice, 4))
         self.assertTrue(finished.wait(1.0))
         self.assertEqual(calls, [(choice.path, "ModelValidation-4", True)])
-        self.assertEqual(events, [ModelValidationEvent("ready", 4, choice)])
+        self.assertEqual(
+            events,
+            [ModelValidationEvent("ready", 4, ModelChoice(
+                choice.path, choice.display_name, choice.is_default, 320
+            ))],
+        )
+
+    def test_validator_publishes_choice_enriched_with_detector_input_size(self):
+        events = []
+        finished = threading.Event()
+
+        class Detector:
+            provider = "DmlExecutionProvider"
+            input_size = 640
+
+        choice = ModelChoice(Path("chosen.onnx"), "chosen.onnx", False)
+        validator = ModelValidator(
+            lambda event: (events.append(event), finished.set()),
+            detector_factory=lambda _path: Detector(),
+        )
+        self.addCleanup(validator.close)
+        self.assertTrue(validator.start(choice, 4))
+        self.assertTrue(finished.wait(1.0))
+        self.assertEqual(events[0].choice.input_size, 640)
+        self.assertEqual(events[0].choice.path, choice.path)
+        self.assertIsNone(choice.input_size)
 
     def test_new_validation_cancels_late_result_from_previous_token(self):
         first_entered = threading.Event()
@@ -88,6 +130,7 @@ class ModelValidatorTests(unittest.TestCase):
 
         class Detector:
             provider = "CPUExecutionProvider"
+            input_size = 160
 
         def detector_factory(path):
             if path.name == "first.onnx":
@@ -111,7 +154,12 @@ class ModelValidatorTests(unittest.TestCase):
         self.assertTrue(second_ready.wait(1.0))
         release_first.set()
         self.assertTrue(first_returned.wait(1.0))
-        self.assertEqual(events, [ModelValidationEvent("ready", 2, second)])
+        self.assertEqual(
+            events,
+            [ModelValidationEvent("ready", 2, ModelChoice(
+                second.path, second.display_name, second.is_default, 160
+            ))],
+        )
 
     def test_cancel_cannot_transition_during_current_event_publication(self):
         detector_entered = threading.Event()
@@ -125,6 +173,7 @@ class ModelValidatorTests(unittest.TestCase):
 
         class Detector:
             provider = "CPUExecutionProvider"
+            input_size = 160
 
         def detector_factory(_path):
             detector_entered.set()
@@ -198,10 +247,42 @@ class ModelValidatorTests(unittest.TestCase):
             self.assertTrue(ready.wait(1.0))
         self.assertEqual(
             events,
-            [ModelValidationEvent("error", 9, choice, "RuntimeError")],
+            [
+                ModelValidationEvent(
+                    "error",
+                    9,
+                    choice,
+                    "RuntimeError",
+                    "AI model validation failed",
+                )
+            ],
         )
         self.assertNotIn("sensitive absolute path detail", repr(events))
         self.assertIn("sensitive absolute path detail", "\n".join(logs.output))
+
+    def test_contract_failure_event_has_safe_actionable_message(self):
+        events = []
+        finished = threading.Event()
+
+        def fail(_path):
+            raise ModelContractError(
+                "AI model input must use a 160, 320, or 640 square input"
+            )
+
+        choice = ModelChoice(Path("secret.onnx"), "secret.onnx", False)
+        validator = ModelValidator(
+            lambda event: (events.append(event), finished.set()),
+            detector_factory=fail,
+        )
+        self.addCleanup(validator.close)
+        with self.assertLogs("ai_model_selection", level="ERROR"):
+            self.assertTrue(validator.start(choice, 8))
+            self.assertTrue(finished.wait(1.0))
+        self.assertEqual(events[0].error_type, "ModelContractError")
+        self.assertEqual(
+            events[0].safe_message,
+            "AI model input must use a 160, 320, or 640 square input",
+        )
 
     def test_thread_start_failure_returns_false_without_duplicate_error_event(self):
         class FailingThread:

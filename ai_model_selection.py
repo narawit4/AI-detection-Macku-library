@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import logging
 from pathlib import Path
 import threading
 from typing import Any
 
-from ai_detection import OnnxDetector, model_resource_path
+from ai_detection import ModelContractError, OnnxDetector, model_resource_path
 
 
 LOGGER = logging.getLogger(__name__)
@@ -24,6 +24,7 @@ class ModelChoice:
     path: Path
     display_name: str
     is_default: bool
+    input_size: int | None = None
 
 
 @dataclass(frozen=True)
@@ -32,11 +33,12 @@ class ModelValidationEvent:
     token: int
     choice: ModelChoice
     error_type: str | None = None
+    safe_message: str | None = None
 
 
 def bundled_model_choice() -> ModelChoice:
     path = model_resource_path().resolve()
-    return ModelChoice(path, path.name, True)
+    return ModelChoice(path, path.name, True, 320)
 
 
 def external_model_choice(raw_path: str | Path) -> ModelChoice:
@@ -102,11 +104,17 @@ class ModelValidator:
                 return
             detector = self._detector_factory(choice.path)
             _provider = detector.provider
-            event = ModelValidationEvent("ready", token, choice)
+            validated_choice = replace(choice, input_size=detector.input_size)
+            event = ModelValidationEvent("ready", token, validated_choice)
         except Exception as error:
             LOGGER.exception("AI model validation failed for %s", choice.path)
+            safe_message = (
+                str(error)
+                if isinstance(error, ModelContractError)
+                else "AI model validation failed"
+            )
             event = ModelValidationEvent(
-                "error", token, choice, type(error).__name__
+                "error", token, choice, type(error).__name__, safe_message
             )
         try:
             self._emit_current(event, token, stop_event)
