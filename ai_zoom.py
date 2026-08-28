@@ -13,7 +13,6 @@ from ai_targeting import (
     DetectionAnalysis,
     DetectionFrameSnapshot,
     TargetSnapshot,
-    analyze_detections,
     detection_aim_point,
     validated_target_area,
 )
@@ -307,7 +306,11 @@ def compose_zoom_refinement(
     compatible = []
     for detection in refined_detections:
         mapped = map_detection(detection, transform)
-        if mapped is None or mapped.class_id not in allowed_classes:
+        if (
+            mapped is None
+            or mapped.class_id not in allowed_classes
+            or mapped.confidence < settings.confidence
+        ):
             continue
         point = detection_aim_point(mapped, settings.target_area)
         if point is None:
@@ -317,24 +320,26 @@ def compose_zoom_refinement(
             seed.x1 - margin_x <= aim_x <= seed.x2 + margin_x
             and seed.y1 - margin_y <= aim_y <= seed.y2 + margin_y
         ):
-            compatible.append(mapped)
+            compatible.append((mapped, point))
 
-    refined = analyze_detections(
-        compatible,
-        settings,
-        sequence=base.frame.sequence,
-        captured_at=base.frame.captured_at,
-        previous=base.target,
-    )
-    if refined.target is None or refined.frame.selected_index is None:
+    if not compatible:
         return None
-    selected_refined = refined.frame.detections[
-        refined.frame.selected_index
-    ]
+    selected_refined, selected_point = min(
+        compatible,
+        key=lambda item: math.hypot(
+            item[1][1] - base.target.aim_x,
+            item[1][2] - base.target.aim_y,
+        ),
+    )
+    refined_target = TargetSnapshot(
+        base.frame.sequence,
+        base.frame.captured_at,
+        *selected_point,
+    )
     composed = list(base.frame.detections)
     composed[selected_index] = selected_refined
     return DetectionAnalysis(
-        refined.target,
+        refined_target,
         DetectionFrameSnapshot(
             base.frame.sequence,
             base.frame.captured_at,

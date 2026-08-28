@@ -330,6 +330,33 @@ class ZoomCompositionTests(unittest.TestCase):
         )
         self.assertEqual(result.frame.detections[2], self.base_player().frame.detections[2])
 
+    def test_refinement_stays_with_selected_base_target_in_crowded_crop(self):
+        base = DetectionAnalysis(
+            TargetSnapshot(8, 31.0, "head", 100.0, 100.0),
+            DetectionFrameSnapshot(
+                8,
+                31.0,
+                (Detection(70, 70, 130, 130, 0.9, 7),),
+                0,
+            ),
+        )
+        matching_base = Detection(70, 70, 90, 90, 0.92, 7)
+        nearer_crosshair = Detection(114, 114, 134, 134, 0.95, 7)
+
+        result = compose_zoom_refinement(
+            base,
+            (nearer_crosshair, matching_base),
+            ZoomTransform(60, 60, 160, 2.0),
+            AimSettings(confidence=0.35),
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual((result.target.aim_x, result.target.aim_y), (100.0, 100.0))
+        self.assertEqual(
+            result.frame.detections[0],
+            Detection(95.0, 95.0, 105.0, 105.0, 0.92, 7),
+        )
+
     def test_body_target_area_rejects_head_only_refinement(self):
         result = compose_zoom_refinement(
             self.base_player(),

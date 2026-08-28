@@ -25,7 +25,8 @@ features.
 - `motion.py`: settings, validation, presets, and pure motion engine.
 - `combined_motion.py`: pure composition of selected Jitter and AI Aim deltas.
 - `ai_targeting.py`: immutable AI settings, target selection, and movement.
-- `ai_tracking.py`: pure conservative full-box temporal target tracking.
+- `ai_tracking.py`: legacy pure tracker retained for compatibility tests;
+  production target selection is stateless and current-frame only.
 - `ai_zoom.py`: pure adaptive zoom geometry and same-frame refinement composition.
 - `ai_detection.py`: fixed-contract ONNX Runtime detector.
 - `ai_capture.py`: centered DXCam capture wrapper.
@@ -71,7 +72,7 @@ with the supported Windows Python installation.
 - Keep combined-motion composition pure and independent of Tkinter and Makcu.
 - Keep adaptive zoom geometry and refinement composition pure and independent
   of Tkinter and Makcu.
-- Keep conservative tracking pure and independent of Tkinter and Makcu.
+- Keep target selection pure and independent of Tkinter and Makcu.
 - Keep display-cadence policy pure; display detection stays at the Windows
   boundary and its result is runtime-only.
 - Share immutable motion snapshots with the mover under a short lock.
@@ -92,7 +93,8 @@ with the supported Windows Python installation.
   Master and the global hotkey arm the selected sources, while actual movement
   requires Trigger plus the configured Modifier, if any.
 - AI Aim uses the fixed centered 320-by-320 capture and bundled startup-default
-  model, prefers heads over players, and shares the same Trigger/Modifier gate.
+  model, considers accepted heads and players together, and shares the same
+  Trigger/Modifier gate.
   `Browse...` may select only an external runtime `.onnx` with the exact
   `images` `[1,3,320,320]` and `output0` `[1,300,6]` float contract, class 0
   players, and class 7 heads. Validate off the UI thread, pause AI during a
@@ -101,13 +103,12 @@ with the supported Windows Python installation.
   attempt to restart the previous model. Never download, copy, package, or
   persist an external model or its path; every launch starts with the bundled
   model.
-- Track the complete detection box using predicted position, a plausibility
-  radius of `max(48 pixels, 1.5 × box diagonal)`, an inclusive 0.4-2.5 area
-  ratio, IoU, and area-change scoring. Hold identity for at most 150 ms without
-  publishing a saved coordinate. When plausible candidates are ambiguous,
-  keep current Overlay boxes publishable but pause AI movement. Require two
-  consecutive clear observations of the original target to recover after
-  ambiguity and three stable same-class observations to promote a replacement.
+- On every base frame, filter detections by confidence and supported class,
+  derive the configured aim point for every accepted head and player, and
+  select the point with the shortest Euclidean distance to the centered
+  crosshair at `(160, 160)`. Preserve detector order as the exact-distance tie
+  break. Do not use prior identity, ambiguity holds, recovery confirmation, or
+  replacement delays; publish the current-frame selection immediately.
 - Derive runtime cadence from the primary display: cap capture at 240 FPS and
   run the servo at twice display refresh, clamped to 120-480 Hz. Fall back to
   120 FPS capture and a 240 Hz servo when detection is unavailable or invalid.
@@ -132,27 +133,22 @@ with the supported Windows Python installation.
   box; its box is mapped back to the original frame for Overlay rendering and
   unrelated base boxes remain. Adaptive Zoom does not magnify the display or
   recover targets the base pass never detected.
-- Recoil-stable zoom is separate from full-box tracker publication. It may
-  observe the tracker's current clear base-pass recovery or pending candidate,
-  but never an ambiguous or missing observation. AI movement requires two
-  consecutive same-class observations within 18 pixels and the tracker must
-  also publish the target; current Overlay boxes remain publishable while a
-  provisional movement target is `None`.
+- Recoil-stable zoom confirmation is separate from movement publication. It
+  observes the current nearest base target and may limit refinement to 1.5x,
+  but it must not withhold that base target from AI movement while confirming
+  2.0x refinement eligibility.
 - A requested 2.0x refinement is capped at 1.5x until confirmation and a fixed
   100 ms cooldown both pass. A normal refinement miss resets confirmation and
   extends cooldown without adding an inference call or holding a stale target.
-- Keep base-selection continuity separate from movement publication. Stability
-  is local to one AI generation and resets when the movement zoom gate is
-  false; combined Jitter continues when AI movement is unconfirmed.
-- While a replacement is pending, publish current Overlay detections but no AI
-  movement target. Cancel the pending switch if the confirmed target returns;
-  never send the saved anchor itself as stale movement.
+- Zoom stability is local to one AI generation and resets when the movement
+  zoom gate is false. Base target selection remains stateless across frames.
 - Combined movement sums current source deltas; Jitter continues when AI Aim
   has no target.
 - The optional overlay starts off and is independent of source selection. It
   is a centered 320-by-320 configurable-color detection view that must be
   click-through and excluded from capture. Head-box visibility affects only
-  the overlay; AI Aim keeps its head-first targeting behavior.
+  the overlay; AI Aim still considers hidden head boxes for nearest-target
+  selection.
 - STOP immediately cancels movement, hides the overlay, and ends its inference
   demand. Disable, disconnect, and source changes immediately cancel movement;
   AI inference continues only while the visible independent overlay requires
@@ -199,7 +195,7 @@ with the supported Windows Python installation.
   Schema 6 is an unsupported future schema: load safe in-memory defaults,
   disable saving, and leave its source file byte-for-byte unchanged.
 - The response curve is the only new persisted setting. Do not persist
-  motion-source selection, Master state, overlay visibility, tracker history,
+  motion-source selection, Master state, overlay visibility, target history,
   AI targets, model selection or external model paths, snapshots, FPS, provider,
   cadence, zoom status, or other runtime state. Adaptive Zoom and adaptive
   cadence add no persisted control.

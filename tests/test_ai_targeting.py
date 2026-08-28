@@ -179,7 +179,7 @@ class TargetSelectionTests(unittest.TestCase):
         with self.assertRaises(FrozenInstanceError):
             result.frame.sequence = 10
 
-    def test_head_has_priority_over_nearer_player(self):
+    def test_nearest_player_beats_farther_head_in_current_frame(self):
         detections = (
             Detection(150, 140, 170, 200, 0.90, 0),
             Detection(20, 20, 40, 40, 0.80, 7),
@@ -187,8 +187,8 @@ class TargetSelectionTests(unittest.TestCase):
         target = select_target(
             detections, AimSettings(), sequence=1, captured_at=10.0
         )
-        self.assertEqual(target.target_class, "head")
-        self.assertEqual((target.aim_x, target.aim_y), (30.0, 30.0))
+        self.assertEqual(target.target_class, "player")
+        self.assertEqual((target.aim_x, target.aim_y), (160.0, 152.0))
 
     def test_player_fallback_aims_twenty_percent_below_top(self):
         target = select_target(
@@ -229,7 +229,7 @@ class TargetSelectionTests(unittest.TestCase):
         )
         self.assertEqual((target.aim_x, target.aim_y), (120.0, 92.0))
 
-    def test_same_class_target_is_retained_within_association_radius(self):
+    def test_current_frame_nearest_ignores_previous_target_association(self):
         previous = TargetSnapshot(1, 10.0, "head", 40.0, 40.0)
         target = select_target(
             (
@@ -238,7 +238,7 @@ class TargetSelectionTests(unittest.TestCase):
             ),
             AimSettings(), sequence=2, captured_at=10.01, previous=previous,
         )
-        self.assertEqual((target.aim_x, target.aim_y), (47.0, 47.0))
+        self.assertEqual((target.aim_x, target.aim_y), (155.0, 155.0))
 
     def test_rejects_below_confidence(self):
         self.assertIsNone(select_target(
@@ -262,10 +262,25 @@ class TargetSelectionTests(unittest.TestCase):
         )
         self.assertEqual((target.aim_x, target.aim_y), (160.0, 160.0))
 
+    def test_equal_distance_cross_class_tie_preserves_detector_order(self):
+        player = Detection(130, 140, 150, 240, 0.9, 0)
+        head = Detection(175, 155, 185, 165, 0.9, 7)
+
+        result = analyze_detections(
+            (player, head),
+            AimSettings(),
+            sequence=1,
+            captured_at=1.0,
+        )
+
+        self.assertEqual(result.frame.selected_index, 0)
+        self.assertEqual(result.target.target_class, "player")
+        self.assertEqual((result.target.aim_x, result.target.aim_y), (140.0, 160.0))
+
     def test_switches_immediately_from_player_to_head(self):
         previous = TargetSnapshot(1, 1.0, "player", 25.0, 25.0)
         target = select_target(
-            (Detection(5, 5, 15, 15, 0.9, 7), Detection(20, 20, 30, 30, 0.9, 0)),
+            (Detection(155, 155, 165, 165, 0.9, 7), Detection(20, 20, 30, 30, 0.9, 0)),
             AimSettings(), sequence=2, captured_at=2.0, previous=previous,
         )
         self.assertEqual(target.target_class, "head")

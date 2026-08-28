@@ -15,15 +15,14 @@ from ai_targeting import (
     DetectionAnalysis,
     DetectionFrameSnapshot,
     TargetSnapshot,
+    analyze_detections,
     validated_target_area,
 )
-from ai_tracking import TrackerState, observe_detections
 from ai_zoom import (
     ZoomStabilityState,
     build_zoom_input,
     compose_zoom_refinement,
     limit_zoom_factor,
-    movement_is_confirmed,
     observe_zoom_stability,
     record_zoom_refinement_miss,
     select_zoom_factor,
@@ -320,7 +319,6 @@ class AiService:
             self._emit_current(AiEvent("ready", provider), generation, stop_event)
 
             sequence = 0
-            tracker_state = TrackerState()
             stability = ZoomStabilityState()
             active_target_area: str | None = None
             active_targeting_revision: int | None = None
@@ -343,7 +341,6 @@ class AiService:
                     target_area != active_target_area
                     or targeting_revision != active_targeting_revision
                 ):
-                    tracker_state = TrackerState(target_area=target_area)
                     stability = ZoomStabilityState()
                     active_target_area = target_area
                     active_targeting_revision = targeting_revision
@@ -352,15 +349,12 @@ class AiService:
                 base_detections = detector.detect(frame)
                 if not self._is_current(generation, stop_event):
                     return
-                tracked = observe_detections(
-                    tracker_state,
+                base_analysis = analyze_detections(
                     base_detections,
                     settings,
                     sequence=sequence,
                     captured_at=captured_at,
                 )
-                tracker_state = tracked.state
-                base_analysis = tracked.analysis
                 factor = 1.0
                 published = base_analysis
                 gate_active = bool(zoom_gate_provider())
@@ -369,7 +363,7 @@ class AiService:
                 else:
                     stability = observe_zoom_stability(
                         stability,
-                        tracked.stability_target,
+                        base_analysis.target,
                         captured_at,
                     )
                 if refinement_enabled and gate_active:
@@ -435,8 +429,6 @@ class AiService:
                         refinement_enabled = False
                         factor = 1.0
                         published = base_analysis
-                if gate_active and not movement_is_confirmed(stability):
-                    published = DetectionAnalysis(None, published.frame)
                 with self._lock:
                     if not self._is_current_locked(generation, stop_event):
                         return

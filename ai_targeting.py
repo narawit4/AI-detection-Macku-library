@@ -51,9 +51,6 @@ class DetectionAnalysis:
     frame: DetectionFrameSnapshot
 
 
-TARGET_ASSOCIATION_RADIUS_PX = 48.0
-
-
 @dataclass(frozen=True)
 class AimSettings:
     confidence: float = 0.35
@@ -261,6 +258,11 @@ def analyze_detections(
     captured_at: float,
     previous: TargetSnapshot | None = None,
 ) -> DetectionAnalysis:
+    """Select the nearest supported aim point from this frame only.
+
+    ``previous`` remains accepted for API compatibility but intentionally has
+    no influence on current-frame selection.
+    """
     accepted = tuple(
         detection
         for detection in detections
@@ -274,28 +276,13 @@ def analyze_detections(
             point := detection_aim_point(detection, settings.target_area)
         ) is not None
     ]
-    heads = [item for item in candidates if item[1][0] == "head"]
-    candidates = heads or [item for item in candidates if item[1][0] == "player"]
     selected_index = None
     target = None
     if candidates:
-        target_class = candidates[0][1][0]
-        origin = (160.0, 160.0)
-        if previous is not None and previous.target_class == target_class:
-            associated = [
-                item for item in candidates
-                if math.hypot(
-                    item[1][1] - previous.aim_x,
-                    item[1][2] - previous.aim_y,
-                ) <= TARGET_ASSOCIATION_RADIUS_PX
-            ]
-            if associated:
-                candidates = associated
-                origin = (previous.aim_x, previous.aim_y)
         selected_index, selected = min(
             candidates,
             key=lambda item: math.hypot(
-                item[1][1] - origin[0], item[1][2] - origin[1]
+                item[1][1] - 160.0, item[1][2] - 160.0
             ),
         )
         target = TargetSnapshot(sequence, captured_at, *selected)

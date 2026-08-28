@@ -33,9 +33,10 @@ components are equal in magnitude along the 45-degree pulse axis.
 ## AI Aim source and overlay
 
 Select `AI Aim` to use the fixed centered 320-by-320 capture and the bundled
-`models/all_games_320.onnx` model. AI Aim prefers the nearest valid head
-detection; when no head is detected, it targets the upper portion of the
-nearest valid player detection.
+`models/all_games_320.onnx` model. On every frame, AI Aim considers all valid
+head and player detections together and immediately selects the configured aim
+point nearest the centered crosshair. It does not preserve a target identity
+from an earlier frame.
 
 The `MODEL` row starts with `Default · all_games_320.onnx`. `Browse...` can
 select an external `.onnx` file for this process only, and `Use Default`
@@ -63,8 +64,8 @@ exact whole percentages, and must remain ordered from `0%` to `100%`. `Reset
 Curve` restores the conservative `0 / 12 / 35 / 68 / 100` default. The curve
 sets the distance response, Aim Strength scales it, Smoothing controls how
 quickly velocity follows it, and Max Step caps each reported update. Curve
-edits take effect continuously and are the only new persisted setting; tracker
-history and runtime cadence are never saved.
+edits take effect continuously and are the only new persisted setting; runtime
+target data and cadence are never saved.
 
 Selecting AI Aim does not move the pointer. Master arms capture and inference;
 movement still requires the selected Trigger and optional Modifier. Status
@@ -78,8 +79,9 @@ release stops movement while the armed AI capture remains ready.
 The independent `Overlay` control starts off. When enabled, it draws detection
 boxes in a centered 320-by-320, click-through window that is excluded from
 capture. `Box Color` changes the rectangle color, and `Head Boxes` can hide
-head rectangles without changing AI Aim's head-first targeting. These two
-display preferences persist, while Overlay visibility remains runtime-only.
+head rectangles without removing those detections from nearest-target
+selection. These two display preferences persist, while Overlay visibility
+remains runtime-only.
 Overlay viewing does not require AI Aim to be selected for movement; it starts
 the approved detection runtime only while needed.
 
@@ -87,23 +89,15 @@ An AI runtime error fails closed by hiding the Overlay and deselecting AI Aim.
 If Jitter remains selected under Master, Jitter continues or restarts through
 the same gate; an AI-only failure disarms Master.
 
-### Conservative tracking and movement
+### Current-frame target selection and movement
 
-AI Aim tracks the complete detection box instead of choosing independently
-from aim points on every frame. It predicts the current position from recent
-motion, then considers same-class boxes inside a plausibility radius of
-`max(48 px, 1.5 × the previous box diagonal)`. Candidates outside the
-`0.4-2.5` area-ratio range are rejected; the remainder are ranked using
-predicted distance, intersection-over-union, and area change.
-
-The tracker can hold the last confirmed identity for up to 150 ms, but never
-publishes that saved coordinate as movement. When plausible candidates are too
-close to distinguish, the Overlay continues showing every current accepted box
-without marking a provisional selection, while AI movement pauses. The
-original target must be clear for two consecutive frames before movement
-resumes. After the 150 ms hold expires, a replacement needs three stable
-same-class observations before promotion. Provisional recovery and replacement
-candidates are never published as AI movement targets.
+Each base inference frame filters detections by Confidence and supported class,
+then derives the selected Target Area aim point for every accepted head and
+player. The point with the shortest straight-line distance to the centered
+crosshair at `(160, 160)` is published immediately. Head and player candidates
+compete in the same list; previous-frame identity, ambiguity holds, and
+multi-frame replacement confirmation are not used. If two points are exactly
+the same distance away, detector output order decides the tie.
 
 Capture cadence follows the primary display refresh rate, capped at 240 FPS.
 The movement servo runs at twice the detected display rate, clamped to the
@@ -137,13 +131,11 @@ Overlay, while unrelated base boxes remain. Adaptive Zoom does not magnify the
 display and cannot recover a target that the base pass never detected. Zoom
 status is runtime-only; Schema 5 and its persisted settings are unchanged.
 
-Separately from full-box identity tracking, the recoil/zoom movement gate
-requires two consecutive clear same-class base observations no more than 18
-pixels apart. It may count a tracker's current clear recovery or replacement
-candidate, but tracker publication remains authoritative: provisional targets
-never move the pointer. Ambiguous or missing observations reset this separate
-stability count. In combined mode, Jitter continues whenever that AI component
-is withheld.
+Zoom stability is separate from movement publication. Repeated nearby
+same-class base observations can unlock 2.0x refinement after cooldown, but a
+new current-frame base target is still available to AI movement immediately.
+In combined mode, Jitter continues whenever the current frame has no valid AI
+target.
 
 A new or shaken small target starts with the wider 1.5x refinement. A confirmed
 target may return to 2.0x only after the fixed 100 ms recoil cooldown. A normal
@@ -202,7 +194,7 @@ the complete safe default. Schemas 1-4 also use that default. Schema 6 and
 newer files are treated as unsupported future data: Jitter runs with safe
 in-memory defaults, disables saving, and leaves the file unchanged. Writes to
 supported schemas are atomic. Overlay color and head-box visibility persist,
-but motion-source selection, Master state, overlay visibility, tracker state,
+but motion-source selection, Master state, overlay visibility, target state,
 targets, snapshots, FPS, provider, cadence, and zoom status are runtime-only.
 `app.log` in the same folder contains timestamped diagnostics. These files are
 intentionally ignored by Git.
