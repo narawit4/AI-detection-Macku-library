@@ -1,208 +1,383 @@
-# Jitter
+# Jitter — AI Detection และตัวควบคุม Makcu สำหรับ Windows
 
-Jitter is a small Windows-only Tkinter controller for a Makcu USB device. It
-has a fixed-size English Liquid Split Console with Control, Motion, and
-Settings pages.
-It sends paired pulses on an axis tilted 45 degrees to the right of vertical:
-one equal pair moves up-right then down-left, and the following equal pair
-moves down-left then up-right; this two-pair order repeats. Complete pulse
-pairs have zero intended displacement; results vary with the receiving
-application's input processing. Choose a Trigger and optional Modifier, arm or
-stop movement, run a three-second test, and assign a global toggle hotkey.
+Jitter เป็นโปรแกรมเดสก์ท็อปสำหรับ Windows ที่พัฒนาด้วย Python และ Tkinter
+ใช้ควบคุมอุปกรณ์ Makcu USB โดยรวมความสามารถสองส่วนที่เปิดใช้งานแยกกันได้:
 
-The `Jitter` and `AI Aim` source buttons are independent: select either source
-or both. Master (and the global hotkey) arms the currently selected sources;
-movement still requires the configured Trigger and optional Modifier. When both
-are selected, their current two-dimensional deltas are summed. Jitter keeps
-running when AI Aim has no target.
+- `Jitter` สร้างการขยับเมาส์สองมิติแบบ paired pulse ที่ปรับแต่งได้
+- `AI Aim` ตรวจจับผู้เล่นและศีรษะจากภาพกลางหน้าจอ แล้วขยับเมาส์ไปยัง
+  detection ที่ใกล้ crosshair ที่สุดในเฟรมปัจจุบัน
 
-## Jitter motion controls
+ทั้งสองแหล่งการเคลื่อนไหวสามารถใช้เดี่ยว ๆ หรือเปิดพร้อมกันได้ เมื่อเปิดพร้อมกัน
+โปรแกรมจะรวม delta ของ Jitter และ AI Aim ก่อนส่งไปยัง Makcu หาก AI Aim
+หาเป้าหมายไม่พบ Jitter จะยังทำงานต่อไปตามปกติ
 
-In Jitter mode, the Motion page provides these controls:
+> โปรแกรมนี้รองรับ Windows เท่านั้น และต้องใช้อุปกรณ์ Makcu สำหรับส่งการขยับเมาส์จริง
 
-- **Pulse Size:** 1-8 px per half-pulse.
-- **Pulse Rate:** 20-120 complete pairs per second.
-- **Ramp Mode:** `Instant` starts at the selected size; `Smooth` reaches it
-  over the opening 150 ms.
+## สารบัญ
 
-The preset selector offers `Soft` (1 px, 30 Hz, Smooth), `Balanced` (2 px,
-60 Hz, Smooth), and `Strong` (4 px, 100 Hz, Instant). `Custom` indicates a
-combination that does not exactly match a preset. Horizontal and vertical
-components are equal in magnitude along the 45-degree pulse axis.
+- [คุณสมบัติหลัก](#คุณสมบัติหลัก)
+- [หลักการเลือกเป้าหมาย AI](#หลักการเลือกเป้าหมาย-ai)
+- [ความต้องการของระบบ](#ความต้องการของระบบ)
+- [การติดตั้ง](#การติดตั้ง)
+- [การเปิดโปรแกรม](#การเปิดโปรแกรม)
+- [ขั้นตอนใช้งานแบบย่อ](#ขั้นตอนใช้งานแบบย่อ)
+- [การตั้งค่า Jitter](#การตั้งค่า-jitter)
+- [การตั้งค่า AI Aim](#การตั้งค่า-ai-aim)
+- [Response Curve](#response-curve)
+- [Adaptive Zoom](#adaptive-zoom)
+- [การเลือกโมเดล ONNX](#การเลือกโมเดล-onnx)
+- [Overlay](#overlay)
+- [ปุ่มควบคุมและความปลอดภัย](#ปุ่มควบคุมและความปลอดภัย)
+- [ไฟล์ตั้งค่าและข้อมูลผู้ใช้](#ไฟล์ตั้งค่าและข้อมูลผู้ใช้)
+- [การแก้ปัญหาเบื้องต้น](#การแก้ปัญหาเบื้องต้น)
+- [การตรวจสอบสำหรับนักพัฒนา](#การตรวจสอบสำหรับนักพัฒนา)
+- [การสร้างไฟล์ EXE](#การสร้างไฟล์-exe)
+- [สัญญาอนุญาตและไฟล์ประกอบการเผยแพร่](#สัญญาอนุญาตและไฟล์ประกอบการเผยแพร่)
 
-## AI Aim source and overlay
+## คุณสมบัติหลัก
 
-Select `AI Aim` to use the fixed centered 320-by-320 capture and the bundled
-`models/all_games_320.onnx` model. On every frame, AI Aim considers all valid
-head and player detections together and immediately selects the configured aim
-point nearest the centered crosshair. It does not preserve a target identity
-from an earlier frame.
+- เชื่อมต่อ Makcu อัตโนมัติและพยายามเชื่อมต่อใหม่เมื่ออุปกรณ์หลุด
+- เลือกใช้ `Jitter`, `AI Aim` หรือทั้งสองอย่างพร้อมกัน
+- ใช้ Trigger และ Modifier ที่กำหนดเป็นเงื่อนไขก่อนขยับจริง
+- มีปุ่ม `STOP` สำหรับยกเลิกการเคลื่อนไหวทันที
+- มี `Test 3s` สำหรับทดสอบแหล่งการเคลื่อนไหวที่เลือกเป็นเวลา 3 วินาที
+- มี global hotkey ค่าเริ่มต้น `-` สำหรับสลับ Master หนึ่งครั้งต่อการกด
+- ใช้ ONNX Runtime DirectML เป็น provider หลัก และมี CPU fallback
+- จับภาพ RGB ขนาดคงที่ 320×320 พิกเซลจากกึ่งกลางหน้าจอด้วย DXCam
+- เลือก detection ใกล้ crosshair ที่สุดจาก head และ player รวมกันทุกเฟรม
+- มี response curve 5 จุด, time-based smoothing และ Max Step
+- ปรับ capture/servo cadence ตาม refresh rate ของจอหลักโดยอัตโนมัติ
+- มี Adaptive Zoom แบบ 1.0×, 1.5× และ 2.0× โดยไม่ขยายภาพบนหน้าจอ
+- มี Overlay กล่อง detection แบบ click-through และไม่ถูกจับกลับเข้า inference
+- เลือกโมเดล `.onnx` ภายนอกได้เฉพาะ runtime โดยไม่บันทึก path ลง config
 
-The `MODEL` row starts with `Default · all_games_320.onnx`. `Browse...` can
-select an external `.onnx` file for this process only, and `Use Default`
-returns to the bundled model. A custom model must keep the exact `images`
-`[1,3,320,320]` and `output0` `[1,300,6]` float contract and use class 0 for
-players and class 7 for heads. Jitter validates it off the UI thread, pauses
-AI during the switch, and after its exact ready event restarts the eligible AI
-runtime and motion. A candidate startup failure makes one automatic rollback
-attempt to restart the previous model. The selected path is never saved,
-copied, packaged, or used by the release self-check; every launch starts with
-the bundled model. Model changes are unavailable while `Test 3s` is active.
-Jitter does not support training or profiles.
+## หลักการเลือกเป้าหมาย AI
 
-AI Aim exposes four controls on the Motion page:
+AI Aim ใช้ภาพขนาด 320×320 พิกเซล และถือว่าจุด crosshair อยู่ที่
+`(160, 160)` ทุกเฟรมมีขั้นตอนดังนี้:
 
-- **Confidence:** minimum accepted detection confidence, from 0.05 to 0.95.
-- **Aim Strength:** movement scaling, from 0.05 to 2.00.
-- **Smoothing:** interpolation strength, from 0.00 to 0.95.
-- **Max Step:** maximum Makcu movement per update, from 1 to 127 counts.
+1. รับ detection จากโมเดล ONNX
+2. เก็บเฉพาะ class ที่รองรับและมี confidence ถึงค่าที่กำหนด
+3. สร้าง aim point ของ head และ player ทุกตัว
+4. รวม head และ player ไว้ในรายการเดียวกัน
+5. คำนวณระยะเส้นตรงจาก aim point ไปยัง `(160, 160)`
+6. เลือก aim point ที่มีระยะน้อยที่สุดและเผยแพร่ทันทีในเฟรมนั้น
 
-Below those controls, the five-point response curve maps target distance to
-movement speed at `0%`, `25%`, `50%`, `75%`, and `100%` of the capture radius.
-The zero point stays fixed; the other four nodes can be dragged or entered as
-exact whole percentages, and must remain ordered from `0%` to `100%`. `Reset
-Curve` restores the conservative `0 / 12 / 35 / 68 / 100` default. The curve
-sets the distance response, Aim Strength scales it, Smoothing controls how
-quickly velocity follows it, and Max Step caps each reported update. Curve
-edits take effect continuously and are the only new persisted setting; runtime
-target data and cadence are never saved.
+ระบบไม่ให้สิทธิ์ head มากกว่า player และไม่ยึดตัวที่เลือกจากเฟรมก่อนหน้า
+จึงสามารถสลับไปยัง detection ใหม่ที่ใกล้ crosshair กว่าได้ทันที หากสองจุดมี
+ระยะเท่ากันพอดี จะใช้ลำดับ output จาก detector เป็นตัวตัดสิน
 
-Selecting AI Aim does not move the pointer. Master arms capture and inference;
-movement still requires the selected Trigger and optional Modifier. Status
-shows `Ready (DirectML)` when DirectML is active or `Ready (CPU)` when the
-explicit CPU fallback is in use. `STOP` immediately cancels movement, hides the
-Overlay, and ends its inference demand. Disable, disconnect, and source change
-immediately cancel movement; inference remains active when the independent
-visible Overlay still requires it. Shutdown ends both. Trigger or Modifier
-release stops movement while the armed AI capture remains ready.
+โมเดลที่รองรับใช้ class ดังนี้:
 
-The independent `Overlay` control starts off. When enabled, it draws detection
-boxes in a centered 320-by-320, click-through window that is excluded from
-capture. `Box Color` changes the rectangle color, and `Head Boxes` can hide
-head rectangles without removing those detections from nearest-target
-selection. These two display preferences persist, while Overlay visibility
-remains runtime-only.
-Overlay viewing does not require AI Aim to be selected for movement; it starts
-the approved detection runtime only while needed.
+| Class ID | ความหมาย | Aim point เมื่อ Target Area เป็น Head |
+|---:|---|---|
+| `0` | Player | กึ่งกลางแนวนอนและ 20% จากขอบบนของกล่อง |
+| `7` | Head | จุดกึ่งกลางของกล่องศีรษะ |
 
-An AI runtime error fails closed by hiding the Overlay and deselecting AI Aim.
-If Jitter remains selected under Master, Jitter continues or restarts through
-the same gate; an AI-only failure disarms Master.
+Target Area มีสามระดับและเป็นสถานะ runtime เท่านั้น:
 
-### Current-frame target selection and movement
+| Target Area | Detection ที่ใช้ได้ | ตำแหน่งบนกล่อง player |
+|---|---|---:|
+| `Head` | Head และ Player | 20% จากด้านบน |
+| `Upper Body` | Player | 30% จากด้านบน |
+| `Chest` | Player | 42% จากด้านบน |
 
-Each base inference frame filters detections by Confidence and supported class,
-then derives the selected Target Area aim point for every accepted head and
-player. The point with the shortest straight-line distance to the centered
-crosshair at `(160, 160)` is published immediately. Head and player candidates
-compete in the same list; previous-frame identity, ambiguity holds, and
-multi-frame replacement confirmation are not used. If two points are exactly
-the same distance away, detector output order decides the tie.
+## ความต้องการของระบบ
 
-Capture cadence follows the primary display refresh rate, capped at 240 FPS.
-The movement servo runs at twice the detected display rate, clamped to the
-120-480 Hz range. If refresh detection is unavailable or invalid, Jitter uses
-the safe 120 FPS capture / 240 Hz servo fallback. The Motion page reports the
-detected display and servo cadence, while measured inference FPS remains a
-separate runtime status; none of these values are persisted.
+- Windows 10 หรือใหม่กว่า
+- Python 3.11 ขึ้นไป พร้อม Tkinter
+- อุปกรณ์ Makcu ที่รองรับและไดรเวอร์ USB
+- จอภาพที่มีความละเอียดเพียงพอสำหรับพื้นที่จับภาพกึ่งกลาง 320×320
+- GPU/ระบบที่รองรับ DirectML สำหรับ inference ที่แนะนำ
+- หาก DirectML ใช้งานไม่ได้ โปรแกรมสามารถ fallback ไป CPU ได้
 
-One fresh AI target can be consumed as multiple time-based microsteps, so the
-servo remains smooth between capture frames. Smoothing and acceleration are
-computed from elapsed time, and an unconsumed target is discarded after 150
-ms. These AI changes do not alter paired Jitter pulses, combined-source
-composition, or the immediate STOP, disable, disconnect, source-change, and
-shutdown cancellation rules.
+Dependencies ถูก pin ไว้ใน `requirements.txt`:
 
-### Adaptive Zoom
+- `makcu==2.3.1`
+- `pyserial==3.5`
+- `pygame-ce==2.5.6`
+- `onnxruntime-directml==1.24.4`
+- `dxcam==0.3.0`
+- `comtypes==1.4.16`
+- `numpy==2.5.2`
 
-Adaptive Zoom is automatic and has no control or persisted setting. Every frame
-still starts with the full-field 1.0× base pass. Only when a small target has
-already been selected by that pass does AI Aim request a same-frame second pass
-at 1.5× or 2.0×. The second pass is enabled only during connected, Master-armed,
-AI-selected normal movement while the configured Trigger and Modifier (if any)
-are active; it is not active while idle, during Overlay-only viewing, or during
-`Test 3s`.
+โปรเจกต์ไม่ใช้ Torch, Ultralytics หรือ OpenCV
 
-The `ZOOM` runtime status reports `1.0×`, `1.5×`, or `2.0×`. If refinement is
-not eligible or does not produce a compatible result, the same frame keeps its
-1.0× base result. A successful refinement replaces only the selected base box;
-its coordinates are mapped back into the original 320-by-320 frame for the
-Overlay, while unrelated base boxes remain. Adaptive Zoom does not magnify the
-display and cannot recover a target that the base pass never detected. Zoom
-status is runtime-only; Schema 5 and its persisted settings are unchanged.
+## การติดตั้ง
 
-Zoom stability is separate from movement publication. Repeated nearby
-same-class base observations can unlock 2.0x refinement after cooldown, but a
-new current-frame base target is still available to AI movement immediately.
-In combined mode, Jitter continues whenever the current frame has no valid AI
-target.
-
-A new or shaken small target starts with the wider 1.5x refinement. A confirmed
-target may return to 2.0x only after the fixed 100 ms recoil cooldown. A normal
-refinement miss also restarts confirmation and cooldown while preserving only
-the current frame's base boxes. These constants are internal runtime policy,
-not saved settings.
-
-## Requirements
-
-- Windows 10 or newer
-- Python 3.11+ with Tkinter installed
-- A supported Makcu device and its USB driver for hardware operation
-- A DirectML-capable Windows system for preferred AI inference; CPU fallback
-  is available
-
-Install the pinned runtime packages from a PowerShell prompt in this folder:
+เปิด PowerShell ในโฟลเดอร์โปรเจกต์ แล้วติดตั้ง dependencies:
 
 ```powershell
 python -m pip install -r requirements.txt
 ```
 
-## Run from source
+ตรวจว่า Python และ package หลักนำเข้าได้:
 
-Normal feature work runs from source and does not build an executable:
+```powershell
+python -c "import makcu, serial, pygame, onnxruntime, dxcam, comtypes, numpy"
+```
+
+## การเปิดโปรแกรม
+
+รันจาก source:
 
 ```powershell
 python main.py
 ```
 
-You can also double-click `run_gui.bat`. Jitter and AI Aim both start
-unselected, and Master starts disabled. Master and the global hotkey (default
-`-`) arm or disable the selected sources; actual movement occurs only while the
-selected Trigger and optional Modifier are held. `Test 3s` follows the sources
-selected when the test starts, temporarily bypasses the Trigger gate, and
-requires a connected Makcu. `STOP` immediately cancels movement and test runs,
-including between paired half-pulses. Disconnect, hotkey disable, Trigger
-release, and closing the window also signal an immediate stop.
-The Settings page can mute the hotkey ON/OFF cues, set their volume from
-0–100, and preview either cue without changing the armed state.
+หรือดับเบิลคลิก `run_gui.bat`
 
-Without a connected Makcu, the UI remains usable for configuration but no
-pointer movement can be sent. Hardware-dependent behavior still requires a
-connected-device check: verify each selected-source combination with the
-configured Trigger/Modifier, Test 3s with those sources, the global hotkey,
-STOP between half-pulses, disconnect/reconnect, and shutdown. Also verify the
-diagonal up-right/down-left paired Jitter direction, the Soft, Balanced, and
-Strong pulse sizes and rates, and that the optional configured-color centered
-overlay is click-through and absent from capture.
+เมื่อเปิดโปรแกรมครั้งแรก:
 
-## User data and diagnostics
+- `Jitter` และ `AI Aim` จะยังไม่ถูกเลือก
+- `Master` จะอยู่ในสถานะปิด
+- `Overlay` จะอยู่ในสถานะปิด
+- โมเดลเริ่มต้นคือ `models/all_games_320.onnx`
+- global hotkey เริ่มต้นคือ `-`
 
-`config.json` and its backup `config.json.bak` are stored beside the source
-script (or beside a packaged executable). Schema 5 stores validated settings,
-including the optional AI response curve; a missing or malformed curve loads
-the complete safe default. Schemas 1-4 also use that default. Schema 6 and
-newer files are treated as unsupported future data: Jitter runs with safe
-in-memory defaults, disables saving, and leaves the file unchanged. Writes to
-supported schemas are atomic. Overlay color and head-box visibility persist,
-but motion-source selection, Master state, overlay visibility, target state,
-targets, snapshots, FPS, provider, cadence, and zoom status are runtime-only.
-`app.log` in the same folder contains timestamped diagnostics. These files are
-intentionally ignored by Git.
+## ขั้นตอนใช้งานแบบย่อ
 
-## Verification
+1. ต่อ Makcu และรอให้สถานะเป็น Connected
+2. เลือก Trigger และ Modifier หากต้องการ
+3. เลือก `Jitter`, `AI Aim` หรือเลือกทั้งสองปุ่ม
+4. ปรับค่าบนหน้า Motion
+5. เปิด `Master` หรือกด global hotkey
+6. กด Trigger พร้อม Modifier ที่ตั้งไว้เพื่อเริ่มขยับ
+7. ปล่อย Trigger/Modifier หรือกด `STOP` เพื่อหยุดทันที
+
+การเลือกแหล่งการเคลื่อนไหวไม่ได้ทำให้เมาส์ขยับเอง ต้องมีทั้ง Master และเงื่อนไข
+Trigger/Modifier ครบก่อนเสมอ ยกเว้น `Test 3s` ซึ่งข้าม Trigger ชั่วคราว
+
+## การตั้งค่า Jitter
+
+Jitter ส่ง paired pulse บนแกนเอียง 45 องศาไปทางขวาจากแนวตั้ง ลำดับหนึ่งคู่คือ
+`up-right then down-left` และอีกคู่จะสลับทิศทาง จากนั้นวนซ้ำ ผลรวมเชิงตั้งใจของ
+pulse ที่ครบคู่เป็นศูนย์ แต่ผลจริงขึ้นอยู่กับวิธีประมวลผล input ของโปรแกรมปลายทาง
+
+| ตัวควบคุม | ช่วง/ตัวเลือก | ความหมาย |
+|---|---|---|
+| `Pulse Size` | 1–8 px | ขนาดต่อครึ่ง pulse |
+| `Pulse Rate` | 20–120 Hz | จำนวนคู่ pulse ต่อวินาที |
+| `Ramp Mode` | `Instant`, `Smooth` | เริ่มเต็มแรงทันที หรือไต่ระดับใน 150 ms |
+
+Presets:
+
+- `Soft`: 1 px, 30 Hz, Smooth
+- `Balanced`: 2 px, 60 Hz, Smooth
+- `Strong`: 4 px, 100 Hz, Instant
+- `Custom`: ค่าปัจจุบันไม่ตรง preset ใดพอดี
+
+## การตั้งค่า AI Aim
+
+| ตัวควบคุม | ช่วง | ค่าเริ่มต้น | ความหมาย |
+|---|---:|---:|---|
+| `Confidence` | 0.05–0.95 | 0.35 | confidence ขั้นต่ำของ detection |
+| `Aim Strength` | 0.05–2.00 | 0.35 | ตัวคูณความเร็วจาก response curve |
+| `Smoothing` | 0.00–0.95 | 0.65 | ความนุ่มของการเปลี่ยนความเร็วตามเวลา |
+| `Max Step` | 1–127 | 20 | delta สูงสุดที่รายงานต่อรอบ servo |
+| `Target Area` | Head/Upper Body/Chest | Head | ระดับแนวตั้งของ aim point |
+
+AI Aim ใช้ time-based servo microsteps เพื่อให้การขยับระหว่างเฟรม inference
+ต่อเนื่องขึ้น เป้าหมายที่ยังใช้ไม่หมดจะหมดอายุเมื่อผ่าน 150 ms เพื่อไม่ให้ส่ง
+ตำแหน่งเก่าค้างอยู่ การ clamp, acceleration limit และ fractional accumulation
+ยังคงทำงาน และ movement ส่วนเกินจะถูกทิ้งแทนการสะสมคิว
+
+## Response Curve
+
+Response Curve แปลงระยะจาก crosshair เป็นความเร็วการขยับ มีจุดควบคุมห้าจุดที่
+ระยะ `0%`, `25%`, `50%`, `75%` และ `100%` ของรัศมีอ้างอิง:
+
+```text
+ระยะ:       0%   25%   50%   75%   100%
+ค่าเริ่มต้น: 0%   12%   35%   68%   100%
+```
+
+- จุดแรกถูกตรึงที่ศูนย์
+- อีกสี่จุดลากบนกราฟหรือกรอกเปอร์เซ็นต์แบบ exact value ได้
+- ค่าต้องเรียงจากน้อยไปมากและอยู่ในช่วง 0–100%
+- `Reset Curve` คืนค่าทั้งกราฟเป็นค่าเริ่มต้น
+- Curve กำหนดรูปทรงการตอบสนอง ส่วน Aim Strength ใช้ปรับสเกลรวม
+- Smoothing กำหนดความเร็วในการไล่ตามค่า curve และ Max Step จำกัดผลสุดท้าย
+
+Response Curve เป็นการตั้งค่า AI ใหม่เพียงส่วนเดียวที่บันทึกลง config
+
+## Adaptive Zoom
+
+Adaptive Zoom ทำงานอัตโนมัติและไม่มีตัวเลือกที่บันทึกถาวร ทุกเฟรมจะเริ่มด้วย
+base pass แบบเต็มพื้นที่ 1.0× ก่อนเสมอ เป้าหมายขนาดเล็กที่ถูกเลือกจาก base pass
+แล้วเท่านั้นจึงมีสิทธิ์รับ refinement pass เพิ่มในเฟรมเดียวกัน
+
+- `1.0×`: base inference เต็มเฟรม
+- `1.5×`: refinement ที่กว้างกว่า ใช้กับเป้าหมายใหม่หรือเป้าหมายที่ยังไม่นิ่ง
+- `2.0×`: refinement ที่ละเอียดขึ้นหลังยืนยันความนิ่งและผ่าน cooldown 100 ms
+
+refinement ทำงานเฉพาะขณะเชื่อมต่อ Makcu, เปิด Master, เลือก AI Aim และกด
+Trigger/Modifier ครบในการเคลื่อนไหวปกติ จะไม่ทำงานเมื่อ idle, ใช้ Overlay
+อย่างเดียว หรือระหว่าง `Test 3s`
+
+หาก refinement ไม่สำเร็จ โปรแกรมจะใช้ผล 1.0× ของเฟรมเดียวกันต่อไป ไม่ถือ
+target เก่ามาใช้ และไม่เพิ่ม inference call เกินที่กำหนด กล่อง refinement
+จะสัมพันธ์กับ base target ที่ถูกเลือกไว้เพื่อไม่ให้ซูมไปหยิบวัตถุข้างเคียง
+
+Adaptive Zoom ไม่ได้ขยายภาพที่ผู้ใช้เห็น และไม่สามารถค้นหาเป้าหมายที่ base pass
+ตรวจไม่พบ ค่า `ZOOM` และสถานะความนิ่งทั้งหมดเป็น runtime state
+
+## การเลือกโมเดล ONNX
+
+ทุกครั้งที่เปิดโปรแกรมจะเริ่มจากโมเดลที่ bundle มากับโปรเจกต์:
+
+```text
+models/all_games_320.onnx
+```
+
+แถว `MODEL` จะแสดง `Default · all_games_320.onnx` ปุ่ม `Browse...` ใช้เลือก
+ไฟล์ `.onnx` ภายนอกสำหรับ process ปัจจุบัน และ `Use Default` ใช้กลับไปโมเดลหลัก
+
+โมเดลภายนอกต้องตรง contract นี้ทุกข้อ:
+
+| รายการ | Contract |
+|---|---|
+| Input name | `images` |
+| Input shape | `[1, 3, 320, 320]` |
+| Input type | float |
+| Output name | `output0` |
+| Output shape | `[1, 300, 6]` |
+| Output type | float |
+| Player class | `0` |
+| Head class | `7` |
+
+โปรแกรมตรวจ contract นอก Tk UI thread และพัก AI ระหว่างสลับโมเดล เมื่อโมเดลใหม่
+พร้อมจึงเริ่ม runtime/motion ที่มีสิทธิ์ใหม่ หาก startup ของโมเดล candidate ล้มเหลว
+จะ rollback ไปโมเดลก่อนหน้าหนึ่งครั้ง
+
+ข้อจำกัดด้านข้อมูลโมเดล:
+
+- ไม่ดาวน์โหลดหรือฝึกโมเดล
+- ไม่คัดลอกโมเดลภายนอกเข้าโปรเจกต์
+- ไม่บันทึก path ของโมเดลภายนอกลง `config.json`
+- ไม่ bundle โมเดลภายนอกเข้า release
+- ปิดการเปลี่ยนโมเดลระหว่าง `Test 3s`
+
+SHA-256 ของโมเดลหลักที่อนุมัติคือ:
+
+```text
+6B9157D6419F9DBC40D2DCECCC33A3387078C86F1C5872EDA544B174FF48499C
+```
+
+## Overlay
+
+Overlay เป็นหน้าต่าง detection ขนาด 320×320 ที่กึ่งกลางจอ:
+
+- เริ่มต้นปิดและทำงานแยกจากการเลือก AI Aim
+- click-through จึงไม่ขวางการคลิก
+- ถูก exclude จาก capture เพื่อไม่ให้เห็นกล่องของตัวเองใน inference
+- เลือก `Box Color` ได้
+- ปุ่ม `Head Boxes` ซ่อน/แสดงเฉพาะกล่อง head บน Overlay
+- การซ่อนกล่อง head ไม่ได้ตัด head ออกจาก target selection
+- Overlay-only สามารถเรียก inference ได้โดยไม่เปิด AI Aim สำหรับ movement
+
+เมื่อเกิด AI runtime error โปรแกรมจะซ่อน Overlay และยกเลิกการเลือก AI Aim
+หากยังเลือก Jitter และ Master เปิดอยู่ Jitter จะทำงานต่อผ่าน gate เดิม แต่ถ้ามี
+AI Aim อย่างเดียว โปรแกรมจะปิด Master
+
+## ปุ่มควบคุมและความปลอดภัย
+
+- `Master`: arm แหล่งการเคลื่อนไหวที่เลือก
+- Global hotkey `-`: สลับ Master หนึ่งครั้งต่อการกด
+- `Test 3s`: ใช้ engine จริงของแหล่งที่เลือกตอนเริ่ม test และข้าม Trigger ชั่วคราว
+- `STOP`: ยกเลิก movement, test, Overlay และ inference demand ทันที
+
+เหตุการณ์ต่อไปนี้จะส่งสัญญาณหยุดโดยไม่รอ movement interval ปกติ:
+
+- กด `STOP`
+- ปิด Master หรือใช้ hotkey ปิด
+- ปล่อย Trigger/Modifier
+- เปลี่ยนแหล่ง Jitter/AI Aim
+- Makcu disconnect
+- ปิดโปรแกรม
+
+การปิดหน้าต่างคือการออกจากโปรแกรม ไม่มี system tray
+
+## ไฟล์ตั้งค่าและข้อมูลผู้ใช้
+
+ไฟล์ runtime อยู่ข้าง source script หรือข้าง executable ที่ package แล้ว:
+
+- `config.json`: การตั้งค่าปัจจุบัน
+- `config.json.bak`: backup ก่อนหน้า
+- `app.log`: diagnostic log แบบ thread-safe
+
+ไฟล์เหล่านี้ถูก ignore โดย Git การเขียน config ใช้ temporary file, flush,
+`fsync`, backup และ atomic replace เพื่อลดความเสี่ยงไฟล์เสีย
+
+Schema 5 บันทึกค่าที่ผ่าน validation รวมถึง:
+
+- การตั้งค่า Jitter และ AI Aim ที่อนุญาต
+- Response Curve
+- สี Overlay และการแสดงกล่อง head
+- global hotkey และการตั้งค่าเสียง
+
+สิ่งที่ไม่ถูกบันทึก ได้แก่ source selection, Master, Overlay visibility,
+Target Area, model path ภายนอก, target/snapshot, FPS, provider, display cadence,
+servo cadence และ zoom status
+
+หากพบ schema 6 หรือใหม่กว่าซึ่งโปรแกรมรุ่นนี้ไม่รองรับ โปรแกรมจะใช้ค่า default
+ในหน่วยความจำ ปิดการ save และไม่แก้ไฟล์ต้นฉบับ
+
+## การแก้ปัญหาเบื้องต้น
+
+### Makcu ไม่เชื่อมต่อ
+
+1. ถอดและเสียบอุปกรณ์ใหม่
+2. ตรวจไดรเวอร์และพอร์ต USB
+3. ปิดโปรแกรมอื่นที่อาจจับ serial port อยู่
+4. เปิด `app.log` เพื่อดูรายละเอียดการ reconnect
+
+### AI แสดง Ready แต่เมาส์ไม่ขยับ
+
+ตรวจให้ครบว่า:
+
+- เลือก `AI Aim` แล้ว
+- เปิด `Master` แล้ว
+- Makcu อยู่ในสถานะ Connected
+- กด Trigger และ Modifier ตามที่ตั้งไว้
+- Confidence ไม่สูงจน detection ถูกตัดทิ้งทั้งหมด
+- Target Area ตรงกับ class ที่โมเดลตรวจได้
+
+### AI สลับไปอีกตัวเมื่อเป้าหมายอยู่ใกล้กัน
+
+นี่เป็นพฤติกรรมที่ออกแบบไว้ ระบบเลือก detection ที่ใกล้ crosshair ที่สุดใหม่
+ทุกเฟรมและไม่จำ identity จากเฟรมก่อน หากต้องการให้ตัวใดถูกเลือก ให้วาง crosshair
+ให้ aim point ของตัวนั้นใกล้ศูนย์กลางกว่า
+
+### เลือกโมเดลแล้วถูก Reject
+
+โมเดลต้องเป็น `.onnx` และตรง input/output contract ทุกค่า ตรวจชื่อ tensor,
+shape, dtype และ class ID ตามตารางในหัวข้อการเลือกโมเดล โปรแกรมไม่รองรับโมเดล
+ที่ถูกเข้ารหัสหรือใช้ runtime/contract คนละแบบ
+
+### DirectML ใช้งานไม่ได้
+
+รัน self-check:
 
 ```powershell
-python -m py_compile main.py ui.py motion.py combined_motion.py ai_targeting.py ai_tracking.py ai_detection.py ai_capture.py ai_zoom.py ai_service.py display_timing.py overlay.py makcu_service.py hotkeys.py settings.py sound_service.py liquid_widgets.py distribution_metadata.py
+python .\main.py --ai-runtime-self-check
+```
+
+ผลปกติจะเป็น JSON ที่มี `"status": "ok"` และ
+`"provider": "DmlExecutionProvider"` ตรวจ driver GPU และ package
+`onnxruntime-directml` หาก provider ไม่ตรง
+
+### Overlay ทับภาพหรือรับคลิก
+
+Overlay ถูกออกแบบให้ click-through และ capture-excluded บน Windows หากพฤติกรรม
+ไม่ตรง ให้ดู `app.log`, ตรวจว่าใช้ Windows รุ่นที่รองรับ และ restart โปรแกรม
+
+## การตรวจสอบสำหรับนักพัฒนา
+
+รันจาก root ของ repository:
+
+```powershell
+python -m py_compile main.py ui.py motion.py combined_motion.py ai_targeting.py ai_tracking.py ai_detection.py ai_capture.py ai_zoom.py ai_service.py ai_model_selection.py display_timing.py overlay.py makcu_service.py hotkeys.py settings.py sound_service.py liquid_widgets.py distribution_metadata.py
 python -m unittest discover -s tests -v
 python -c "import makcu, serial, pygame, onnxruntime, dxcam, comtypes, numpy"
 python .\main.py --ai-runtime-self-check
@@ -210,36 +385,29 @@ python .\distribution_metadata.py --review-json
 git diff --check
 ```
 
-The approved model SHA-256 is
-`6B9157D6419F9DBC40D2DCECCC33A3387078C86F1C5872EDA544B174FF48499C`.
+การเปลี่ยนแปลงที่เกี่ยวกับ hardware ต้องตรวจด้วย Makcu จริงเพิ่มเติม:
 
-## License and source availability
+- Trigger และ Modifier ทุกชุดที่รองรับ
+- Jitter อย่างเดียว, AI Aim อย่างเดียว และโหมดรวม
+- reconnect หลังอุปกรณ์หลุด
+- `Test 3s`, global hotkey, `STOP` และ shutdown
+- Overlay ต้อง click-through และไม่ปรากฏใน capture
+- ทิศทาง paired Jitter และ preset Soft/Balanced/Strong
 
-Jitter and the bundled model are distributed under the GNU Affero General
-Public License version 3. Every distributed executable or release must provide
-access alongside it to the complete corresponding Jitter source for that exact
-version, including build scripts and distribution metadata. A binary-only
-release is not sufficient.
+## การสร้างไฟล์ EXE
 
-Bundled dependencies have separate obligations. Every release must include the
-[third-party notices](THIRD_PARTY_NOTICES.md) and the complete
-[release licensing checklist](licenses/README.md), including the exact license
-files and GPL/LGPL source archives recorded in `licenses/manifest.json`, beside
-the executable. Jitter's source alone does not satisfy every bundled
-component's notice, corresponding-source, or relinking requirements.
+การ package เป็นงานที่ต้องสั่งโดยเจาะจง การพัฒนาทั่วไปไม่สร้าง EXE อัตโนมัติ
 
-## Explicit packaging
-
-Packaging is opt-in. Normal development never builds an executable. When a
-Windows one-file executable is specifically needed, run the no-argument
-compatibility entry and type the exact confirmation word `BUILD`:
+วิธี interactive:
 
 ```powershell
 .\gen.bat
 ```
 
-For exact argument-bearing help, review, or deliberate non-interactive build
-automation, invoke the standard-library Python launcher directly:
+จากนั้นพิมพ์คำยืนยัน `BUILD` ให้ตรงทุกตัวอักษร `gen.bat` ไม่รับ argument และ
+จะไม่ส่งต่อ argument ของ batch
+
+คำสั่ง Python สำหรับ help, review หรือ automation:
 
 ```powershell
 python .\distribution_metadata.py --help
@@ -247,29 +415,29 @@ python .\distribution_metadata.py --review-json
 python .\distribution_metadata.py --build
 ```
 
-The build installs Nuitka and its build helpers, runs the checks above, and
-creates `build-output\Jitter.exe`; Nuitka output is recorded in
-`build-output\build.log`. Publishing that executable also requires publishing
-or linking the matching complete source and all release licensing materials
-described above.
-
-The canonical Nuitka command loads `nuitka-package.config.yml` so the pinned
-ONNX Runtime DirectML `onnxruntime/capi/DirectML.dll` is bundled explicitly.
-After Nuitka finishes, the build runs this exact non-GUI check before copying
-release materials:
+build ใช้ Nuitka และโหลด `nuitka-package.config.yml` เพื่อ bundle
+`onnxruntime/capi/DirectML.dll` จาก ONNX Runtime DirectML หลังสร้างเสร็จต้องผ่าน:
 
 ```powershell
 .\build-output\Jitter.exe --ai-runtime-self-check
 ```
 
-It prints JSON containing the model path, SHA-256, and active provider, and it
-fails unless the approved model contract and hash pass with
-`DmlExecutionProvider`. The source-mode equivalent is
-`python .\main.py --ai-runtime-self-check`.
+ไฟล์ผลลัพธ์อยู่ที่ `build-output\Jitter.exe` และ log อยู่ที่
+`build-output\build.log` ห้ามแก้ไฟล์ใน build output เป็น source
 
-`gen.bat` intentionally has no argument interface and never reads or forwards
-batch arguments. Do not append arguments to it: `cmd.exe` parses quotes,
-metacharacters, pipes, and redirects before a batch file can validate them, so
-shell text such as `>file` is owned by the calling shell. Pass constructed or
-untrusted argument vectors directly to Python without a shell; invalid, empty,
-or extra launcher arguments are then rejected before any build plan executes.
+## สัญญาอนุญาตและไฟล์ประกอบการเผยแพร่
+
+Jitter และโมเดลที่ bundle มากับโปรเจกต์เผยแพร่ภายใต้ GNU Affero General Public
+License version 3 การแจก binary ต้องเปิดให้เข้าถึง corresponding source ของ
+Jitter เวอร์ชันเดียวกัน รวมถึง build scripts และ distribution metadata
+
+Dependencies แต่ละตัวมีข้อกำหนดแยกกัน ทุก release ต้องวางรายการต่อไปนี้ข้าง EXE:
+
+- `LICENSE`
+- [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+- ไดเรกทอรี `licenses/` ทั้งชุด
+- [คู่มือและ checklist การเผยแพร่](licenses/README.md)
+
+Jitter source เพียงอย่างเดียวไม่ครอบคลุมภาระ notice, corresponding-source หรือ
+relinking ของ dependency ทุกตัว โปรดตรวจ `licenses/manifest.json` และเอกสารใน
+`licenses/` ก่อนเผยแพร่เสมอ
