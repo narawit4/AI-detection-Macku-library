@@ -236,6 +236,22 @@ Adaptive Zoom ไม่ได้ขยายภาพที่ผู้ใช้
 models/all_games_320.onnx
 ```
 
+การเลือกโมเดลภายนอกใช้ได้เฉพาะตอน runtime และระบบตรวจ contract ก่อนเริ่มใช้งาน:
+
+- input `images` แบบ float ต้องมีรูปร่างเป็น `[1,3,N,N]` โดย `N` เป็น `160`, `320` หรือ `640` เท่านั้น
+- ค่า input ที่อนุญาตคือ `[1,3,160,160]`, `[1,3,320,320]` และ `[1,3,640,640]`
+- output `output0` แบบ float ต้องมีรูปร่าง `[1,300,6]` และใช้ class `0` สำหรับ player กับ class `7` สำหรับ head
+- รองรับขนาด runtime อัตโนมัติ 160, 320 และ 640; label ในหน้าแอปจะแสดงขนาดที่ตรวจสอบแล้ว
+- โมเดลขนาด 128/256 (หรือขนาดอื่นนอกเหนือจากนี้), โมเดล dynamic/rectangular และโมเดลที่ malformed จะถูก reject
+
+พื้นที่ capture ยังคง 320×320 สำหรับทุกโมเดล เช่นเดียวกับ Overlay, FOV, targeting และ movement
+ผลจาก detector จะถูก scale กลับมาเป็นพิกัด 320×320 ก่อนเผยแพร่ โมเดล 640 จึงเป็นการ upscale
+พื้นที่จริง 320×320 เดิม ไม่ใช่การขยายพื้นที่ที่จับภาพ โมเดล 160 อาจใช้ inference น้อยลง,
+320 เป็นจุดสมดุลเริ่มต้น และ 640 อาจใช้เวลามากขึ้น ทั้งหมดนี้ไม่รับประกัน FPS หรือความแม่นยำ
+
+โมเดลเริ่มต้นเมื่อเปิดโปรแกรมยังคงเป็น bundled `models/all_games_320.onnx` เสมอ path และขนาดของ
+โมเดลภายนอกเป็น runtime-only: ไม่ถูกบันทึกลง config, copy, หรือ package ไปกับ release
+
 แถว `MODEL` จะแสดง `Default · all_games_320.onnx` ปุ่ม `Browse...` ใช้เลือก
 ไฟล์ `.onnx` ภายนอกสำหรับ process ปัจจุบัน และ `Use Default` ใช้กลับไปโมเดลหลัก
 
@@ -244,7 +260,7 @@ models/all_games_320.onnx
 | รายการ | Contract |
 |---|---|
 | Input name | `images` |
-| Input shape | `[1, 3, 320, 320]` |
+| Input shape | `[1,3,N,N]`, where `N` is `160`, `320`, or `640` |
 | Input type | float |
 | Output name | `output0` |
 | Output shape | `[1, 300, 6]` |
@@ -269,6 +285,10 @@ SHA-256 ของโมเดลหลักที่อนุมัติคื
 ```text
 6B9157D6419F9DBC40D2DCECCC33A3387078C86F1C5872EDA544B174FF48499C
 ```
+
+Self-check ยังคงตรวจเฉพาะ bundled 320 model ตาม SHA-256 ข้างต้น และตรวจว่า
+ONNX Runtime ใช้ `DmlExecutionProvider` ได้จริง ไม่มีการเปลี่ยนไปตรวจโมเดลภายนอก
+หรือเพิ่มโมเดลอื่นเข้า package
 
 ## Overlay
 
@@ -383,7 +403,7 @@ Overlay ถูกออกแบบให้ click-through และ capture-exc
 รันจาก root ของ repository:
 
 ```powershell
-python -m py_compile main.py ui.py motion.py combined_motion.py ai_targeting.py ai_tracking.py ai_detection.py ai_capture.py ai_zoom.py ai_service.py ai_model_selection.py display_timing.py overlay.py makcu_service.py hotkeys.py settings.py sound_service.py liquid_widgets.py distribution_metadata.py
+python -m py_compile main.py ui.py motion.py combined_motion.py ai_targeting.py ai_tracking.py ai_detection.py ai_capture.py ai_zoom.py image_resize.py ai_service.py ai_model_selection.py display_timing.py overlay.py makcu_service.py hotkeys.py settings.py sound_service.py liquid_widgets.py distribution_metadata.py
 python -m unittest discover -s tests -v
 python -c "import makcu, serial, pygame, onnxruntime, dxcam, comtypes, numpy"
 python .\main.py --ai-runtime-self-check

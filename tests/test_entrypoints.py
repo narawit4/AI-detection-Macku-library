@@ -544,3 +544,15 @@ class EntryPointTests(unittest.TestCase):
             'comtypes, numpy"',
             readme,
         )
+
+    def test_readme_documents_supported_external_sizes_and_fixed_capture(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        for contract in (
+            "[1,3,160,160]",
+            "[1,3,320,320]",
+            "[1,3,640,640]",
+            "พื้นที่ capture ยังคง 320×320",
+            "128/256",
+        ):
+            with self.subTest(contract=contract):
+                self.assertIn(contract, readme)

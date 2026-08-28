@@ -30,6 +30,7 @@ features.
 - `ai_zoom.py`: pure adaptive zoom geometry and same-frame refinement composition.
 - `ai_detection.py`: fixed-contract ONNX Runtime detector.
 - `ai_capture.py`: centered DXCam capture wrapper.
+- `image_resize.py`: pure resizing and coordinate mapping for supported model sizes.
 - `ai_service.py`: generation-safe capture and inference worker.
 - `ai_model_selection.py`: runtime-only external ONNX selection and validation.
 - `display_timing.py`: primary-display cadence detection and pure runtime policy.
@@ -95,14 +96,15 @@ with the supported Windows Python installation.
 - AI Aim uses the fixed centered 320-by-320 capture and bundled startup-default
   model, considers accepted heads and players together, and shares the same
   Trigger/Modifier gate.
-  `Browse...` may select only an external runtime `.onnx` with the exact
-  `images` `[1,3,320,320]` and `output0` `[1,300,6]` float contract, class 0
-  players, and class 7 heads. Validate off the UI thread, pause AI during a
-  switch, and after its exact ready event restart the eligible AI runtime and
-  motion. A candidate startup failure makes exactly one automatic rollback
-  attempt to restart the previous model. Never download, copy, package, or
-  persist an external model or its path; every launch starts with the bundled
-  model.
+  `Browse...` accepts only runtime external ONNX models whose `images` float input
+  is exactly `[1,3,N,N]` for N in 160, 320, or 640 and whose `output0` float output
+  is exactly `[1,300,6]`. Capture, Overlay, targeting, movement, and Adaptive Zoom
+  remain in canonical 320-by-320 coordinates; detector output is scaled back
+  before publication. Validate off the UI thread, pause AI during a switch, and
+  after its exact ready event restart the eligible AI runtime and motion. A
+  candidate startup failure makes exactly one automatic rollback attempt to
+  restart the previous model. Never download, copy, package, or persist an
+  external model or its path; every launch starts with the bundled 320 model.
 - On every base frame, filter detections by confidence and supported class,
   derive the configured aim point for every accepted head and player, and
   select the point with the shortest Euclidean distance to the centered
@@ -232,7 +234,7 @@ with the supported Windows Python installation.
 After implementation changes, run:
 
 ```powershell
-python -m py_compile main.py ui.py motion.py combined_motion.py ai_targeting.py ai_tracking.py ai_detection.py ai_capture.py ai_zoom.py ai_service.py ai_model_selection.py display_timing.py overlay.py makcu_service.py hotkeys.py settings.py sound_service.py liquid_widgets.py distribution_metadata.py
+python -m py_compile main.py ui.py motion.py combined_motion.py ai_targeting.py ai_tracking.py ai_detection.py ai_capture.py ai_zoom.py image_resize.py ai_service.py ai_model_selection.py display_timing.py overlay.py makcu_service.py hotkeys.py settings.py sound_service.py liquid_widgets.py distribution_metadata.py
 python -m unittest discover -s tests -v
 python -c "import makcu, serial, pygame, onnxruntime, dxcam, comtypes, numpy"
 python .\main.py --ai-runtime-self-check
