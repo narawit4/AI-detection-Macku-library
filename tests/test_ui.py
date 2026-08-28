@@ -783,6 +783,23 @@ class JitterLayoutTests(unittest.TestCase):
             self.app.ai_model_var.get(), "Loading \u00b7 expected.onnx"
         )
 
+    def test_ready_event_without_validated_input_size_is_ignored(self):
+        self.app.toggle_overlay()
+        previous = self.app._model_choice
+        pending, token = self.begin_custom_model_switch("pending.onnx")
+        starts = len(self.ai.start_calls)
+
+        self.model_validator.emit(ModelValidationEvent("ready", token, pending))
+        self.drain_model_ui_queue()
+
+        self.assertEqual(self.app._model_switch.candidate, pending)
+        self.assertEqual(self.app._model_switch.phase, "validating")
+        self.assertEqual(self.app._model_choice, previous)
+        self.assertEqual(
+            self.app.ai_model_var.get(), "Loading \u00b7 pending.onnx"
+        )
+        self.assertEqual(len(self.ai.start_calls), starts)
+
     def test_invalid_input_size_footer_is_actionable_without_path_leak(self):
         pending, token = self.begin_custom_model_switch("private-name.onnx")
 
