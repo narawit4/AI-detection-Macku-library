@@ -13,6 +13,12 @@ Jitter เป็นโปรแกรมเดสก์ท็อปสำหร�
 
 > โปรแกรมนี้รองรับ Windows เท่านั้น และต้องใช้อุปกรณ์ Makcu สำหรับส่งการขยับเมาส์จริง
 
+## ภาพตัวอย่างแอป
+
+![ตัวอย่างหน้า Motion และ AI Response Curve](docs/images/jitter-motion-dashboard.png)
+
+*ตัวอย่างหน้า Motion และ AI Response Curve*
+
 ## สารบัญ
 
 - [คุณสมบัติหลัก](#คุณสมบัติหลัก)
