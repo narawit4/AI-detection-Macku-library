@@ -1,5 +1,6 @@
 import tkinter as tk
 from tkinter import ttk
+from dataclasses import replace
 from types import SimpleNamespace
 import threading
 import tempfile
@@ -7,7 +8,11 @@ import unittest
 from unittest import mock
 from pathlib import Path
 
-from ai_model_selection import ModelChoice, ModelValidationEvent
+from ai_model_selection import (
+    ModelChoice,
+    ModelValidationEvent,
+    bundled_model_choice,
+)
 from ai_service import AiEvent
 from ai_targeting import (
     AimSettings,
@@ -514,6 +519,10 @@ class JitterLayoutTests(unittest.TestCase):
         self.app.browse_ai_model()
         return self.model_validator.start_calls[-1]
 
+    @staticmethod
+    def validated_model_choice(choice, input_size=320):
+        return replace(choice, input_size=input_size)
+
     def test_app_default_factories_receive_runtime_cadence(self):
         self.app.close_app()
         cadence = RuntimeCadence(144, 144, 288)
@@ -709,7 +718,7 @@ class JitterLayoutTests(unittest.TestCase):
     def test_model_row_starts_with_bundled_default_and_keeps_fixed_shell(self):
         self.assertEqual(
             self.app.ai_model_var.get(),
-            "Default \u00b7 all_games_320.onnx",
+            "Default \u00b7 all_games_320.onnx \u00b7 320\u00d7320",
         )
         self.assertEqual(
             str(self.app.use_default_model_button.cget("state")), "disabled"
@@ -725,9 +734,70 @@ class JitterLayoutTests(unittest.TestCase):
 
         self.assertEqual(self.model_validator.start_calls, [])
         self.assertEqual(
-            self.app.ai_model_var.get(), "Default \u00b7 all_games_320.onnx"
+            self.app.ai_model_var.get(),
+            "Default \u00b7 all_games_320.onnx \u00b7 320\u00d7320",
         )
         self.assertIsNone(self.app._save_after_id)
+
+    def test_model_label_shows_only_validated_input_size(self):
+        self.assertEqual(
+            self.app._model_label(bundled_model_choice()),
+            "Default \u00b7 all_games_320.onnx \u00b7 320\u00d7320",
+        )
+        pending = ModelChoice(Path("custom.onnx"), "custom.onnx", False)
+        validated = ModelChoice(
+            Path("custom.onnx"), "custom.onnx", False, 640
+        )
+        self.assertEqual(
+            self.app._model_label(pending), "Custom \u00b7 custom.onnx"
+        )
+        self.assertEqual(
+            self.app._model_label(validated),
+            "Custom \u00b7 custom.onnx \u00b7 640\u00d7640",
+        )
+
+    def test_ready_event_replaces_pending_candidate_with_validated_choice(self):
+        pending, token = self.begin_custom_model_switch("custom.onnx")
+        validated = replace(pending, input_size=160)
+
+        self.model_validator.emit(
+            ModelValidationEvent("ready", token, validated)
+        )
+        self.drain_model_ui_queue()
+
+        self.assertEqual(self.app._model_choice, validated)
+        self.assertEqual(
+            self.app.ai_model_var.get(),
+            "Custom \u00b7 custom.onnx \u00b7 160\u00d7160",
+        )
+
+    def test_ready_event_with_same_token_but_different_path_is_ignored(self):
+        pending, token = self.begin_custom_model_switch("expected.onnx")
+        wrong = ModelChoice(Path("other.onnx"), "other.onnx", False, 640)
+
+        self.model_validator.emit(ModelValidationEvent("ready", token, wrong))
+        self.drain_model_ui_queue()
+
+        self.assertEqual(self.app._model_switch.candidate, pending)
+        self.assertEqual(
+            self.app.ai_model_var.get(), "Loading \u00b7 expected.onnx"
+        )
+
+    def test_invalid_input_size_footer_is_actionable_without_path_leak(self):
+        pending, token = self.begin_custom_model_switch("private-name.onnx")
+
+        self.model_validator.emit(ModelValidationEvent(
+            "error",
+            token,
+            pending,
+            "ModelContractError",
+            "AI model input must use a 160, 320, or 640 square input",
+        ))
+        self.drain_model_ui_queue()
+
+        footer = self.app.footer_var.get()
+        self.assertIn("160, 320, or 640", footer)
+        self.assertNotIn(str(pending.path.parent), footer)
 
     def test_idle_candidate_commits_after_matching_validation_ready(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -740,17 +810,27 @@ class JitterLayoutTests(unittest.TestCase):
             self.assertEqual(
                 str(self.app.model_browse_button.cget("state")), "disabled"
             )
-            self.model_validator.emit(ModelValidationEvent("ready", token, choice))
+            validated = self.validated_model_choice(choice, 160)
+            self.model_validator.emit(
+                ModelValidationEvent("ready", token, validated)
+            )
             self.drain_model_ui_queue()
 
-        self.assertEqual(self.app.ai_model_var.get(), "Custom \u00b7 custom.onnx")
+        self.assertEqual(
+            self.app.ai_model_var.get(),
+            "Custom \u00b7 custom.onnx \u00b7 160\u00d7160",
+        )
         self.assertEqual(self.ai.start_calls, [])
         self.assertIsNone(self.app._save_after_id)
 
     def test_use_default_runs_the_same_validation_flow_without_saving(self):
         custom, custom_token = self.begin_custom_model_switch("custom.onnx")
         self.model_validator.emit(
-            ModelValidationEvent("ready", custom_token, custom)
+            ModelValidationEvent(
+                "ready",
+                custom_token,
+                self.validated_model_choice(custom, 640),
+            )
         )
         self.drain_model_ui_queue()
         self.app._cancel_after("_save_after_id")
@@ -767,7 +847,8 @@ class JitterLayoutTests(unittest.TestCase):
         self.drain_model_ui_queue()
 
         self.assertEqual(
-            self.app.ai_model_var.get(), "Default \u00b7 all_games_320.onnx"
+            self.app.ai_model_var.get(),
+            "Default \u00b7 all_games_320.onnx \u00b7 320\u00d7320",
         )
         self.assertIsNone(self.app._save_after_id)
 
@@ -785,7 +866,8 @@ class JitterLayoutTests(unittest.TestCase):
                     self.app.browse_ai_model()
 
                 self.assertEqual(
-                    self.app.ai_model_var.get(), "Default \u00b7 all_games_320.onnx"
+                    self.app.ai_model_var.get(),
+                    "Default \u00b7 all_games_320.onnx \u00b7 320\u00d7320",
                 )
                 self.assertEqual(self.ai.start_calls, [])
                 self.assertEqual(self.app.footer_var.get(), expected_footer)
@@ -1194,6 +1276,12 @@ class JitterLayoutTests(unittest.TestCase):
         self.app.overlay_visible = True
         self.app.overlay_color = "#00cc88"
         self.app.overlay_head_visible = False
+        self.app._model_choice = ModelChoice(
+            Path("C:/private/models/custom.onnx"),
+            "custom.onnx",
+            False,
+            640,
+        )
 
         self.app.save_config()
 
@@ -1214,6 +1302,7 @@ class JitterLayoutTests(unittest.TestCase):
         for name in (
             "mode", "jitter_selected", "ai_selected", "master_armed",
             "overlay_visible", "target", "detections", "fps", "provider",
+            "model_path", "model_name", "model_input_size", "input_size",
         ):
             self.assertFalse(hasattr(self.store.saved[-1], name))
 
@@ -2546,7 +2635,10 @@ class JitterRuntimeTests(JitterLayoutTests):
             self.assertTrue(self.app.ai_selected)
             self.assertFalse(self.app.overlay_visible)
 
-            self.model_validator.emit(ModelValidationEvent("ready", token, choice))
+            validated = self.validated_model_choice(choice, 640)
+            self.model_validator.emit(
+                ModelValidationEvent("ready", token, validated)
+            )
             self.drain_ui_queue()
 
         self.assertEqual(self.ai.start_calls[-1][2], choice.path)
@@ -2555,7 +2647,10 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.assertFalse(self.app._normal_motion_started)
 
         self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
-        self.assertEqual(self.app.ai_model_var.get(), "Custom · custom.onnx")
+        self.assertEqual(
+            self.app.ai_model_var.get(),
+            "Custom · custom.onnx · 640×640",
+        )
         self.assertIsNone(self.app._model_switch)
         self.assertTrue(self.app._ai_ready)
         self.assertFalse(self.app._normal_motion_started)
@@ -2595,7 +2690,11 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.assertEqual(self.app._model_switch.phase, "starting_rollback")
         self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
         self.assertIsNone(self.app._model_switch)
-        self.assertTrue(self.app.footer_var.get().startswith("Model rejected; restored "))
+        self.assertEqual(
+            self.app.footer_var.get(),
+            "Model rejected: AI model validation failed; "
+            "restored all_games_320.onnx",
+        )
 
     def test_candidate_runtime_error_rolls_back_once(self):
         self.prepare_armed_sources(MotionSources(False, True))
@@ -2603,7 +2702,9 @@ class JitterRuntimeTests(JitterLayoutTests):
             str(self.app.model_browse_button.cget("state")), "normal"
         )
         choice, token = self.begin_custom_model_switch("loads-then-fails.onnx")
-        self.model_validator.emit(ModelValidationEvent("ready", token, choice))
+        self.model_validator.emit(ModelValidationEvent(
+            "ready", token, self.validated_model_choice(choice)
+        ))
         self.drain_ui_queue()
         self.app.handle_ai_event(AiEvent("error", "RuntimeError: AI service failed"))
         self.assertEqual(self.app._model_switch.phase, "starting_rollback")
@@ -2613,7 +2714,10 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.prepare_armed_sources(MotionSources(False, True))
         previous = self.app._model_choice
         choice, token = self.begin_custom_model_switch("candidate.onnx")
-        self.model_validator.emit(ModelValidationEvent("ready", token, choice))
+        validated = self.validated_model_choice(choice)
+        self.model_validator.emit(ModelValidationEvent(
+            "ready", token, validated
+        ))
         self.drain_ui_queue()
 
         self.app.toggle_overlay()
@@ -2623,12 +2727,14 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.assertEqual(self.app._model_choice, previous)
         self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
         self.assertIsNone(self.app._model_switch)
-        self.assertEqual(self.app._model_choice, choice)
+        self.assertEqual(self.app._model_choice, validated)
 
     def test_removing_demand_cancels_started_candidate_and_ignores_late_ready(self):
         self.prepare_armed_sources(MotionSources(False, True))
         choice, token = self.begin_custom_model_switch("candidate.onnx")
-        self.model_validator.emit(ModelValidationEvent("ready", token, choice))
+        self.model_validator.emit(ModelValidationEvent(
+            "ready", token, self.validated_model_choice(choice)
+        ))
         self.drain_ui_queue()
         previous = self.app._model_switch.previous
         self.app.queue_ai_event(AiEvent("ready", "DmlExecutionProvider"))
@@ -2641,14 +2747,19 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.assertFalse(self.app._ai_runtime_active)
         self.assertFalse(self.app._ai_ready)
         self.assertEqual(self.app.ai_status_var.get(), "Stopped")
-        self.assertEqual(self.app.ai_model_var.get(), "Default · all_games_320.onnx")
+        self.assertEqual(
+            self.app.ai_model_var.get(),
+            "Default · all_games_320.onnx · 320×320",
+        )
         self.assertEqual(str(self.app.model_browse_button.cget("state")), "normal")
         self.assertFalse(self.app._normal_motion_started)
 
     def test_stop_cancels_started_rollback_and_ignores_late_ready(self):
         self.prepare_armed_sources(MotionSources(False, True))
         choice, token = self.begin_custom_model_switch("rollback.onnx")
-        self.model_validator.emit(ModelValidationEvent("ready", token, choice))
+        self.model_validator.emit(ModelValidationEvent(
+            "ready", token, self.validated_model_choice(choice)
+        ))
         self.drain_ui_queue()
         self.app.handle_ai_event(AiEvent("error", "candidate failed"))
         previous = self.app._model_switch.previous
@@ -2662,7 +2773,10 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.assertFalse(self.app._ai_runtime_active)
         self.assertFalse(self.app._ai_ready)
         self.assertEqual(self.app.ai_status_var.get(), "Stopped")
-        self.assertEqual(self.app.ai_model_var.get(), "Default · all_games_320.onnx")
+        self.assertEqual(
+            self.app.ai_model_var.get(),
+            "Default · all_games_320.onnx · 320×320",
+        )
         self.assertEqual(str(self.app.model_browse_button.cget("state")), "normal")
         self.assertFalse(self.app._normal_motion_started)
 
@@ -2673,7 +2787,9 @@ class JitterRuntimeTests(JitterLayoutTests):
                 self.prepare_armed_sources(MotionSources(False, True))
                 choice, token = self.begin_custom_model_switch(f"{phase}.onnx")
                 self.model_validator.emit(
-                    ModelValidationEvent("ready", token, choice)
+                    ModelValidationEvent(
+                        "ready", token, self.validated_model_choice(choice)
+                    )
                 )
                 self.drain_ui_queue()
                 if phase == "rollback":
@@ -2698,7 +2814,7 @@ class JitterRuntimeTests(JitterLayoutTests):
                 self.assertEqual(self.app.ai_status_var.get(), "Stopped")
                 self.assertEqual(
                     self.app.ai_model_var.get(),
-                    "Default · all_games_320.onnx",
+                    "Default · all_games_320.onnx · 320×320",
                 )
                 self.assertEqual(
                     str(self.app.model_browse_button.cget("state")), "normal"
@@ -2711,7 +2827,9 @@ class JitterRuntimeTests(JitterLayoutTests):
             str(self.app.model_browse_button.cget("state")), "normal"
         )
         choice, token = self.begin_custom_model_switch("bad-runtime.onnx")
-        self.model_validator.emit(ModelValidationEvent("ready", token, choice))
+        self.model_validator.emit(ModelValidationEvent(
+            "ready", token, self.validated_model_choice(choice)
+        ))
         self.drain_ui_queue()
         self.app.handle_ai_event(AiEvent("error", "candidate failed"))
         starts_before_failure = len(self.ai.start_calls)
@@ -2738,11 +2856,14 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.app.jitter_selected = True
 
         self.app.start_test_run()
-        self.model_validator.emit(ModelValidationEvent("ready", token, candidate))
+        self.model_validator.emit(ModelValidationEvent(
+            "ready", token, self.validated_model_choice(candidate)
+        ))
         self.drain_model_ui_queue()
 
         self.assertEqual(
-            self.app.ai_model_var.get(), "Default \u00b7 all_games_320.onnx"
+            self.app.ai_model_var.get(),
+            "Default \u00b7 all_games_320.onnx \u00b7 320\u00d7320",
         )
 
     def test_transient_ai_demand_invalidates_pending_model_validation(self):
@@ -2750,11 +2871,14 @@ class JitterRuntimeTests(JitterLayoutTests):
 
         self.app.toggle_overlay()
         self.app.toggle_overlay()
-        self.model_validator.emit(ModelValidationEvent("ready", token, candidate))
+        self.model_validator.emit(ModelValidationEvent(
+            "ready", token, self.validated_model_choice(candidate)
+        ))
         self.drain_model_ui_queue()
 
         self.assertEqual(
-            self.app.ai_model_var.get(), "Default \u00b7 all_games_320.onnx"
+            self.app.ai_model_var.get(),
+            "Default \u00b7 all_games_320.onnx \u00b7 320\u00d7320",
         )
 
     def test_stop_invalidates_switch_before_late_validation_ready(self):
@@ -2763,13 +2887,16 @@ class JitterRuntimeTests(JitterLayoutTests):
         starts = len(self.ai.start_calls)
 
         self.app.emergency_stop("Stopped by user")
-        self.model_validator.emit(ModelValidationEvent("ready", token, choice))
+        self.model_validator.emit(ModelValidationEvent(
+            "ready", token, self.validated_model_choice(choice)
+        ))
         self.drain_ui_queue()
 
         self.assertIsNone(self.app._model_switch)
         self.assertEqual(len(self.ai.start_calls), starts)
         self.assertEqual(
-            self.app.ai_model_var.get(), "Default \u00b7 all_games_320.onnx"
+            self.app.ai_model_var.get(),
+            "Default \u00b7 all_games_320.onnx \u00b7 320\u00d7320",
         )
         self.assertFalse(self.app.overlay_visible)
 
@@ -2778,7 +2905,9 @@ class JitterRuntimeTests(JitterLayoutTests):
 
         self.app.emergency_stop()
         second, second_token = self.begin_custom_model_switch("second.onnx")
-        self.model_validator.emit(ModelValidationEvent("ready", first_token, first))
+        self.model_validator.emit(ModelValidationEvent(
+            "ready", first_token, self.validated_model_choice(first)
+        ))
         self.drain_ui_queue()
 
         self.assertEqual(self.app._model_switch.token, second_token)
@@ -2791,7 +2920,9 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.app.toggle_overlay()
         previous = self.app._model_choice
         choice, token = self.begin_custom_model_switch("candidate.onnx")
-        self.model_validator.emit(ModelValidationEvent("ready", token, choice))
+        self.model_validator.emit(ModelValidationEvent(
+            "ready", token, self.validated_model_choice(choice)
+        ))
         self.drain_ui_queue()
         starts_before_removal = len(self.ai.start_calls)
 
@@ -2854,11 +2985,15 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.app.toggle_overlay()
         previous = self.app._model_choice
         choice, token = self.begin_custom_model_switch("disconnect.onnx")
-        self.model_validator.emit(ModelValidationEvent("ready", token, choice))
+        self.model_validator.emit(ModelValidationEvent(
+            "ready", token, self.validated_model_choice(choice)
+        ))
         self.drain_ui_queue()
 
         self.app._handle_disconnect("Device disconnected")
-        self.model_validator.emit(ModelValidationEvent("ready", token, choice))
+        self.model_validator.emit(ModelValidationEvent(
+            "ready", token, self.validated_model_choice(choice)
+        ))
         self.drain_ui_queue()
 
         self.assertTrue(self.app.overlay_visible)
@@ -2871,7 +3006,9 @@ class JitterRuntimeTests(JitterLayoutTests):
         starts = len(self.ai.start_calls)
 
         self.app.close_app()
-        self.model_validator.emit(ModelValidationEvent("ready", token, choice))
+        self.model_validator.emit(ModelValidationEvent(
+            "ready", token, self.validated_model_choice(choice)
+        ))
 
         self.assertGreater(self.app._model_switch_token, token)
         self.assertEqual(self.model_validator.closed, 1)
@@ -2887,7 +3024,9 @@ class JitterRuntimeTests(JitterLayoutTests):
             str(self.app.stop_button.cget("state")), "normal"
         )
 
-        self.model_validator.emit(ModelValidationEvent("ready", token, choice))
+        self.model_validator.emit(ModelValidationEvent(
+            "ready", token, self.validated_model_choice(choice)
+        ))
         self.drain_ui_queue()
         self.assertEqual(self.app._model_switch.phase, "starting_candidate")
         self.assertEqual(
@@ -2913,7 +3052,9 @@ class JitterRuntimeTests(JitterLayoutTests):
         starts_before_addition = len(self.ai.start_calls)
 
         self.app.toggle_ai_source()
-        self.model_validator.emit(ModelValidationEvent("ready", token, choice))
+        self.model_validator.emit(ModelValidationEvent(
+            "ready", token, self.validated_model_choice(choice)
+        ))
         self.drain_ui_queue()
 
         self.assertIsNone(self.app._model_switch)
@@ -2926,7 +3067,9 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.app.ai_selected = True
         previous = self.app._model_choice
         choice, token = self.begin_custom_model_switch("unarmed.onnx")
-        self.model_validator.emit(ModelValidationEvent("ready", token, choice))
+        self.model_validator.emit(ModelValidationEvent(
+            "ready", token, self.validated_model_choice(choice)
+        ))
         self.drain_ui_queue()
         starts_before_removal = len(self.ai.start_calls)
 
@@ -2943,7 +3086,9 @@ class JitterRuntimeTests(JitterLayoutTests):
     def test_rollback_terminal_error_invalidates_switch_and_restores_label(self):
         self.prepare_armed_sources(MotionSources(False, True))
         choice, token = self.begin_custom_model_switch("rollback-terminal.onnx")
-        self.model_validator.emit(ModelValidationEvent("ready", token, choice))
+        self.model_validator.emit(ModelValidationEvent(
+            "ready", token, self.validated_model_choice(choice)
+        ))
         self.drain_ui_queue()
         self.app.handle_ai_event(AiEvent("error", "candidate failed"))
 
@@ -2953,7 +3098,8 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.assertIsNone(self.app._model_switch)
         self.assertGreater(self.app._model_switch_token, token)
         self.assertEqual(
-            self.app.ai_model_var.get(), "Default \u00b7 all_games_320.onnx"
+            self.app.ai_model_var.get(),
+            "Default \u00b7 all_games_320.onnx \u00b7 320\u00d7320",
         )
         self.assertEqual(self.app.ai_status_var.get(), "Error")
         self.assertEqual(
@@ -2963,7 +3109,9 @@ class JitterRuntimeTests(JitterLayoutTests):
     def test_synchronous_rollback_start_failure_invalidates_switch_and_restores_label(self):
         self.prepare_armed_sources(MotionSources(False, True))
         choice, token = self.begin_custom_model_switch("rollback-start.onnx")
-        self.model_validator.emit(ModelValidationEvent("ready", token, choice))
+        self.model_validator.emit(ModelValidationEvent(
+            "ready", token, self.validated_model_choice(choice)
+        ))
         self.drain_ui_queue()
         self.ai.start_result = False
 
@@ -2973,7 +3121,8 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.assertIsNone(self.app._model_switch)
         self.assertGreater(self.app._model_switch_token, token)
         self.assertEqual(
-            self.app.ai_model_var.get(), "Default \u00b7 all_games_320.onnx"
+            self.app.ai_model_var.get(),
+            "Default \u00b7 all_games_320.onnx \u00b7 320\u00d7320",
         )
         self.assertEqual(self.app.ai_status_var.get(), "Error")
         self.assertEqual(
@@ -2983,7 +3132,9 @@ class JitterRuntimeTests(JitterLayoutTests):
     def test_candidate_error_contains_stop_failure_and_starts_one_rollback(self):
         self.prepare_armed_sources(MotionSources(False, True))
         choice, token = self.begin_custom_model_switch("stop-error.onnx")
-        self.model_validator.emit(ModelValidationEvent("ready", token, choice))
+        self.model_validator.emit(ModelValidationEvent(
+            "ready", token, self.validated_model_choice(choice)
+        ))
         self.drain_ui_queue()
         previous = self.app._model_switch.previous
         self.ai.stop_exception = RuntimeError("stop failed")
@@ -3014,7 +3165,11 @@ class JitterRuntimeTests(JitterLayoutTests):
 
                 custom, custom_token = self.begin_custom_model_switch("jitter.onnx")
                 self.model_validator.emit(
-                    ModelValidationEvent("ready", custom_token, custom)
+                    ModelValidationEvent(
+                        "ready",
+                        custom_token,
+                        self.validated_model_choice(custom),
+                    )
                 )
                 self.drain_ui_queue()
                 if overlay:
@@ -3041,7 +3196,9 @@ class JitterRuntimeTests(JitterLayoutTests):
 
         self.app.toggle_overlay()
         starts_after_overlay = len(self.ai.start_calls)
-        self.model_validator.emit(ModelValidationEvent("ready", token, choice))
+        self.model_validator.emit(ModelValidationEvent(
+            "ready", token, self.validated_model_choice(choice)
+        ))
         self.drain_ui_queue()
 
         self.assertIsNone(self.app._model_switch)
@@ -3058,7 +3215,9 @@ class JitterRuntimeTests(JitterLayoutTests):
 
         self.app.set_master(True)
         starts_after_master = len(self.ai.start_calls)
-        self.model_validator.emit(ModelValidationEvent("ready", token, choice))
+        self.model_validator.emit(ModelValidationEvent(
+            "ready", token, self.validated_model_choice(choice)
+        ))
         self.drain_ui_queue()
 
         self.assertIsNone(self.app._model_switch)
@@ -3073,7 +3232,9 @@ class JitterRuntimeTests(JitterLayoutTests):
                 choice, token = self.begin_custom_model_switch(f"{outcome}.onnx")
                 if outcome == "success":
                     self.model_validator.emit(
-                        ModelValidationEvent("ready", token, choice)
+                        ModelValidationEvent(
+                            "ready", token, self.validated_model_choice(choice)
+                        )
                     )
                     self.drain_ui_queue()
                 elif outcome == "rejected":

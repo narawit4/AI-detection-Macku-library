@@ -109,6 +109,7 @@ class _ModelSwitch:
     candidate: ModelChoice
     previous: ModelChoice
     phase: str
+    failure: str | None = None
 
 DARK_PALETTE = {
     "window": "#0D1420", "surface": "#172232", "raised": "#202F43",
@@ -2941,7 +2942,10 @@ class JitterApp(tk.Tk):
     @staticmethod
     def _model_label(choice: ModelChoice) -> str:
         prefix = "Default" if choice.is_default else "Custom"
-        return f"{prefix} · {choice.display_name}"
+        label = f"{prefix} · {choice.display_name}"
+        if choice.input_size is not None:
+            label += f" · {choice.input_size}×{choice.input_size}"
+        return label
 
     def _model_changes_unavailable(self) -> bool:
         return (
@@ -3094,23 +3098,25 @@ class JitterApp(tk.Tk):
         if (
             switch is None
             or event.token != switch.token
-            or event.choice != switch.candidate
+            or event.choice.path != switch.candidate.path
         ):
             return
         if event.kind == "error":
             self._start_model_rollback(
-                switch, event.error_type or "validation failed"
+                switch, event.safe_message or "AI model validation failed"
             )
             return
-        if event.kind != "ready":
+        if event.kind != "ready" or event.choice.input_size is None:
             return
+        validated_switch = replace(switch, candidate=event.choice)
+        self._model_switch = validated_switch
         if not self._ai_runtime_required():
             self._finish_model_switch(
-                switch.candidate,
-                f"Using model: {switch.candidate.display_name}",
+                event.choice,
+                f"Using model: {event.choice.display_name}",
             )
             return
-        self._start_validated_model_generation(switch)
+        self._start_validated_model_generation(validated_switch)
 
     def _start_validated_model_generation(self, switch: _ModelSwitch) -> None:
         if self._model_switch != switch or switch.phase != "validating":
@@ -3148,10 +3154,15 @@ class JitterApp(tk.Tk):
         if not self._ai_runtime_required():
             self._finish_model_switch(
                 switch.previous,
-                f"Model rejected; restored {switch.previous.display_name}",
+                f"Model rejected: {failure}; "
+                f"restored {switch.previous.display_name}",
             )
             return
-        rollback = replace(switch, phase="starting_rollback")
+        rollback = replace(
+            switch,
+            phase="starting_rollback",
+            failure=failure,
+        )
         self._model_switch = rollback
         self.ai_model_var.set(f"Loading · {rollback.previous.display_name}")
         self._render_model_controls()
@@ -3947,9 +3958,11 @@ class JitterApp(tk.Tk):
                     f"Using model: {switch.candidate.display_name}",
                 )
             elif switch is not None and switch.phase == "starting_rollback":
+                failure = switch.failure or "AI model validation failed"
                 self._finish_model_switch(
                     switch.previous,
-                    f"Model rejected; restored {switch.previous.display_name}",
+                    f"Model rejected: {failure}; "
+                    f"restored {switch.previous.display_name}",
                 )
             raw_provider = str(event.payload or "Unknown")
             provider = {
