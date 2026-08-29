@@ -1134,31 +1134,94 @@ class JitterLayoutTests(unittest.TestCase):
         )
         self.assertIs(self.app.theme_button.master, self.app.test_on_button.master)
 
-    def test_jitter_snapshot_keeps_readout_bindings_and_presentation(self):
-        for readout, variable in (
-            (self.app.motion_size_readout, self.app.motion_snapshot_size_var),
-            (self.app.motion_rate_readout, self.app.motion_snapshot_rate_var),
-            (self.app.motion_ramp_readout, self.app.motion_snapshot_ramp_var),
-        ):
-            self.assertEqual(readout.cget("textvariable"), str(variable))
-            self.assertTrue(self._is_descendant(readout, self.app.motion_summary_card))
-        texts = widget_texts(self.app.motion_summary_card)
-        for expected in (" px", " Hz", "ACTIVE PROFILE"):
-            self.assertIn(expected, texts)
-        self.assertTrue(any(text.startswith("The immutable profile") for text in texts))
+    def test_jitter_section_keeps_compact_snapshot_summary(self):
+        self.assertIs(self.app.jitter_section.summary, self.app.motion_summary_var)
+        self.assertEqual(
+            self.app.motion_summary_var.get(),
+            "2 px paired pulse at 60 Hz | Smooth",
+        )
 
-    def test_jitter_snapshot_is_not_clipped_at_fixed_window_size(self):
+    def test_collapsed_sections_keep_compact_headers_at_fixed_window_size(self):
         self.app.jitter_section.set_expanded(True)
         self.app.deiconify()
         self.app.update()
         self.assertLessEqual(
-            int(self.app.motion_summary_label.cget("wraplength")),
-            self.app.motion_summary_frame.winfo_width(),
+            self.app.jitter_section.header_button.winfo_reqheight(),
+            self.app.jitter_section.winfo_height(),
         )
-        self.assertLessEqual(
-            self.app.motion_summary_frame.winfo_reqheight(),
-            self.app.motion_summary_frame.winfo_height(),
+        self.assertNotIn("LIVE SNAPSHOT", widget_texts(self.app.jitter_section.body))
+
+    def test_collapsed_section_summaries_follow_validated_live_state(self):
+        self.assertIn("No sources", self.app.control_section_summary_var.get())
+        self.assertEqual(
+            self.app.motion_summary_var.get(),
+            "2 px paired pulse at 60 Hz | Smooth",
         )
+        self.assertIn("Head", self.app.ai_section_summary_var.get())
+        self.assertIn("Overlay Off", self.app.overlay_section_summary_var.get())
+        self.assertIn("Sound On", self.app.settings_section_summary_var.get())
+
+        self.app.toggle_jitter_source()
+        self.app.pulse_size_px_var.set("4")
+        self.app._motion_changed("pulse_size_px")
+        self.app.overlay_player_visible = False
+        self.app._render_runtime_controls()
+        self.app.sound_volume_var.set("45")
+        self.app.apply_sound_settings()
+
+        self.assertIn("Jitter", self.app.control_section_summary_var.get())
+        self.assertIn("4 px", self.app.jitter_section.summary.get())
+        self.assertIn("Head", self.app.overlay_section_summary_var.get())
+        self.assertNotIn("Player", self.app.overlay_section_summary_var.get())
+        self.assertIn("45%", self.app.settings_section_summary_var.get())
+
+    def test_invalid_ai_text_does_not_replace_valid_ai_summary(self):
+        before = self.app.ai_section_summary_var.get()
+        self.app.ai_vars["aim_strength"].set("invalid")
+        self.app._ai_changed("aim_strength")
+        self.assertEqual(self.app.ai_section_summary_var.get(), before)
+
+    def test_main_dashboard_excludes_ai_runtime_readouts(self):
+        visible = set(widget_texts(self.app.dashboard_content))
+        self.assertNotIn("AI RUNTIME", visible)
+        self.assertNotIn(self.app.ai_fps_var.get(), visible)
+        self.assertNotIn(self.app.ai_provider_var.get(), visible)
+        self.assertNotIn(self.app.ai_cadence_var.get(), visible)
+
+    def test_theme_action_exists_once_inside_settings(self):
+        self.assertTrue(
+            self._is_descendant(self.app.theme_button, self.app.settings_section.body)
+        )
+        self.assertFalse(self._is_descendant(self.app.theme_button, self.app.topbar_frame))
+        self.assertEqual(self.app.theme_button.cget("text"), "Switch to Dark Mode")
+        self.app.theme_button.invoke()
+        self.assertEqual(self.app.theme_button.cget("text"), "Switch to Light Mode")
+        self.assertIn("Dark", self.app.settings_section_summary_var.get())
+
+    def test_session_actions_and_sound_previews_use_compact_labels(self):
+        self.assertEqual(self.app.reconnect_button.cget("text"), "Reconnect")
+        self.assertEqual(self.app.test_button.cget("text"), "Test 3s")
+        self.assertEqual(self.app.test_on_button.cget("text"), "Play Armed Cue")
+        self.assertEqual(self.app.test_off_button.cget("text"), "Play Disabled Cue")
+
+    def test_numeric_controls_still_pair_slider_and_exact_entry(self):
+        pairs = (
+            (self.app.pulse_size_px_scale, self.app.pulse_size_px_entry),
+            (self.app.pulse_rate_hz_scale, self.app.pulse_rate_hz_entry),
+            (self.app.ai_confidence_scale, self.app.ai_confidence_entry),
+            (self.app.ai_aim_strength_scale, self.app.ai_aim_strength_entry),
+            (self.app.ai_smoothing_scale, self.app.ai_smoothing_entry),
+            (self.app.ai_max_step_scale, self.app.ai_max_step_entry),
+            (self.app.overlay_box_width_scale, self.app.overlay_box_width_entry),
+            (self.app.overlay_hud_offset_x_scale, self.app.overlay_hud_offset_x_entry),
+            (self.app.overlay_hud_offset_y_scale, self.app.overlay_hud_offset_y_entry),
+            (self.app.overlay_hud_font_size_scale, self.app.overlay_hud_font_size_entry),
+            (self.app.sound_volume_scale, self.app.sound_volume_entry),
+        )
+        for slider, entry in pairs:
+            self.assertIsInstance(slider, LiquidSlider)
+            self.assertIsInstance(entry, ttk.Entry)
+            self.assertEqual(int(entry.cget("width")), 5)
 
     def test_fixed_runtime_dock_keeps_stop_visible_at_bottom_of_dashboard(self):
         self.app.deiconify()
@@ -1547,9 +1610,7 @@ class JitterLayoutTests(unittest.TestCase):
 
     def test_theme_toggle_applies_dark_palette_and_persists_choice(self):
         style = ttk.Style(self.app)
-        self.assertEqual(self.app.theme_button.icon, "☾")
-        self.assertEqual(self.app.theme_tooltip_text,
-                         "Switch to Dark Mode")
+        self.assertEqual(self.app.theme_button.cget("text"), "Switch to Dark Mode")
         self.app.toggle_theme()
         self.app.update_idletasks()
 
@@ -1559,13 +1620,7 @@ class JitterLayoutTests(unittest.TestCase):
                          "#EEF8FF")
         self.assertEqual(self.app.pulse_size_px_scale.cget("background"),
                          "#172232")
-        self.assertEqual(self.app.theme_button.icon, "☀")
-        self.assertEqual(self.app.theme_tooltip_text,
-                         "Switch to Light Mode")
-        self.assertEqual(self.app.theme_button.accessible_name,
-                         "Switch to Light Mode")
-        self.assertEqual(self.app.theme_button.itemcget("surface", "fill"),
-                         "#202F43")
+        self.assertEqual(self.app.theme_button.cget("text"), "Switch to Light Mode")
 
         self.app._cancel_after("_save_after_id")
         self.app.save_config()
@@ -1726,8 +1781,8 @@ class JitterLayoutTests(unittest.TestCase):
         ]
         self.assertEqual(len(separators), 1)
 
-        self.assertEqual(self.app.test_on_button.cget("text"), "\u25b6")
-        self.assertEqual(self.app.test_off_button.cget("text"), "\u25b6")
+        self.assertEqual(self.app.test_on_button.cget("text"), "Play Armed Cue")
+        self.assertEqual(self.app.test_off_button.cget("text"), "Play Disabled Cue")
         self.assertEqual(
             self.app.test_on_button.cget("style"),
             "Liquid.CompactPrimary.TButton",
@@ -1736,9 +1791,6 @@ class JitterLayoutTests(unittest.TestCase):
             self.app.test_off_button.cget("style"),
             "Liquid.CompactSecondary.TButton",
         )
-        self.assertEqual(int(self.app.test_on_button.cget("width")), 2)
-        self.assertEqual(int(self.app.test_off_button.cget("width")), 2)
-
         armed_grid = labels["ARMED CUE"].grid_info()
         disabled_grid = labels["DISABLED CUE"].grid_info()
         on_grid = self.app.test_on_button.grid_info()
@@ -1963,8 +2015,8 @@ class JitterLayoutTests(unittest.TestCase):
         modifier_card = self.app.modifier_combo.master
         self.assertIs(trigger_card.master, self.app.control_bindings_card)
         self.assertIs(modifier_card.master, self.app.control_bindings_card)
-        self.assertEqual(int(trigger_card.grid_info()["row"]), 2)
-        self.assertEqual(int(modifier_card.grid_info()["row"]), 2)
+        self.assertEqual(int(trigger_card.grid_info()["row"]), 1)
+        self.assertEqual(int(modifier_card.grid_info()["row"]), 1)
         self.assertEqual(
             (int(trigger_card.grid_info()["column"]),
              int(modifier_card.grid_info()["column"])),
@@ -2050,13 +2102,7 @@ class JitterLayoutTests(unittest.TestCase):
         """Fails if Motion lacks a visible summary of the active snapshot."""
         summary_var = getattr(self.app, "motion_summary_var", None)
         self.assertIsInstance(summary_var, tk.StringVar)
-        self.assertTrue(
-            self._is_descendant(self.app.motion_summary_label, self.app.jitter_section.body)
-        )
-        self.assertEqual(
-            self.app.motion_summary_label.cget("textvariable"),
-            str(summary_var),
-        )
+        self.assertIs(self.app.jitter_section.summary, summary_var)
         self.assertEqual(
             summary_var.get(),
             "2 px paired pulse at 60 Hz | Smooth",
@@ -2116,11 +2162,6 @@ class JitterLayoutTests(unittest.TestCase):
         for slider in sliders:
             slider._schedule_hide_bubble()
             self.assertIsNotNone(slider._bubble_after_id)
-        self.app._show_action_tooltip(
-            SimpleNamespace(widget=self.app.reconnect_button),
-            self.app.reconnect_tooltip_text,
-        )
-        self.app._show_theme_tooltip()
         callback_states_at_service_close = []
         original_close = self.service.close
 
@@ -2128,8 +2169,6 @@ class JitterLayoutTests(unittest.TestCase):
             callback_states_at_service_close.append((
                 self.app._closing,
                 tuple(slider._bubble_after_id for slider in sliders),
-                self.app._action_tooltip,
-                self.app._theme_tooltip,
             ))
             original_close()
 
@@ -2137,7 +2176,7 @@ class JitterLayoutTests(unittest.TestCase):
         self.app.close_app()
         self.assertEqual(
             callback_states_at_service_close,
-            [(True, tuple(None for _slider in sliders), None, None)],
+            [(True, tuple(None for _slider in sliders))],
         )
 
     def test_invalid_motion_edit_does_not_change_page(self):
@@ -2148,51 +2187,23 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertTrue(self.app.footer_var.get().startswith("Invalid value for "))
 
     def test_mini_actions_keep_icon_button_size_and_tooltips(self):
-        for button in (self.app.reconnect_button, self.app.test_button,
-                       self.app.theme_button):
+        labels = {
+            self.app.reconnect_button: "Reconnect",
+            self.app.test_button: "Test 3s",
+            self.app.theme_button: "Switch to Dark Mode",
+        }
+        for button, label in labels.items():
             with self.subTest(button=str(button)):
-                self.assertEqual(int(button.cget("width")), 34)
+                self.assertEqual(button.cget("text"), label)
                 self.assertEqual(button.winfo_manager(), "grid")
-        self.assertEqual(self.app.reconnect_tooltip_text, "Reconnect Makcu")
-        self.assertEqual(self.app.test_tooltip_text, "Test Run 3s")
-        self.assertEqual(self.app.reconnect_button.accessible_name,
-                         "Reconnect Makcu")
-        self.assertEqual(self.app.test_button.accessible_name, "Test Run 3s")
-        self.assertEqual(self.app.theme_button.accessible_name,
-                         "Switch to Dark Mode")
-        self.assertTrue(self.app.reconnect_button.bind("<Enter>"))
-        self.assertTrue(self.app.test_button.bind("<Enter>"))
-
-        event = SimpleNamespace(widget=self.app.reconnect_button)
-        self.app._show_action_tooltip(event, self.app.reconnect_tooltip_text)
-        tooltip = self.app._action_tooltip
-        self.assertEqual(tooltip.winfo_children()[0].cget("text"),
-                         "Reconnect Makcu")
-        self.app._hide_action_tooltip()
-        self.assertIsNone(self.app._action_tooltip)
 
     def test_mini_action_tooltips_are_available_from_keyboard_focus(self):
         self.app.settings_section.set_expanded(True)
         self.app.deiconify()
         self.app.update()
-        cases = (
-            (self.app.reconnect_button, "Reconnect Makcu", "_action_tooltip"),
-            (self.app.test_button, "Test Run 3s", "_action_tooltip"),
-            (self.app.theme_button, "Switch to Dark Mode", "_theme_tooltip"),
-        )
-        for button, expected_text, tooltip_attribute in cases:
-            with self.subTest(button=str(button)):
-                self.assertTrue(button.bind("<FocusIn>"))
-                self.assertTrue(button.bind("<FocusOut>"))
-                button.event_generate("<FocusIn>")
-                tooltip = getattr(self.app, tooltip_attribute)
-                self.assertIsNotNone(tooltip)
-                self.assertEqual(
-                    tooltip.winfo_children()[0].cget("text"),
-                    expected_text,
-                )
-                button.event_generate("<FocusOut>")
-                self.assertIsNone(getattr(self.app, tooltip_attribute))
+        self.app.theme_button.focus_set()
+        self.app.theme_button.invoke()
+        self.assertEqual(self.app.theme_button.cget("text"), "Switch to Light Mode")
 
     def test_split_console_page_and_theme_changes_preserve_state_and_geometry(self):
         self.app.pulse_size_px_var.set("4")
@@ -2266,15 +2277,9 @@ class JitterLayoutTests(unittest.TestCase):
                 )
 
     def test_theme_icon_tooltip_appears_on_hover_and_is_removed(self):
-        self.app._show_theme_tooltip()
-        tooltip = self.app._theme_tooltip
-        self.assertIsNotNone(tooltip)
-        self.assertEqual(tooltip.winfo_children()[0].cget("text"),
-                         "Switch to Dark Mode")
-
-        self.app._hide_theme_tooltip()
-        self.assertIsNone(self.app._theme_tooltip)
-        self.assertEqual(tooltip.winfo_exists(), 0)
+        self.assertEqual(self.app.theme_button.cget("text"), "Switch to Dark Mode")
+        self.app.theme_button.invoke()
+        self.assertEqual(self.app.theme_button.cget("text"), "Switch to Light Mode")
 
     def test_runtime_group_keeps_stop_always_visible(self):
         self.assertTrue(self._is_descendant(self.app.stop_button,
@@ -2429,20 +2434,22 @@ class JitterLayoutTests(unittest.TestCase):
             self.app.toggle_theme()
 
     def test_mini_icon_contrast_across_themes_and_interaction_states(self):
-        """Fails if a mini-action symbol lacks non-text contrast."""
+        """Fails if compact action labels become unreadable."""
         for theme in ("light", "dark"):
-            palette = self.app._icon_palette()
             cases = (
-                ("normal", "icon", "surface"),
-                ("hover", "icon", "surface_hover"),
-                ("pressed", "icon", "surface_pressed"),
-                ("disabled", "icon_disabled", "surface_disabled"),
+                ("Liquid.Primary.TButton", None),
+                ("Liquid.Primary.TButton", "active"),
+                ("Liquid.Secondary.TButton", None),
+                ("Liquid.Secondary.TButton", "active"),
             )
-            for state, icon_role, surface_role in cases:
-                with self.subTest(theme=theme, state=state):
+            style = ttk.Style(self.app)
+            for widget_style, state in cases:
+                with self.subTest(theme=theme, state=state or "normal"):
+                    states = () if state is None else (state,)
                     self.assertGreaterEqual(
                         contrast_ratio(
-                            palette[icon_role], palette[surface_role]
+                            style.lookup(widget_style, "foreground", states),
+                            style.lookup(widget_style, "background", states),
                         ),
                         3.0,
                     )
@@ -2512,8 +2519,8 @@ class JitterLayoutTests(unittest.TestCase):
             "Jitter OFF", "AI Aim OFF", "Enable Selected", "Overlay OFF", "STOP"
         ):
             self.assertIn(expected, texts)
-        self.assertEqual(self.app.reconnect_button.icon, "↻")
-        self.assertEqual(self.app.test_button.icon, "▶")
+        self.assertEqual(self.app.reconnect_button.cget("text"), "Reconnect")
+        self.assertEqual(self.app.test_button.cget("text"), "Test 3s")
     def drain_ui_queue(self):
         self.app._cancel_after("_ui_pump_after_id")
         self.app._drain_ui_queue()
@@ -3406,7 +3413,7 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertEqual(self.app._expected_motion_generation, generation)
         self.assertEqual(self.service.active_motion_generation, generation)
         self.assertNotIn("ai_error", self.service.cancel_reasons)
-        self.assertFalse(self.app.test_button._enabled)
+        self.assertEqual(str(self.app.test_button.cget("state")), "disabled")
 
         self.service.motion_active = False
         self.service.active_motion_generation = None
@@ -4044,7 +4051,7 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertIsNone(self.app._deferred_motion_action)
         self.assertFalse(self.app.master_armed)
         self.assertEqual(self.app.runtime_state_var.get(), "DISABLED")
-        self.assertTrue(self.app.test_button._enabled)
+        self.assertEqual(str(self.app.test_button.cget("state")), "normal")
         self.service.emit(ServiceEvent(
             "motion_stopped", "trigger_released", retiring
         ))
@@ -4168,7 +4175,7 @@ class JitterLayoutTests(unittest.TestCase):
 
         self.assertEqual(str(self.app.jitter_source_button.cget("state")), "disabled")
         self.assertEqual(str(self.app.ai_source_button.cget("state")), "disabled")
-        self.assertFalse(self.app.test_button._enabled)
+        self.assertEqual(str(self.app.test_button.cget("state")), "disabled")
         self.assertEqual(str(self.app.overlay_button.cget("state")), "normal")
         self.assertEqual(str(self.app.stop_button.cget("state")), "normal")
         self.app.toggle_jitter_source()
@@ -4201,7 +4208,7 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertIsNone(self.app._motion_mode)
         self.assertFalse(self.app.master_armed)
         self.assertFalse(self.app.ai_selected)
-        self.assertTrue(self.app.test_button._enabled)
+        self.assertEqual(str(self.app.test_button.cget("state")), "normal")
 
     def test_current_makcu_motion_error_stops_runtime_but_preserves_sources(self):
         self.prepare_armed_sources(

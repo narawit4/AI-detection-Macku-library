@@ -49,7 +49,7 @@ from jitter_app.motion.engine import (
     motion_settings_to_mapping,
 )
 from jitter_app.config.store import AppConfig, ConfigStore, normalize_overlay_color
-from .widgets import CollapsibleSection, LiquidIconButton, LiquidSlider
+from .widgets import CollapsibleSection, LiquidSlider
 from .sound import ToggleSoundPlayer
 from .overlay import DetectionOverlay, OverlaySetupError, OverlayStyle
 from jitter_app.resources import sound_directory
@@ -164,6 +164,17 @@ def _motion_summary_text(settings: MotionSettings) -> str:
         f"{_display_value(settings.pulse_size_px)} px paired pulse at "
         f"{_display_value(settings.pulse_rate_hz)} Hz | {settings.ramp_mode}"
     )
+
+
+def _compact_section_summary(*parts: object, limit: int = 72) -> str:
+    text = " | ".join(
+        " ".join(str(part).split())
+        for part in parts
+        if str(part).strip()
+    )
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)].rstrip() + "..."
 
 
 def _first_serialized_diagnostic(text: str) -> Any:
@@ -1087,41 +1098,7 @@ class JitterApp(tk.Tk):
         self._build_ai_section(self.ai_section.body)
         self._build_overlay_section(self.overlay_section.body)
         self._build_settings_section(self.settings_section.body)
-
-    def _build_identity(self) -> None:
-        identity_copy = ttk.Frame(
-            self.identity_frame, style="Liquid.Surface.TFrame"
-        )
-        identity_copy.pack(side="top", fill="x")
-        ttk.Label(
-            identity_copy, text="Jitter", style="Liquid.Title.TLabel"
-        ).pack(anchor="w")
-        ttk.Label(
-            identity_copy,
-            text="MAKCU MOTION",
-            style="Liquid.Subtitle.TLabel",
-        ).pack(anchor="w", pady=(1, 0))
-        connection_row = ttk.Frame(
-            self.identity_frame, style="Liquid.Surface.TFrame"
-        )
-        connection_row.pack(side="top", fill="x", pady=(14, 0))
-        self.connection_label = ttk.Label(
-            connection_row,
-            textvariable=self.connection_status_var,
-            style="Liquid.StatusDisconnected.TLabel",
-        )
-        self.connection_indicator = tk.Canvas(
-            connection_row,
-            width=18,
-            height=18,
-            background=self._palette["surface"],
-            highlightthickness=0,
-            borderwidth=0,
-            takefocus=False,
-        )
-        self.connection_indicator.pack(side="left", padx=(0, 5), pady=(1, 0))
-        self.connection_label.pack(side="left")
-        self._redraw_connection_indicator()
+        self._refresh_section_summaries()
 
     def toggle_theme(self) -> None:
         self._theme = "light" if self._theme == "dark" else "dark"
@@ -1133,21 +1110,14 @@ class JitterApp(tk.Tk):
         self._redraw_shell_art()
         self._redraw_connection_indicator()
         self._redraw_ai_curve()
-        self.theme_button.icon = "☀" if self._theme == "dark" else "☾"
-        self.theme_tooltip_text = (
-            "Switch to Light Mode" if self._theme == "dark"
-            else "Switch to Dark Mode"
+        self.theme_button.configure(
+            text=(
+                "Switch to Light Mode"
+                if self._theme == "dark"
+                else "Switch to Dark Mode"
+            )
         )
-        self.theme_button.accessible_name = self.theme_tooltip_text
-        self._hide_theme_tooltip()
         self._apply_combobox_popup_palette()
-        icon_palette = self._icon_palette()
-        for button in (
-            self.reconnect_button,
-            self.test_button,
-            self.theme_button,
-        ):
-            button.set_palette(icon_palette)
         slider_palette = self._slider_palette()
         for widget in self.winfo_children():
             self._apply_slider_palette(widget, slider_palette)
@@ -1165,6 +1135,7 @@ class JitterApp(tk.Tk):
                 surface_slider.set_palette(
                     self._slider_palette(on_surface=True)
                 )
+        self._refresh_section_summaries()
         self._schedule_save()
 
     def _apply_slider_palette(self, widget: tk.Misc,
@@ -1191,30 +1162,6 @@ class JitterApp(tk.Tk):
             "bubble": p["raised"], "bubble_text": p["text"],
             "focus": p["focus"], "disabled": p["border"],
             "disabled_text": p["muted"],
-        }
-
-    def _navigation_palette(self) -> dict[str, str]:
-        p = self._palette
-        return {
-            "background": p["window"], "surface": p["surface"],
-            "surface_highlight": p["raised"], "border": p["border"],
-            "lens": p["accent"],
-            "lens_highlight": "#B8F6FF" if self._theme == "dark" else "#C7F8FF",
-            "text": p["text"], "selected_text": "#07252C",
-            "focus": p["focus"],
-        }
-
-    def _icon_palette(self) -> dict[str, str]:
-        p = self._palette
-        return {
-            "background": p["window"], "surface": p["raised"],
-            "surface_hover": (
-                "#2A3B52" if self._theme == "dark" else "#D6F5FA"
-            ),
-            "surface_pressed": p["surface"],
-            "surface_disabled": p["disabled_surface"], "border": p["border"],
-            "icon": p["text"], "icon_disabled": p["icon_disabled"],
-            "highlight": p["surface"], "focus": p["focus"],
         }
 
     def _apply_combobox_popup_palette(self) -> None:
@@ -1296,36 +1243,6 @@ class JitterApp(tk.Tk):
                                       command=self.emergency_stop)
         self.stop_button.grid(row=0, column=2, sticky="ew")
 
-    def _build_dashboard_header(
-        self,
-        parent: ttk.Frame,
-        eyebrow: str,
-        title: str,
-        subtitle: str,
-    ) -> tuple[ttk.Frame, ttk.Label]:
-        header = ttk.Frame(parent, style="Liquid.App.TFrame")
-        header.grid(
-            row=0, column=0, columnspan=2, sticky="ew", pady=(0, 14)
-        )
-        ttk.Label(
-            header,
-            text=eyebrow,
-            style="Liquid.SettingsEyebrow.TLabel",
-        ).pack(anchor="w")
-        title_label = ttk.Label(
-            header,
-            text=title,
-            style="Liquid.SettingsTitle.TLabel",
-            font=(FONT_FAMILY, 22, "bold"),
-        )
-        title_label.pack(anchor="w", pady=(2, 0))
-        ttk.Label(
-            header,
-            text=subtitle,
-            style="Liquid.Muted.TLabel",
-        ).pack(anchor="w", pady=(3, 0))
-        return header, title_label
-
     def _build_control_section(self, parent: ttk.Frame) -> None:
         self.control_frame = parent
         parent.columnconfigure(0, weight=3, uniform="control")
@@ -1340,7 +1257,6 @@ class JitterApp(tk.Tk):
         )
         self.control_bindings_card.columnconfigure(0, weight=1, uniform="binding")
         self.control_bindings_card.columnconfigure(1, weight=1, uniform="binding")
-        self.control_bindings_card.rowconfigure(3, weight=1)
         self.control_device_card = ttk.Frame(
             parent,
             style="Liquid.SettingsCard.TFrame",
@@ -1350,7 +1266,6 @@ class JitterApp(tk.Tk):
             row=0, column=1, sticky="nsew", padx=(6, 0)
         )
         self.control_device_card.columnconfigure(0, weight=1)
-        self.control_device_card.rowconfigure(3, weight=1)
 
         ttk.Label(
             self.control_bindings_card,
@@ -1359,34 +1274,17 @@ class JitterApp(tk.Tk):
             font=(FONT_FAMILY, 12, "bold"),
         ).grid(row=0, column=0, columnspan=2, sticky="w")
         ttk.Label(
-            self.control_bindings_card,
-            text="Hold the trigger and optional modifier to begin movement.",
-            style="Liquid.CardBody.TLabel",
-            wraplength=330,
-            justify="left",
-        ).grid(
-            row=1, column=0, columnspan=2, sticky="ew", pady=(5, 14)
-        )
-
-        ttk.Label(
             self.control_device_card,
             text="DEVICE SETUP",
             style="Liquid.CardTitle.TLabel",
             font=(FONT_FAMILY, 12, "bold"),
         ).grid(row=0, column=0, sticky="w")
-        ttk.Label(
-            self.control_device_card,
-            text="Monitor Makcu and choose a motion preset.",
-            style="Liquid.CardBody.TLabel",
-            wraplength=205,
-            justify="left",
-        ).grid(row=1, column=0, sticky="ew", pady=(5, 14))
         device_row = ttk.Frame(
             self.control_device_card,
             style="Liquid.Metric.TFrame",
             padding=(12, 10),
         )
-        device_row.grid(row=2, column=0, sticky="ew")
+        device_row.grid(row=1, column=0, sticky="ew", pady=(8, 0))
         ttk.Label(
             device_row, text="MAKCU STATUS", style="Liquid.MetricLabel.TLabel"
         ).pack(anchor="w")
@@ -1421,13 +1319,13 @@ class JitterApp(tk.Tk):
             return combo
 
         self.trigger_combo = combo_card(
-            self.control_bindings_card, 2, 0, "Trigger", self.trigger_var,
+            self.control_bindings_card, 1, 0, "Trigger", self.trigger_var,
             ("Left", "Right", "Middle", "Mouse4", "Mouse5"), 10,
             padx=(0, 5),
         )
         self.trigger_combo.bind("<<ComboboxSelected>>", self._bindings_event)
         self.modifier_combo = combo_card(
-            self.control_bindings_card, 2, 1, "Modifier", self.modifier_var,
+            self.control_bindings_card, 1, 1, "Modifier", self.modifier_var,
             ("None", "Left", "Right", "Middle", "Mouse4", "Mouse5"), 10,
             padx=(5, 0),
         )
@@ -1436,7 +1334,7 @@ class JitterApp(tk.Tk):
             self.control_device_card,
             style="Liquid.DropdownField.TFrame",
         )
-        self.source_field.grid(row=3, column=0, sticky="ew", pady=(14, 0))
+        self.source_field.grid(row=2, column=0, sticky="ew", pady=(10, 0))
         self.source_field.columnconfigure(0, weight=1, uniform="sources")
         self.source_field.columnconfigure(1, weight=1, uniform="sources")
         ttk.Label(
@@ -1463,7 +1361,7 @@ class JitterApp(tk.Tk):
             row=1, column=1, sticky="ew", padx=(3, 0)
         )
         self.preset_combo = combo_card(
-            self.control_device_card, 4, 0, "Preset", self.preset_var,
+            self.control_device_card, 3, 0, "Preset", self.preset_var,
             self.preset_values, 14,
             pady=(10, 0),
         )
@@ -1475,7 +1373,7 @@ class JitterApp(tk.Tk):
             command=self.capture_hotkey,
         )
         self.hotkey_button.grid(
-            row=4, column=0, columnspan=2, sticky="sew", pady=(16, 0)
+            row=2, column=0, columnspan=2, sticky="sew", pady=(12, 0)
         )
 
         self._build_control_actions(self.control_device_card)
@@ -1484,100 +1382,23 @@ class JitterApp(tk.Tk):
         self.control_action_row = ttk.Frame(
             parent, style="Liquid.Surface.TFrame"
         )
-        self.control_action_row.grid(row=5, column=0, sticky="ew", pady=(10, 0))
-        self.reconnect_tooltip_text = "Reconnect Makcu"
-        self.test_tooltip_text = "Test Run 3s"
-        self._action_tooltip: tk.Toplevel | None = None
-        self.reconnect_button = LiquidIconButton(
+        self.control_action_row.grid(row=4, column=0, sticky="ew", pady=(10, 0))
+        self.control_action_row.columnconfigure(0, weight=1)
+        self.control_action_row.columnconfigure(1, weight=1)
+        self.reconnect_button = ttk.Button(
             self.control_action_row,
-            icon="↻",
-            accessible_name=self.reconnect_tooltip_text,
+            text="Reconnect",
+            style="Liquid.Secondary.TButton",
             command=self.reconnect,
-            palette=self._icon_palette(),
         )
-        self.test_button = LiquidIconButton(
+        self.test_button = ttk.Button(
             self.control_action_row,
-            icon="▶",
-            accessible_name=self.test_tooltip_text,
+            text="Test 3s",
+            style="Liquid.Primary.TButton",
             command=self.test_run,
-            palette=self._icon_palette(),
         )
-        self.reconnect_button.grid(row=0, column=0, sticky="w")
-        self.test_button.grid(row=0, column=1, sticky="e")
-        self.reconnect_button.bind(
-            "<Enter>",
-            lambda event: self._show_action_tooltip(
-                event, self.reconnect_tooltip_text
-            ),
-            add="+",
-        )
-        self.test_button.bind(
-            "<Enter>",
-            lambda event: self._show_action_tooltip(
-                event, self.test_tooltip_text
-            ),
-            add="+",
-        )
-        self.reconnect_button.bind(
-            "<Leave>", self._hide_action_tooltip, add="+"
-        )
-        self.test_button.bind("<Leave>", self._hide_action_tooltip, add="+")
-        self.reconnect_button.bind(
-            "<FocusIn>",
-            lambda event: self._show_action_tooltip(
-                event, self.reconnect_tooltip_text
-            ),
-            add="+",
-        )
-        self.test_button.bind(
-            "<FocusIn>",
-            lambda event: self._show_action_tooltip(
-                event, self.test_tooltip_text
-            ),
-            add="+",
-        )
-        self.reconnect_button.bind(
-            "<FocusOut>", self._hide_action_tooltip, add="+"
-        )
-        self.test_button.bind("<FocusOut>", self._hide_action_tooltip, add="+")
-
-    def _show_action_tooltip(self, event: tk.Event, text: str) -> None:
-        self._hide_action_tooltip()
-        widget = getattr(event, "widget", None)
-        if widget is None or self._closing:
-            return
-        try:
-            if not widget.winfo_exists():
-                return
-            tooltip = tk.Toplevel(self)
-            tooltip.wm_overrideredirect(True)
-            tooltip.wm_geometry(
-                f"+{widget.winfo_rootx()}+{widget.winfo_rooty() - 26}"
-            )
-            p = self._palette
-            tk.Label(
-                tooltip,
-                text=text,
-                background=p["raised"],
-                foreground=p["text"],
-                borderwidth=1,
-                relief="solid",
-                font=SMALL_FONT,
-                padx=5,
-                pady=2,
-            ).pack()
-        except (tk.TclError, RuntimeError):
-            return
-        self._action_tooltip = tooltip
-
-    def _hide_action_tooltip(self, _event: tk.Event | None = None) -> None:
-        tooltip = getattr(self, "_action_tooltip", None)
-        if tooltip is not None:
-            try:
-                tooltip.destroy()
-            except tk.TclError:
-                pass
-            self._action_tooltip = None
+        self.reconnect_button.grid(row=0, column=0, sticky="ew", padx=(0, 3))
+        self.test_button.grid(row=0, column=1, sticky="ew", padx=(3, 0))
 
     def _numeric_control(self, parent: tk.Misc, row: int, column: int,
                          label: str, key: str, low: float, high: float,
@@ -1728,11 +1549,10 @@ class JitterApp(tk.Tk):
 
     def _build_jitter_section(self, parent: ttk.Frame) -> None:
         self.quick_frame = parent
-        parent.columnconfigure(0, weight=3, uniform="motion")
-        parent.columnconfigure(1, weight=2, uniform="motion")
+        parent.columnconfigure(0, weight=1)
         self.motion_hero_card = ttk.Frame(parent, style="Liquid.SettingsCard.TFrame",
                                            padding=(18, 16, 18, 18))
-        self.motion_hero_card.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        self.motion_hero_card.grid(row=0, column=0, sticky="ew")
         self.motion_hero_card.columnconfigure(0, weight=1)
         ttk.Label(self.motion_hero_card, text="MOTION SHAPE",
                   style="Liquid.CardTitle.TLabel",
@@ -1748,45 +1568,6 @@ class JitterApp(tk.Tk):
             self.quick_grid, label="Ramp Mode",
             variable=self.motion_vars["ramp_mode"], values=RAMP_MODES)
         ramp_row.grid(row=1, column=0, columnspan=2, sticky="ew", padx=5, pady=(8, 4))
-        self.motion_summary_card = ttk.Frame(parent, style="Liquid.SettingsCard.TFrame",
-                                              padding=(16, 16, 16, 18))
-        self.motion_summary_card.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
-        self.motion_summary_card.columnconfigure(0, weight=1)
-        ttk.Label(self.motion_summary_card, text="LIVE SNAPSHOT",
-                  style="Liquid.CardTitle.TLabel",
-                  font=(FONT_FAMILY, 12, "bold")).grid(row=0, column=0, sticky="w")
-        ttk.Label(
-            self.motion_summary_card,
-            text="The immutable profile currently shared with the mover.",
-            style="Liquid.CardBody.TLabel", wraplength=200, justify="left",
-        ).grid(row=1, column=0, sticky="ew", pady=(5, 12))
-        self.motion_summary_frame = ttk.Frame(self.motion_summary_card,
-                                              style="Liquid.Surface.TFrame")
-        self.motion_summary_frame.grid(row=2, column=0, sticky="ew")
-        for row, (label, variable, attribute) in enumerate((
-            ("PULSE SIZE", self.motion_snapshot_size_var, "motion_size_readout"),
-            ("PULSE RATE", self.motion_snapshot_rate_var, "motion_rate_readout"),
-            ("RAMP MODE", self.motion_snapshot_ramp_var, "motion_ramp_readout"))):
-            metric = ttk.Frame(self.motion_summary_frame, style="Liquid.Metric.TFrame",
-                               padding=(10, 6))
-            metric.grid(row=row, column=0, sticky="ew", pady=(0, 6) if row else 0)
-            ttk.Label(metric, text=label, style="Liquid.MetricLabel.TLabel").pack(anchor="w")
-            value = ttk.Label(metric, textvariable=variable, style="Liquid.MetricValue.TLabel",
-                              font=(FONT_FAMILY, 13 if row == 2 else 22, "bold"))
-            value.pack(anchor="w", pady=(3, 0))
-            setattr(self, attribute, value)
-            if row == 0:
-                ttk.Label(metric, text=" px", style="Liquid.MetricUnit.TLabel").pack(anchor="w")
-            elif row == 1:
-                ttk.Label(metric, text=" Hz", style="Liquid.MetricUnit.TLabel").pack(anchor="w")
-        ttk.Label(self.motion_summary_frame, text="ACTIVE PROFILE",
-                  style="Liquid.CardBody.TLabel").grid(
-                      row=3, column=0, sticky="w", pady=(4, 0))
-        self.motion_summary_label = ttk.Label(
-            self.motion_summary_frame, textvariable=self.motion_summary_var,
-            style="Liquid.CardText.TLabel", wraplength=200, justify="left")
-        self.motion_summary_label.grid(row=4, column=0, sticky="ew", pady=(3, 0))
-
     def _build_ai_section(self, parent: ttk.Frame) -> None:
         self.ai_settings_card = ttk.Frame(
             parent, style="Liquid.SettingsCard.TFrame", padding=(18, 16, 18, 18)
@@ -2087,25 +1868,15 @@ class JitterApp(tk.Tk):
             command=self._reset_ai_curve,
         )
         self.ai_curve_reset_button.grid(row=0, column=1, sticky="e")
-        ttk.Label(
-            self.ai_curve_card,
-            text=(
-                "Shape how target distance becomes movement. Drag a node or "
-                "enter an exact percentage."
-            ),
-            style="Liquid.CardBody.TLabel",
-            justify="left",
-        ).grid(row=1, column=0, sticky="ew", pady=(5, 10))
-
         self.ai_curve_canvas = tk.Canvas(
             self.ai_curve_card,
-            height=176,
+            height=132,
             background=self._palette["raised"],
             highlightthickness=0,
             borderwidth=0,
             takefocus=False,
         )
-        self.ai_curve_canvas.grid(row=2, column=0, sticky="ew")
+        self.ai_curve_canvas.grid(row=1, column=0, sticky="ew", pady=(8, 0))
         self.ai_curve_canvas.bind(
             "<Configure>", self._redraw_ai_curve, add="+"
         )
@@ -2119,7 +1890,7 @@ class JitterApp(tk.Tk):
         exact = ttk.Frame(
             self.ai_curve_card, style="Liquid.SettingsCard.TFrame"
         )
-        exact.grid(row=3, column=0, sticky="ew", pady=(10, 0))
+        exact.grid(row=2, column=0, sticky="ew", pady=(10, 0))
         for column in range(5):
             exact.columnconfigure(column, weight=1, uniform="curve_exact")
         fixed = ttk.Frame(exact, style="Liquid.SettingsCard.TFrame")
@@ -2501,21 +2272,10 @@ class JitterApp(tk.Tk):
             style="Liquid.CardTitle.TLabel",
             font=(FONT_FAMILY, 12, "bold"),
         ).grid(row=0, column=0, sticky="w")
-        ttk.Label(
-            self.sound_feedback_card,
-            text=(
-                "Hear a clean cue whenever the global hotkey arms or "
-                "disables Jitter."
-            ),
-            style="Liquid.CardBody.TLabel",
-            wraplength=300,
-            justify="left",
-        ).grid(row=1, column=0, sticky="ew", pady=(5, 16))
-
         sound_toggle_row = ttk.Frame(
             self.sound_feedback_card, style="Liquid.Surface.TFrame"
         )
-        sound_toggle_row.grid(row=2, column=0, sticky="ew")
+        sound_toggle_row.grid(row=1, column=0, sticky="ew", pady=(8, 0))
         sound_toggle_row.columnconfigure(0, weight=1)
         ttk.Label(
             sound_toggle_row,
@@ -2533,48 +2293,21 @@ class JitterApp(tk.Tk):
         self.sound_enabled_check.grid(row=0, column=1, sticky="e")
         ttk.Separator(
             self.sound_feedback_card, orient="horizontal"
-        ).grid(row=3, column=0, sticky="ew", pady=16)
+        ).grid(row=2, column=0, sticky="ew", pady=12)
 
-        volume_readout = ttk.Frame(
+        volume_control = ttk.Frame(
             self.sound_feedback_card, style="Liquid.Surface.TFrame"
         )
-        volume_readout.grid(row=4, column=0, sticky="ew")
-        volume_readout.columnconfigure(0, weight=1)
-        ttk.Label(
-            volume_readout,
-            text="OUTPUT LEVEL",
-            style="Liquid.CardBody.TLabel",
-        ).grid(row=0, column=0, columnspan=2, sticky="w")
-        volume_value = ttk.Frame(
-            volume_readout, style="Liquid.Surface.TFrame"
-        )
-        volume_value.grid(row=1, column=0, sticky="w", pady=(2, 0))
-        ttk.Label(
-            volume_value,
-            textvariable=self.sound_volume_var,
-            style="Liquid.Volume.TLabel",
-            font=(FONT_FAMILY, 30, "bold"),
-        ).pack(side="left")
-        ttk.Label(
-            volume_value,
-            text="%",
-            style="Liquid.VolumeUnit.TLabel",
-            font=(FONT_FAMILY, 12, "bold"),
-        ).pack(side="left", padx=(3, 0), pady=(13, 0))
+        volume_control.grid(row=4, column=0, sticky="ew", pady=(12, 0))
+        volume_control.columnconfigure(0, weight=1)
         self.sound_volume_entry = ttk.Entry(
-            volume_readout,
+            volume_control,
             textvariable=self.sound_volume_var,
             width=5,
             justify="right",
             style="Liquid.Entry.TEntry",
         )
-        self.sound_volume_entry.grid(row=1, column=1, sticky="e", padx=(12, 0))
-
-        volume_control = ttk.Frame(
-            self.sound_feedback_card, style="Liquid.Surface.TFrame"
-        )
-        volume_control.grid(row=5, column=0, sticky="ew", pady=(12, 0))
-        volume_control.columnconfigure(0, weight=1)
+        self.sound_volume_entry.grid(row=0, column=1, sticky="e", padx=(8, 0))
         self.sound_volume_scale = LiquidSlider(
             volume_control,
             from_=0,
@@ -2608,18 +2341,10 @@ class JitterApp(tk.Tk):
             style="Liquid.CardTitle.TLabel",
             font=(FONT_FAMILY, 12, "bold"),
         ).grid(row=0, column=0, sticky="w")
-        ttk.Label(
-            self.sound_preview_card,
-            text="Check both cues at the selected volume.",
-            style="Liquid.CardBody.TLabel",
-            wraplength=185,
-            justify="left",
-        ).grid(row=1, column=0, sticky="ew", pady=(4, 12))
-
         actions = ttk.Frame(
             self.sound_preview_card, style="Liquid.Surface.TFrame"
         )
-        actions.grid(row=2, column=0, sticky="new")
+        actions.grid(row=1, column=0, sticky="new", pady=(8, 0))
         actions.columnconfigure(0, weight=1)
         ttk.Label(
             actions,
@@ -2628,8 +2353,7 @@ class JitterApp(tk.Tk):
         ).grid(row=0, column=0, sticky="w")
         self.test_on_button = ttk.Button(
             actions,
-            text="\u25b6",
-            width=2,
+            text="Play Armed Cue",
             style="Liquid.CompactPrimary.TButton",
             command=lambda: self.preview_sound(True),
         )
@@ -2644,29 +2368,21 @@ class JitterApp(tk.Tk):
         ).grid(row=2, column=0, sticky="w")
         self.test_off_button = ttk.Button(
             actions,
-            text="\u25b6",
-            width=2,
+            text="Play Disabled Cue",
             style="Liquid.CompactSecondary.TButton",
             command=lambda: self.preview_sound(False),
         )
         self.test_off_button.grid(row=2, column=1, sticky="e")
-        self.theme_tooltip_text = (
-            "Switch to Light Mode" if self._theme == "dark"
-            else "Switch to Dark Mode"
-        )
-        self._theme_tooltip: tk.Toplevel | None = None
-        self.theme_button = LiquidIconButton(
+        self.theme_button = ttk.Button(
             actions,
-            icon="☀" if self._theme == "dark" else "☾",
-            accessible_name=self.theme_tooltip_text,
+            text=(
+                "Switch to Light Mode" if self._theme == "dark"
+                else "Switch to Dark Mode"
+            ),
+            style="Liquid.Secondary.TButton",
             command=self.toggle_theme,
-            palette=self._icon_palette(),
         )
-        self.theme_button.grid(row=3, column=1, sticky="e", pady=(8, 0))
-        self.theme_button.bind("<Enter>", self._show_theme_tooltip, add="+")
-        self.theme_button.bind("<Leave>", self._hide_theme_tooltip, add="+")
-        self.theme_button.bind("<FocusIn>", self._show_theme_tooltip, add="+")
-        self.theme_button.bind("<FocusOut>", self._hide_theme_tooltip, add="+")
+        self.theme_button.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(8, 0))
 
     def _build_footer(self) -> None:
         self.footer_frame = ttk.Frame(
@@ -2682,44 +2398,6 @@ class JitterApp(tk.Tk):
             anchor="w",
         )
         self.footer_label.pack(side="left", fill="x", expand=True)
-
-    def _show_theme_tooltip(self, _event: tk.Event | None = None) -> None:
-        self._hide_theme_tooltip()
-        if self._closing:
-            return
-        widget = getattr(_event, "widget", self.theme_button)
-        try:
-            if not widget.winfo_exists():
-                return
-            tooltip = tk.Toplevel(self)
-            tooltip.wm_overrideredirect(True)
-            tooltip.wm_geometry(
-                f"+{widget.winfo_rootx()}+{widget.winfo_rooty() - 26}"
-            )
-            p = self._palette
-            tk.Label(
-                tooltip,
-                text=self.theme_tooltip_text,
-                background=p["raised"],
-                foreground=p["text"],
-                borderwidth=1,
-                relief="solid",
-                font=SMALL_FONT,
-                padx=5,
-                pady=2,
-            ).pack()
-        except (tk.TclError, RuntimeError):
-            return
-        self._theme_tooltip = tooltip
-
-    def _hide_theme_tooltip(self, _event: tk.Event | None = None) -> None:
-        tooltip = getattr(self, "_theme_tooltip", None)
-        if tooltip is not None:
-            try:
-                tooltip.destroy()
-            except tk.TclError:
-                pass
-            self._theme_tooltip = None
 
     # ---- shell interactions -------------------------------------------
 
@@ -2844,6 +2522,78 @@ class JitterApp(tk.Tk):
         self.connection_status_var.set(state)
         self.connection_label.configure(style=f"Liquid.Status{state}.TLabel")
         self._redraw_connection_indicator()
+        self._refresh_section_summaries()
+
+    def _set_section_summary(
+        self, variable: tk.StringVar, *parts: object
+    ) -> None:
+        try:
+            variable.set(_compact_section_summary(*parts))
+        except (tk.TclError, RuntimeError, TypeError, ValueError):
+            logging.debug("Could not refresh dashboard summary", exc_info=True)
+
+    def _refresh_section_summaries(self) -> None:
+        if self._closing:
+            return
+        source_names = [
+            name
+            for selected, name in (
+                (self.jitter_selected, "Jitter"),
+                (self.ai_selected, "AI Aim"),
+            )
+            if selected
+        ]
+        sources = " + ".join(source_names) or "No sources"
+        self._set_section_summary(
+            self.control_section_summary_var,
+            sources,
+            self.trigger_var.get(),
+            self.preset_var.get(),
+            self.connection_status_var.get(),
+        )
+
+        aim = self.get_ai_settings()
+        target = _TARGET_AREA_LABELS.get(aim.target_area, "Head")
+        self._set_section_summary(
+            self.ai_section_summary_var,
+            self.ai_model_var.get(),
+            target,
+            f"Strength {_display_value(aim.aim_strength)}",
+        )
+
+        box_names = [
+            name
+            for visible, name in (
+                (self.overlay_head_visible, "Head"),
+                (self.overlay_player_visible, "Player"),
+            )
+            if visible
+        ]
+        boxes = " + ".join(box_names) or "No boxes"
+        hud = (
+            f"HUD {self.overlay_hud_corner_var.get()}"
+            if self.overlay_hud_visible else "HUD Off"
+        )
+        self._set_section_summary(
+            self.overlay_section_summary_var,
+            f"Overlay {'On' if self.overlay_visible else 'Off'}",
+            boxes,
+            hud,
+        )
+
+        try:
+            volume = max(0, min(100, int(self.sound_volume_var.get())))
+        except (TypeError, ValueError):
+            volume = self.config.sound_volume
+        self._set_section_summary(
+            self.settings_section_summary_var,
+            f"Sound {'On' if self.sound_enabled_var.get() else 'Off'}",
+            f"{volume}%",
+            self.theme_var.get().title(),
+        )
+
+    def _set_test_button_enabled(self, enabled: bool) -> None:
+        self.test_button.configure(state="normal" if enabled else "disabled")
 
     # ---- runtime wiring -----------------------------------------------
 
@@ -2893,6 +2643,7 @@ class JitterApp(tk.Tk):
             volume=volume,
         )
         self._schedule_save()
+        self._refresh_section_summaries()
 
     def preview_sound(self, enabled: bool) -> None:
         self.apply_sound_settings()
@@ -2943,6 +2694,7 @@ class JitterApp(tk.Tk):
 
     def _overlay_style_changed(self) -> None:
         self.footer_var.set("Overlay customization updated")
+        self._refresh_section_summaries()
 
     def _overlay_int_value(self, key: str, default: int) -> int:
         try:
@@ -3023,6 +2775,7 @@ class JitterApp(tk.Tk):
                 else "normal"
             )
         )
+        self._refresh_section_summaries()
 
     def browse_ai_model(self) -> None:
         if self._motion_mode in _TEST_MOTION_MODES:
@@ -3303,6 +3056,7 @@ class JitterApp(tk.Tk):
                 ),
             )
         self._render_model_controls()
+        self._refresh_section_summaries()
 
     def choose_overlay_color(self) -> None:
         try:
@@ -3837,7 +3591,7 @@ class JitterApp(tk.Tk):
             test_generation=generation,
         )
         self._set_runtime_state("testing")
-        self.test_button.set_enabled(False)
+        self._set_test_button_enabled(False)
         self._render_runtime_controls()
 
         if sources.ai and not self._reconcile_ai_runtime("Test Run"):
@@ -3897,7 +3651,7 @@ class JitterApp(tk.Tk):
         self._test_pending_generation = None
         self._test_waiting_for_motion_stop = False
         self._test_restore_master = False
-        self.test_button.set_enabled(True)
+        self._set_test_button_enabled(True)
         self.master_armed = bool(restore)
         if restore:
             self._set_runtime_state("armed")
@@ -3950,7 +3704,7 @@ class JitterApp(tk.Tk):
         self._advance_hotkey_epoch()
         self._set_runtime_state("disabled")
         self._render_runtime_controls()
-        self.test_button.set_enabled(True)
+        self._set_test_button_enabled(True)
         self.footer_var.set(stop_reason)
 
     def _handle_disconnect(self, reason: str) -> None:
@@ -3979,7 +3733,7 @@ class JitterApp(tk.Tk):
         self._advance_hotkey_epoch()
         self._set_runtime_state("disabled")
         self._render_runtime_controls()
-        self.test_button.set_enabled(True)
+        self._set_test_button_enabled(True)
         self.footer_var.set(reason)
 
     def _consume_deferred_motion_action(self, source: Any) -> None:
@@ -4326,7 +4080,7 @@ class JitterApp(tk.Tk):
             self._set_runtime_state("disabled")
         self._advance_hotkey_epoch()
         self._render_runtime_controls()
-        self.test_button.set_enabled(True)
+        self._set_test_button_enabled(True)
         self.footer_var.set("AI Aim stopped; Jitter remains available")
 
     def queue_service_event(self, event: ServiceEvent) -> None:
@@ -4497,6 +4251,7 @@ class JitterApp(tk.Tk):
             if self.enabled:
                 self._set_runtime_state("armed")
         self._schedule_save()
+        self._refresh_section_summaries()
 
     def get_motion_settings(self) -> MotionSettings:
         with self._motion_lock:
@@ -4528,6 +4283,7 @@ class JitterApp(tk.Tk):
     def _replace_ai_snapshot(self, settings: AimSettings) -> None:
         with self._ai_lock:
             self._ai_snapshot = settings
+        self._refresh_section_summaries()
 
     def _replace_motion_snapshot(self, settings: MotionSettings) -> None:
         with self._motion_lock:
@@ -4574,6 +4330,7 @@ class JitterApp(tk.Tk):
             finally:
                 self._updating_motion_controls = False
         self._schedule_save()
+        self._refresh_section_summaries()
 
     def _ai_changed(self, key: str) -> None:
         if self._updating_ai_controls or self._closing:
@@ -4674,6 +4431,7 @@ class JitterApp(tk.Tk):
                 entry.configure(style="Liquid.Entry.TEntry")
         self._replace_motion_snapshot(settings)
         self._schedule_save()
+        self._refresh_section_summaries()
 
     def _schedule_save(self) -> None:
         if self._closing or not self._save_allowed:
@@ -4728,8 +4486,6 @@ class JitterApp(tk.Tk):
         self._cancel_ai_curve_callbacks()
         for widget in self.winfo_children():
             self._cancel_slider_callbacks(widget)
-        self._hide_action_tooltip()
-        self._hide_theme_tooltip()
         self._cancel_after("_save_after_id")
         self._cancel_after("_capture_after_id")
         self._cancel_after("_ui_pump_after_id")
