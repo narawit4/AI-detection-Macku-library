@@ -5,8 +5,8 @@ from dataclasses import FrozenInstanceError
 from pathlib import Path
 from unittest import mock
 
-from ai_detection import ModelContractError
-from ai_model_selection import (
+from jitter_app.ai.detection import ModelContractError
+from jitter_app.ai.model_selection import (
     ModelChoice,
     ModelSelectionError,
     ModelValidationEvent,
@@ -19,7 +19,7 @@ from ai_model_selection import (
 class ModelChoiceTests(unittest.TestCase):
     def test_bundled_choice_has_known_320_input_size(self):
         with mock.patch(
-            "ai_model_selection.model_resource_path",
+            "jitter_app.ai.model_selection.model_resource_path",
             return_value=Path("models/all_games_320.onnx"),
         ):
             choice = bundled_model_choice()
@@ -27,7 +27,7 @@ class ModelChoiceTests(unittest.TestCase):
 
     def test_bundled_choice_uses_resolved_default_resource(self):
         with mock.patch(
-            "ai_model_selection.model_resource_path",
+            "jitter_app.ai.model_selection.model_resource_path",
             return_value=Path("models/all_games_320.onnx"),
         ):
             choice = bundled_model_choice()
@@ -242,7 +242,7 @@ class ModelValidatorTests(unittest.TestCase):
             detector_factory=fail,
         )
         self.addCleanup(validator.close)
-        with self.assertLogs("ai_model_selection", level="ERROR") as logs:
+        with self.assertLogs("jitter_app.ai.model_selection", level="ERROR") as logs:
             self.assertTrue(validator.start(choice, 9))
             self.assertTrue(ready.wait(1.0))
         self.assertEqual(
@@ -275,7 +275,7 @@ class ModelValidatorTests(unittest.TestCase):
             detector_factory=fail,
         )
         self.addCleanup(validator.close)
-        with self.assertLogs("ai_model_selection", level="ERROR"):
+        with self.assertLogs("jitter_app.ai.model_selection", level="ERROR"):
             self.assertTrue(validator.start(choice, 8))
             self.assertTrue(finished.wait(1.0))
         self.assertEqual(events[0].error_type, "ModelContractError")
@@ -301,7 +301,7 @@ class ModelValidatorTests(unittest.TestCase):
             detector_factory=fail,
         )
         self.addCleanup(validator.close)
-        with self.assertLogs("ai_model_selection", level="ERROR"):
+        with self.assertLogs("jitter_app.ai.model_selection", level="ERROR"):
             self.assertTrue(validator.start(choice, 19))
             self.assertTrue(finished.wait(1.0))
         self.assertEqual(events[0].safe_message, message)
@@ -320,8 +320,8 @@ class ModelValidatorTests(unittest.TestCase):
         self.addCleanup(validator.close)
         choice = ModelChoice(Path("chosen.onnx"), "chosen.onnx", False)
         with (
-            mock.patch("ai_model_selection.threading.Thread", FailingThread),
-            self.assertLogs("ai_model_selection", level="ERROR") as logs,
+            mock.patch("jitter_app.ai.model_selection.threading.Thread", FailingThread),
+            self.assertLogs("jitter_app.ai.model_selection", level="ERROR") as logs,
         ):
             self.assertFalse(validator.start(choice, 3))
         self.assertEqual(events, [])

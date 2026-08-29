@@ -9,7 +9,7 @@ from pathlib import Path
 import threading
 from typing import Any
 
-from ai_detection import ModelContractError, OnnxDetector, model_resource_path
+from .detection import ModelContractError, OnnxDetector, model_resource_path
 
 
 LOGGER = logging.getLogger(__name__)

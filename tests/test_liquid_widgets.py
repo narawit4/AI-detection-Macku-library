@@ -4,8 +4,8 @@ import unittest
 import weakref
 from types import SimpleNamespace
 
-import liquid_widgets
-from liquid_widgets import LiquidIconButton, LiquidNavigation, LiquidSlider
+import jitter_app.presentation.widgets as liquid_widgets
+from jitter_app.presentation.widgets import LiquidIconButton, LiquidNavigation, LiquidSlider
 
 
 DARK_ICON_PALETTE = {

@@ -17,8 +17,8 @@ from tkinter import colorchooser, filedialog, ttk
 import tokenize
 from typing import Any, Callable, Mapping
 
-from ai_service import AiEvent, AiService
-from ai_model_selection import (
+from jitter_app.ai.service import AiEvent, AiService
+from jitter_app.ai.model_selection import (
     ModelChoice,
     ModelSelectionError,
     ModelValidationEvent,
@@ -26,7 +26,7 @@ from ai_model_selection import (
     bundled_model_choice,
     external_model_choice,
 )
-from ai_targeting import (
+from jitter_app.ai.targeting import (
     AIM_LIMITS,
     AimSettings,
     DEFAULT_RESPONSE_CURVE,
@@ -35,11 +35,11 @@ from ai_targeting import (
     response_curve_value,
     validated_response_curve,
 )
-from combined_motion import MotionSources
-from display_timing import RuntimeCadence, detect_runtime_cadence
-from hotkeys import HotkeyWatcher
-from makcu_service import MakcuService, ServiceEvent
-from motion import (
+from jitter_app.motion.combined import MotionSources
+from jitter_app.device.display_timing import RuntimeCadence, detect_runtime_cadence
+from jitter_app.device.hotkeys import HotkeyWatcher
+from jitter_app.device.makcu import MakcuService, ServiceEvent
+from jitter_app.motion.engine import (
     MOTION_LIMITS,
     MOTION_PRESETS,
     RAMP_MODES,
@@ -48,10 +48,10 @@ from motion import (
     motion_settings_from_mapping,
     motion_settings_to_mapping,
 )
-from settings import AppConfig, ConfigStore, normalize_overlay_color
-from liquid_widgets import LiquidIconButton, LiquidNavigation, LiquidSlider
-from sound_service import ToggleSoundPlayer
-from overlay import DetectionOverlay, OverlaySetupError
+from jitter_app.config.store import AppConfig, ConfigStore, normalize_overlay_color
+from .widgets import LiquidIconButton, LiquidNavigation, LiquidSlider
+from .sound import ToggleSoundPlayer
+from .overlay import DetectionOverlay, OverlaySetupError
 from jitter_app.resources import sound_directory
 
 

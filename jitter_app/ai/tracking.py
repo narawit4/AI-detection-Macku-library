@@ -4,7 +4,7 @@ from dataclasses import dataclass, replace
 import math
 from typing import Iterable
 
-from ai_targeting import (
+from .targeting import (
     AimSettings,
     Detection,
     DetectionAnalysis,

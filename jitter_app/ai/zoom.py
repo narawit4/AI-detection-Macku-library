@@ -6,8 +6,8 @@ from typing import Iterable
 
 import numpy as np
 
-from image_resize import resize_rgb_bilinear
-from ai_targeting import (
+from .resize import resize_rgb_bilinear
+from .targeting import (
     AimSettings,
     Detection,
     DetectionAnalysis,

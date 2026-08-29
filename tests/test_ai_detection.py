@@ -3,16 +3,16 @@ import unittest
 import numpy as np
 import onnxruntime as ort
 
-from ai_detection import (
+from jitter_app.ai.detection import (
     ModelContractError,
     OnnxDetector,
     model_resource_path,
     parse_output,
     preprocess_frame,
 )
-from ai_targeting import AimSettings, Detection, analyze_detections
-from ai_zoom import ZoomTransform, compose_zoom_refinement
-from overlay import project_overlay_boxes
+from jitter_app.ai.targeting import AimSettings, Detection, analyze_detections
+from jitter_app.ai.zoom import ZoomTransform, compose_zoom_refinement
+from jitter_app.presentation.overlay import project_overlay_boxes
 
 
 class NodeArg:

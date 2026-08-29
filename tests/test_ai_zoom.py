@@ -3,14 +3,14 @@ from dataclasses import FrozenInstanceError
 
 import numpy as np
 
-from ai_targeting import (
+from jitter_app.ai.targeting import (
     AimSettings,
     Detection,
     DetectionAnalysis,
     DetectionFrameSnapshot,
     TargetSnapshot,
 )
-from ai_zoom import (
+from jitter_app.ai.zoom import (
     RECOIL_COOLDOWN_SECONDS,
     ZoomStabilityState,
     ZoomTransform,

@@ -8,9 +8,9 @@ import threading
 import time
 from typing import Any
 
-from ai_capture import DxcamCapture
-from ai_detection import OnnxDetector, model_resource_path
-from ai_targeting import (
+from .capture import DxcamCapture
+from .detection import OnnxDetector, model_resource_path
+from .targeting import (
     AimSettings,
     DetectionAnalysis,
     DetectionFrameSnapshot,
@@ -18,7 +18,7 @@ from ai_targeting import (
     analyze_detections,
     validated_target_area,
 )
-from ai_zoom import (
+from .zoom import (
     ZoomStabilityState,
     build_zoom_input,
     compose_zoom_refinement,

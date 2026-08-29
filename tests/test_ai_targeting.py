@@ -2,7 +2,7 @@ import math
 import unittest
 from dataclasses import FrozenInstanceError
 
-from ai_targeting import (
+from jitter_app.ai.targeting import (
     AIM_LIMITS,
     AimSettings,
     DEFAULT_RESPONSE_CURVE,

@@ -25,7 +25,7 @@ _DIRECTML_DLL_SHA256 = (
 )
 _NUITKA_PACKAGE_CONFIG = "nuitka-package.config.yml"
 _NUITKA_PACKAGE_CONFIG_SHA256 = (
-    "3B41E39B66EBB8E28BD728933F03C4B5B8DA21C3C87C1433742D368D07140452"
+    "E2D715C37C2EF10D3195F1DC05997F322E9E2F136755D9860664F10E4A48D2DE"
 )
 _AI_RUNTIME_SELF_CHECK_ARGUMENT = "--ai-runtime-self-check"
 _RELEASE_MATERIALS = ("LICENSE", "THIRD_PARTY_NOTICES.md", "licenses")
@@ -205,7 +205,7 @@ def _validate_nuitka_package_configuration(
     return NuitkaPackageConfiguration(
         path=_NUITKA_PACKAGE_CONFIG,
         config_sha256=_NUITKA_PACKAGE_CONFIG_SHA256,
-        module="ai_detection",
+        module="jitter_app.ai.detection",
         source="onnxruntime/capi/DirectML.dll",
         destination="onnxruntime/capi/DirectML.dll",
         sha256=_DIRECTML_DLL_SHA256,
@@ -395,7 +395,11 @@ def _source_import_roots(root: Path, sources: Iterable[Path]) -> set[str]:
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 imported.update(alias.name.split(".", 1)[0] for alias in node.names)
-            elif isinstance(node, ast.ImportFrom) and node.module:
+            elif (
+                isinstance(node, ast.ImportFrom)
+                and node.level == 0
+                and node.module
+            ):
                 imported.add(node.module.split(".", 1)[0])
     return imported.difference(sys.stdlib_module_names, local_roots)
 
@@ -463,7 +467,7 @@ def build_plan(root: Path = ROOT) -> BuildPlan:
     if model_hash != _MODEL_SHA256:
         raise ValueError(f"packaged model hash mismatch: {model_path}")
 
-    sound_source = root / "sound_service.py"
+    sound_source = root / "jitter_app" / "presentation" / "sound.py"
     sound_assets = root / "sound"
     if sound_source.is_file() != sound_assets.is_dir():
         raise ValueError("sound source and sound assets must be packaged together")

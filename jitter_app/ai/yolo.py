@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from ai_targeting import Detection
+from .targeting import Detection
 
 
 LOGICAL_FRAME_SIZE = 320

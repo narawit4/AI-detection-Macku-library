@@ -11,12 +11,12 @@ import shutil
 import sys
 from typing import Any, Mapping
 
-from ai_targeting import (
+from jitter_app.ai.targeting import (
     AimSettings,
     aim_settings_from_mapping,
     aim_settings_to_mapping,
 )
-from motion import (
+from jitter_app.motion.engine import (
     MOTION_PRESETS,
     MotionSettings,
     motion_settings_from_mapping,

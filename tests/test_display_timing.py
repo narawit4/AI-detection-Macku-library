@@ -1,6 +1,6 @@
 import unittest
 
-from display_timing import RuntimeCadence, cadence_from_refresh, detect_runtime_cadence
+from jitter_app.device.display_timing import RuntimeCadence, cadence_from_refresh, detect_runtime_cadence
 
 
 class DisplayTimingTests(unittest.TestCase):

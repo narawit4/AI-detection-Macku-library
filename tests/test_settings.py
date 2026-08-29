@@ -6,10 +6,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from ai_targeting import AimSettings, DEFAULT_RESPONSE_CURVE
-from motion import MotionSettings
-import settings as settings_module
-from settings import AppConfig, ConfigStore, SCHEMA_VERSION, runtime_base_dir
+from jitter_app.ai.targeting import AimSettings, DEFAULT_RESPONSE_CURVE
+from jitter_app.motion.engine import MotionSettings
+import jitter_app.config.store as settings_module
+from jitter_app.config.store import AppConfig, ConfigStore, SCHEMA_VERSION, runtime_base_dir
+from jitter_app.resources import bundle_root
 
 
 class RuntimeBaseDirTests(unittest.TestCase):
@@ -24,7 +25,7 @@ class RuntimeBaseDirTests(unittest.TestCase):
         ):
             self.assertEqual(
                 runtime_base_dir(),
-                Path(settings_module.__file__).resolve().parent,
+                bundle_root(),
             )
 
     def test_nuitka_standalone_and_onefile_use_containing_directory(self):
@@ -76,7 +77,7 @@ class RuntimeBaseDirTests(unittest.TestCase):
         ), patch.object(settings_module.sys, "argv", [None]):
             self.assertEqual(
                 runtime_base_dir(),
-                Path(settings_module.__file__).resolve().parent,
+                bundle_root(),
             )
 
 

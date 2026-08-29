@@ -29,21 +29,21 @@ class MutexCreationError(RuntimeError):
 
 def runtime_base_dir() -> Path:
     """Resolve the normal UI data directory without importing it for self-checks."""
-    from settings import runtime_base_dir as resolve_runtime_base_dir
+    from jitter_app.config.store import runtime_base_dir as resolve_runtime_base_dir
 
     return resolve_runtime_base_dir()
 
 
 def ConfigStore(*args: Any, **kwargs: Any) -> Any:
     """Construct the normal configuration store lazily."""
-    from settings import ConfigStore as ConfigStoreType
+    from jitter_app.config.store import ConfigStore as ConfigStoreType
 
     return ConfigStoreType(*args, **kwargs)
 
 
 def JitterApp(*args: Any, **kwargs: Any) -> Any:
     """Construct the Tk application lazily so self-checks never import Tk."""
-    from ui import JitterApp as JitterAppType
+    from jitter_app.presentation.ui import JitterApp as JitterAppType
 
     return JitterAppType(*args, **kwargs)
 
@@ -68,7 +68,7 @@ def run_ai_runtime_self_check(
         factory = detector_factory
         resource_path = None
         if factory is None or model_path is None:
-            from ai_detection import OnnxDetector, model_resource_path
+            from jitter_app.ai.detection import OnnxDetector, model_resource_path
 
             factory = factory or OnnxDetector
             resource_path = model_resource_path

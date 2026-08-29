@@ -3,8 +3,8 @@ import unittest
 
 import numpy as np
 
-import image_resize
-from image_resize import resize_rgb_bilinear
+import jitter_app.ai.resize as image_resize
+from jitter_app.ai.resize import resize_rgb_bilinear
 
 
 class RgbResizeTests(unittest.TestCase):

@@ -1,6 +1,6 @@
 import unittest
 
-from hotkeys import HotkeyEdgeDetector, HotkeyWatcher
+from jitter_app.device.hotkeys import HotkeyEdgeDetector, HotkeyWatcher
 
 
 class HotkeyTests(unittest.TestCase):

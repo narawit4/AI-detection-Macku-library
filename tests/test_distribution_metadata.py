@@ -10,6 +10,7 @@ from dataclasses import replace
 from pathlib import Path, PurePosixPath
 
 from distribution_metadata import (
+    _source_import_roots,
     build_plan,
     confirm_build,
     copy_release_materials,
@@ -161,6 +162,18 @@ class ReleaseMaterialTests(unittest.TestCase):
 
 
 class BuildPlanTests(unittest.TestCase):
+    def test_relative_package_imports_are_not_runtime_dependencies(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "jitter_app" / "ai" / "service.py"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "from .capture import DxcamCapture\nimport numpy\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(_source_import_roots(root, (source,)), {"numpy"})
+
     def test_source_discovery_ignores_nested_git_worktrees(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -185,7 +198,7 @@ class BuildPlanTests(unittest.TestCase):
             assume_yes_for_downloads=False,
             check_checksums=False,
         )
-        dll_config = parsed.get("ai_detection", section="dlls")
+        dll_config = parsed.get("jitter_app.ai.detection", section="dlls")
         self.assertEqual(len(dll_config), 1)
         rule = dll_config[0]
         source = rule["from_filenames"]
@@ -228,8 +241,8 @@ class BuildPlanTests(unittest.TestCase):
         expected_package_configuration = {
             "path": "nuitka-package.config.yml",
             "config_sha256":
-                "3B41E39B66EBB8E28BD728933F03C4B5B8DA21C3C87C1433742D368D07140452",
-            "module": "ai_detection",
+                "E2D715C37C2EF10D3195F1DC05997F322E9E2F136755D9860664F10E4A48D2DE",
+            "module": "jitter_app.ai.detection",
             "source": "onnxruntime/capi/DirectML.dll",
             "destination": "onnxruntime/capi/DirectML.dll",
             "sha256":
@@ -259,7 +272,10 @@ class BuildPlanTests(unittest.TestCase):
             "models/all_games_320.onnx=models/all_games_320.onnx",
             "--include-data-dir=licenses=licenses",
         }
-        if (ROOT / "sound_service.py").is_file() and (ROOT / "sound").is_dir():
+        if (
+            (ROOT / "jitter_app" / "presentation" / "sound.py").is_file()
+            and (ROOT / "sound").is_dir()
+        ):
             expected_data_options.add("--include-data-dir=sound=sound")
         self.assertEqual(set(plan.nuitka_data_options), expected_data_options)
         for option in expected_data_options:
@@ -267,19 +283,21 @@ class BuildPlanTests(unittest.TestCase):
         self.assertEqual(
             set(plan.compile_targets),
             {
-                "main.py", "ui.py", "motion.py", "combined_motion.py",
-                "ai_targeting.py", "ai_tracking.py", "ai_detection.py", "ai_yolo.py",
-                "ai_model_selection.py",
-                "ai_capture.py", "ai_zoom.py", "image_resize.py", "ai_service.py",
-                "display_timing.py", "overlay.py", "makcu_service.py",
-                "hotkeys.py", "settings.py", "liquid_widgets.py",
-                "distribution_metadata.py",
+                "main.py", "distribution_metadata.py",
                 "jitter_app/__init__.py", "jitter_app/resources.py",
-                "jitter_app/ai/__init__.py", "jitter_app/motion/__init__.py",
-                "jitter_app/device/__init__.py",
+                "jitter_app/ai/__init__.py", "jitter_app/ai/capture.py",
+                "jitter_app/ai/detection.py", "jitter_app/ai/model_selection.py",
+                "jitter_app/ai/service.py", "jitter_app/ai/targeting.py",
+                "jitter_app/ai/tracking.py", "jitter_app/ai/resize.py",
+                "jitter_app/ai/yolo.py", "jitter_app/ai/zoom.py",
+                "jitter_app/motion/__init__.py", "jitter_app/motion/engine.py",
+                "jitter_app/motion/combined.py", "jitter_app/device/__init__.py",
+                "jitter_app/device/makcu.py", "jitter_app/device/hotkeys.py",
+                "jitter_app/device/display_timing.py",
                 "jitter_app/presentation/__init__.py",
-                "jitter_app/config/__init__.py",
-                *({"sound_service.py"} if (ROOT / "sound_service.py").is_file() else set()),
+                "jitter_app/presentation/ui.py", "jitter_app/presentation/widgets.py",
+                "jitter_app/presentation/overlay.py", "jitter_app/presentation/sound.py",
+                "jitter_app/config/__init__.py", "jitter_app/config/store.py",
             },
         )
         self.assertEqual(

@@ -8,26 +8,26 @@ import unittest
 from unittest import mock
 from pathlib import Path
 
-from ai_model_selection import (
+from jitter_app.ai.model_selection import (
     ModelChoice,
     ModelValidationEvent,
     bundled_model_choice,
 )
-from ai_service import AiEvent
-from ai_targeting import (
+from jitter_app.ai.service import AiEvent
+from jitter_app.ai.targeting import (
     AimSettings,
     DEFAULT_RESPONSE_CURVE,
     response_curve_value,
 )
-from combined_motion import MotionSources
-from display_timing import RuntimeCadence
-from ui import JitterApp
-from makcu_service import ServiceEvent
-from liquid_widgets import LiquidIconButton, LiquidSlider
-from motion import MotionSettings
-from overlay import OverlaySetupError
-from settings import AppConfig
-from sound_service import ToggleSoundPlayer
+from jitter_app.motion.combined import MotionSources
+from jitter_app.device.display_timing import RuntimeCadence
+from jitter_app.presentation.ui import JitterApp
+from jitter_app.device.makcu import ServiceEvent
+from jitter_app.presentation.widgets import LiquidIconButton, LiquidSlider
+from jitter_app.motion.engine import MotionSettings
+from jitter_app.presentation.overlay import OverlaySetupError
+from jitter_app.config.store import AppConfig
+from jitter_app.presentation.sound import ToggleSoundPlayer
 
 
 class StubStore:
@@ -36,7 +36,7 @@ class StubStore:
         self.config = config
 
     def load(self):
-        from settings import AppConfig, LoadOutcome
+        from jitter_app.config.store import AppConfig, LoadOutcome
         return LoadOutcome(self.config or AppConfig())
 
     def save(self, config):
@@ -539,8 +539,8 @@ class JitterLayoutTests(unittest.TestCase):
             return self.ai.with_sink(event_sink)
 
         with (
-            mock.patch("ui.MakcuService", side_effect=make_service),
-            mock.patch("ui.AiService", side_effect=make_ai_service),
+            mock.patch("jitter_app.presentation.ui.MakcuService", side_effect=make_service),
+            mock.patch("jitter_app.presentation.ui.AiService", side_effect=make_ai_service),
         ):
             app = self.make_app(
                 runtime_cadence=cadence,

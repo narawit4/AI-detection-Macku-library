@@ -1,6 +1,6 @@
 # Jitter-specific native runtime inclusion missing from Nuitka 4.1.3's
 # built-in onnxruntime rule. Keep the DLL beside the packaged C API module.
-- module-name: 'ai_detection'
+- module-name: 'jitter_app.ai.detection'
   dlls:
     - from_filenames:
         relative_path: '.'

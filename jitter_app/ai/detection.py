@@ -8,9 +8,9 @@ from typing import Callable
 import numpy as np
 import onnxruntime as ort
 
-from ai_targeting import Detection
-from ai_yolo import RAW_CANDIDATE_COUNTS, decode_single_class_yolo
-from image_resize import resize_rgb_bilinear
+from .targeting import Detection
+from .yolo import RAW_CANDIDATE_COUNTS, decode_single_class_yolo
+from .resize import resize_rgb_bilinear
 from jitter_app.resources import bundled_model_path
 
 

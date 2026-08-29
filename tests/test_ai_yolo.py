@@ -2,8 +2,8 @@ import unittest
 
 import numpy as np
 
-from ai_targeting import Detection
-from ai_yolo import (
+from jitter_app.ai.targeting import Detection
+from jitter_app.ai.yolo import (
     MAX_DETECTIONS,
     MIN_CONFIDENCE,
     NMS_IOU_THRESHOLD,

@@ -1,8 +1,8 @@
 import threading
 import unittest
 
-from ai_targeting import Detection, DetectionFrameSnapshot
-from overlay import (
+from jitter_app.ai.targeting import Detection, DetectionFrameSnapshot
+from jitter_app.presentation.overlay import (
     DetectionOverlay,
     OverlayBox,
     OverlaySetupError,
@@ -547,7 +547,7 @@ class DetectionOverlayTests(unittest.TestCase):
         overlay.show()
         calls.clear()
 
-        with self.assertLogs("overlay", level="ERROR") as logged:
+        with self.assertLogs("jitter_app.presentation.overlay", level="ERROR") as logged:
             overlay.close()
 
         self.assertEqual(calls, [("delete", "detection"), "destroy"])
