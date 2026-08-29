@@ -49,7 +49,7 @@ from jitter_app.motion.engine import (
     motion_settings_to_mapping,
 )
 from jitter_app.config.store import AppConfig, ConfigStore, normalize_overlay_color
-from .widgets import LiquidIconButton, LiquidNavigation, LiquidSlider
+from .widgets import CollapsibleSection, LiquidIconButton, LiquidSlider
 from .sound import ToggleSoundPlayer
 from .overlay import DetectionOverlay, OverlaySetupError, OverlayStyle
 from jitter_app.resources import sound_directory
@@ -511,10 +511,49 @@ class JitterApp(tk.Tk):
              disabled_background, p["border"]),
             focus=(p["surface"], p["accent"]),
         )
+        section_element = self._install_rounded_element(
+            style,
+            "Section",
+            (
+                p["surface"], p["raised"], p["surface"],
+                disabled_background, p["border"],
+            ),
+            focus=(p["surface"], p["accent"]),
+        )
+        button_layout = lambda element: [
+            (element, {
+                "sticky": "nsew",
+                "children": [("Button.padding", {
+                    "sticky": "nsew",
+                    "children": [("Button.label", {"sticky": "nsew"})],
+                })],
+            }),
+        ]
 
         style.configure("Liquid.App.TFrame", background=p["window"])
         style.configure("Liquid.Surface.TFrame", background=p["surface"],
                         bordercolor=p["border"], relief="flat", borderwidth=0)
+        style.configure(
+            "Liquid.Section.TButton",
+            background=p["surface"],
+            foreground=p["text"],
+            bordercolor=p["border"],
+            font=(FONT_FAMILY, 10, "bold"),
+            padding=(10, 8),
+            anchor="w",
+        )
+        style.map(
+            "Liquid.Section.TButton",
+            background=[("pressed", p["surface"]), ("active", p["raised"])],
+            foreground=[("disabled", disabled_text)],
+        )
+        style.configure(
+            "Liquid.SectionBody.TFrame",
+            background=p["surface"],
+            bordercolor=p["border"],
+            relief="flat",
+            borderwidth=0,
+        )
         style.configure("Liquid.Title.TLabel", background=p["surface"],
                         foreground=p["text"], font=TITLE_FONT)
         style.configure("Liquid.Subtitle.TLabel", background=p["surface"],
@@ -785,15 +824,7 @@ class JitterApp(tk.Tk):
             darkcolor=p["raised"],
             lightcolor=p["raised"],
         )
-        button_layout = lambda element: [
-            (element, {
-                "sticky": "nsew",
-                "children": [("Button.padding", {
-                    "sticky": "nsew",
-                    "children": [("Button.label", {"sticky": "nsew"})],
-                })],
-            }),
-        ]
+        style.layout("Liquid.Section.TButton", button_layout(section_element))
         style.layout("Liquid.Primary.TButton", button_layout(primary_element))
         style.layout("Liquid.Secondary.TButton", button_layout(secondary_element))
         style.layout(
@@ -901,6 +932,10 @@ class JitterApp(tk.Tk):
         self.motion_summary_var = tk.StringVar(
             self, _motion_summary_text(self._motion_snapshot)
         )
+        self.control_section_summary_var = tk.StringVar(self, "No sources")
+        self.ai_section_summary_var = tk.StringVar(self, "Default model")
+        self.overlay_section_summary_var = tk.StringVar(self, "Overlay Off")
+        self.settings_section_summary_var = tk.StringVar(self, "Sound On")
         self.motion_snapshot_size_var = tk.StringVar(
             self, _display_value(self._motion_snapshot.pulse_size_px)
         )
@@ -937,84 +972,125 @@ class JitterApp(tk.Tk):
             takefocus=False,
         )
         self.shell.pack(fill="both", expand=True)
-        self.shell.columnconfigure(0, weight=0, minsize=176)
-        self.shell.columnconfigure(1, weight=1)
         self.shell.rowconfigure(0, weight=1)
+        self.shell.columnconfigure(0, weight=1)
         self.shell.bind("<Configure>", self._redraw_shell_art, add="+")
-
-        self.navigation_rail = ttk.Frame(
-            self.shell,
-            width=176,
-            style="Liquid.Surface.TFrame",
-            padding=(12, 14),
-        )
-        self.navigation_rail.grid(
-            row=0, column=0, sticky="ns", padx=(12, 8), pady=12
-        )
-        self.navigation_rail.grid_propagate(False)
-
-        self.rail_identity = ttk.Frame(
-            self.navigation_rail, style="Liquid.Surface.TFrame"
-        )
-        self.rail_identity.pack(side="top", fill="x")
-        # Preserve the established identity seam for existing integrations.
-        self.identity_frame = self.rail_identity
-        self._build_identity()
-
-        self.navigation_frame = ttk.Frame(
-            self.navigation_rail, style="Liquid.Surface.TFrame"
-        )
-        self.navigation_frame.pack(side="top", fill="x", pady=(18, 0))
-        self.nav = LiquidNavigation(
-            self.navigation_frame,
-            labels=("Control", "Motion", "Settings"),
-            command=self.select_page,
-            palette=self._navigation_palette(),
-            orientation="vertical",
-            width=152,
-            height=168,
-        )
-        self.nav.pack(fill="x")
-        self._build_navigation_actions()
-
         self.console_workspace = ttk.Frame(
-            self.shell, style="Liquid.App.TFrame"
+            self.shell, style="Liquid.App.TFrame", padding=(12, 10)
         )
-        self.console_workspace.grid(
-            row=0, column=1, sticky="nsew", padx=(8, 14), pady=(12, 10)
-        )
+        self.console_workspace.grid(row=0, column=0, sticky="nsew")
         self.console_workspace.columnconfigure(0, weight=1)
-        self.console_workspace.rowconfigure(0, weight=1)
+        self.console_workspace.rowconfigure(1, weight=1)
 
-        self.page_host = ttk.Frame(
-            self.console_workspace, style="Liquid.App.TFrame"
-        )
-        self.page_host.grid(row=0, column=0, sticky="nsew")
-        self.page_host.rowconfigure(0, weight=1)
-        self.page_host.columnconfigure(0, weight=1)
-        self.control_page = ttk.Frame(self.page_host, style="Liquid.App.TFrame")
-        self.motion_page = ttk.Frame(self.page_host, style="Liquid.App.TFrame")
-        self.settings_page = ttk.Frame(self.page_host, style="Liquid.App.TFrame")
-        self.pages = (
-            self.control_page, self.motion_page, self.settings_page,
-        )
-        for page in self.pages:
-            page.grid(row=0, column=0, sticky="nsew")
-
-        self._build_trigger_card()
-        self._build_quick_card()
-        self._build_settings_page()
-        self._apply_combobox_popup_palette()
-        self.select_page(0)
-        self._build_main_control_card()
+        self._build_topbar()
+        self._build_dashboard()
         self._build_footer()
-        for panel in (
-            self.navigation_rail,
-            self.page_host,
-            self.runtime_frame,
-        ):
+        self._build_main_control_card()
+        self._apply_combobox_popup_palette()
+        for panel in (self.topbar_frame, self.dashboard_frame, self.runtime_frame):
             panel.bind("<Configure>", self._redraw_shell_art, add="+")
         self._redraw_shell_art()
+
+    def _build_topbar(self) -> None:
+        self.topbar_frame = ttk.Frame(
+            self.console_workspace,
+            style="Liquid.Surface.TFrame",
+            padding=(12, 8),
+        )
+        self.topbar_frame.grid(row=0, column=0, sticky="ew")
+        self.topbar_frame.columnconfigure(0, weight=1)
+        self.identity_frame = ttk.Frame(
+            self.topbar_frame, style="Liquid.Surface.TFrame"
+        )
+        self.identity_frame.grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            self.identity_frame, text="JITTER", style="Liquid.Title.TLabel"
+        ).pack(anchor="w")
+        connection_row = ttk.Frame(
+            self.topbar_frame, style="Liquid.Surface.TFrame"
+        )
+        connection_row.grid(row=0, column=1, sticky="e")
+        self.connection_indicator = tk.Canvas(
+            connection_row,
+            width=18,
+            height=18,
+            background=self._palette["surface"],
+            highlightthickness=0,
+            borderwidth=0,
+            takefocus=False,
+        )
+        self.connection_indicator.pack(side="left", padx=(0, 5), pady=(1, 0))
+        self.connection_label = ttk.Label(
+            connection_row,
+            textvariable=self.connection_status_var,
+            style="Liquid.StatusDisconnected.TLabel",
+        )
+        self.connection_label.pack(side="left")
+        self._redraw_connection_indicator()
+
+    def _build_dashboard(self) -> None:
+        self.dashboard_frame = ttk.Frame(
+            self.console_workspace, style="Liquid.App.TFrame"
+        )
+        self.dashboard_frame.grid(row=1, column=0, sticky="nsew", pady=(8, 6))
+        self.dashboard_frame.columnconfigure(0, weight=1)
+        self.dashboard_frame.rowconfigure(0, weight=1)
+        self.dashboard_scroll_canvas = tk.Canvas(
+            self.dashboard_frame, background=self._palette["window"],
+            highlightthickness=0, borderwidth=0, takefocus=False,
+        )
+        self.dashboard_scroll_canvas.grid(row=0, column=0, sticky="nsew")
+        self.dashboard_scrollbar = ttk.Scrollbar(
+            self.dashboard_frame, orient="vertical",
+            style="Liquid.Vertical.TScrollbar",
+            command=self.dashboard_scroll_canvas.yview,
+        )
+        self.dashboard_scrollbar.grid(row=0, column=1, sticky="ns", padx=(6, 0))
+        self.dashboard_scroll_canvas.configure(
+            yscrollcommand=self.dashboard_scrollbar.set
+        )
+        self.dashboard_content = ttk.Frame(
+            self.dashboard_scroll_canvas, style="Liquid.App.TFrame"
+        )
+        self.dashboard_content.columnconfigure(0, weight=1)
+        self._dashboard_scroll_window = self.dashboard_scroll_canvas.create_window(
+            (0, 0), window=self.dashboard_content, anchor="nw"
+        )
+        self.dashboard_content.bind(
+            "<Configure>", self._refresh_dashboard_scrollregion, add="+"
+        )
+        self.dashboard_scroll_canvas.bind(
+            "<Configure>", self._resize_dashboard_content, add="+"
+        )
+        self.dashboard_scroll_canvas.bind(
+            "<MouseWheel>", self._scroll_dashboard, add="+"
+        )
+        definitions = (
+            ("control_section", 1, "Control", self.control_section_summary_var, True),
+            ("jitter_section", 2, "Jitter", self.motion_summary_var, False),
+            ("ai_section", 3, "AI Aim", self.ai_section_summary_var, False),
+            ("overlay_section", 4, "Overlay", self.overlay_section_summary_var, False),
+            ("settings_section", 5, "Settings", self.settings_section_summary_var, False),
+        )
+        sections = []
+        for row, (attribute, number, title, summary, expanded) in enumerate(definitions):
+            section = CollapsibleSection(
+                self.dashboard_content, number=number, title=title,
+                summary=summary, expanded=expanded,
+            )
+            section.grid(row=row, column=0, sticky="ew", pady=(0, 7))
+            setattr(self, attribute, section)
+            sections.append(section)
+        self.sections = tuple(sections)
+        self.settings_action_frame = ttk.Frame(
+            self.settings_section.body, style="Liquid.App.TFrame"
+        )
+        self.settings_action_frame.grid(row=2, column=0, sticky="w", pady=(8, 0))
+        self._build_control_section(self.control_section.body)
+        self._build_jitter_section(self.jitter_section.body)
+        self._build_ai_section(self.ai_section.body)
+        self._build_overlay_section(self.overlay_section.body)
+        self._build_settings_section(self.settings_section.body)
 
     def _build_identity(self) -> None:
         identity_copy = ttk.Frame(
@@ -1057,11 +1133,10 @@ class JitterApp(tk.Tk):
         self._configure_styles()
         self.configure(background=self._palette["window"])
         self.shell.configure(background=self._palette["window"])
-        self.motion_scroll_canvas.configure(background=self._palette["window"])
+        self.dashboard_scroll_canvas.configure(background=self._palette["window"])
         self._redraw_shell_art()
         self._redraw_connection_indicator()
         self._redraw_ai_curve()
-        self.nav.set_palette(self._navigation_palette())
         self.theme_button.icon = "☀" if self._theme == "dark" else "☾"
         self.theme_tooltip_text = (
             "Switch to Light Mode" if self._theme == "dark"
@@ -1196,10 +1271,10 @@ class JitterApp(tk.Tk):
         self.runtime_frame = ttk.Frame(
             self.console_workspace,
             style="Liquid.Surface.TFrame",
-            padding=(10, 8),
+            padding=(8, 6),
         )
         self.runtime_frame.grid(
-            row=2, column=0, sticky="ew", pady=(8, 0)
+            row=3, column=0, sticky="ew", pady=(4, 0)
         )
         self.runtime_frame.columnconfigure(0, weight=1, uniform="runtime_actions")
         self.runtime_frame.columnconfigure(1, weight=2)
@@ -1255,41 +1330,31 @@ class JitterApp(tk.Tk):
         ).pack(anchor="w", pady=(3, 0))
         return header, title_label
 
-    def _build_trigger_card(self) -> None:
-        self.control_page.columnconfigure(0, weight=3, uniform="control")
-        self.control_page.columnconfigure(1, weight=2, uniform="control")
-        self.control_page.rowconfigure(1, weight=1)
-        self.control_header_frame, self.control_title_label = (
-            self._build_dashboard_header(
-                self.control_page,
-                "INPUT AND DEVICE SETUP",
-                "CONTROL",
-                "Choose how Jitter arms and which motion preset is active.",
-            )
-        )
+    def _build_control_section(self, parent: ttk.Frame) -> None:
+        self.control_frame = parent
+        parent.columnconfigure(0, weight=3, uniform="control")
+        parent.columnconfigure(1, weight=2, uniform="control")
         self.control_bindings_card = ttk.Frame(
-            self.control_page,
+            parent,
             style="Liquid.SettingsCard.TFrame",
             padding=(18, 16, 18, 18),
         )
         self.control_bindings_card.grid(
-            row=1, column=0, sticky="nsew", padx=(0, 6)
+            row=0, column=0, sticky="nsew", padx=(0, 6)
         )
         self.control_bindings_card.columnconfigure(0, weight=1, uniform="binding")
         self.control_bindings_card.columnconfigure(1, weight=1, uniform="binding")
         self.control_bindings_card.rowconfigure(3, weight=1)
         self.control_device_card = ttk.Frame(
-            self.control_page,
+            parent,
             style="Liquid.SettingsCard.TFrame",
             padding=(16, 16, 16, 18),
         )
         self.control_device_card.grid(
-            row=1, column=1, sticky="nsew", padx=(6, 0)
+            row=0, column=1, sticky="nsew", padx=(6, 0)
         )
         self.control_device_card.columnconfigure(0, weight=1)
         self.control_device_card.rowconfigure(3, weight=1)
-        # Preserve the established public seam for integrations.
-        self.control_frame = self.control_bindings_card
 
         ttk.Label(
             self.control_bindings_card,
@@ -1417,23 +1482,25 @@ class JitterApp(tk.Tk):
             row=4, column=0, columnspan=2, sticky="sew", pady=(16, 0)
         )
 
-    def _build_navigation_actions(self) -> None:
-        self.navigation_actions = ttk.Frame(
-            self.navigation_rail, style="Liquid.Surface.TFrame"
+        self._build_control_actions(self.control_device_card)
+
+    def _build_control_actions(self, parent: ttk.Frame) -> None:
+        self.control_action_row = ttk.Frame(
+            parent, style="Liquid.Surface.TFrame"
         )
-        self.navigation_actions.pack(side="bottom", anchor="center")
+        self.control_action_row.grid(row=5, column=0, sticky="ew", pady=(10, 0))
         self.reconnect_tooltip_text = "Reconnect Makcu"
         self.test_tooltip_text = "Test Run 3s"
         self._action_tooltip: tk.Toplevel | None = None
         self.reconnect_button = LiquidIconButton(
-            self.navigation_actions,
+            self.control_action_row,
             icon="↻",
             accessible_name=self.reconnect_tooltip_text,
             command=self.reconnect,
             palette=self._icon_palette(),
         )
         self.test_button = LiquidIconButton(
-            self.navigation_actions,
+            self.control_action_row,
             icon="▶",
             accessible_name=self.test_tooltip_text,
             command=self.test_run,
@@ -1445,15 +1512,15 @@ class JitterApp(tk.Tk):
         )
         self._theme_tooltip: tk.Toplevel | None = None
         self.theme_button = LiquidIconButton(
-            self.navigation_actions,
+            self.settings_action_frame,
             icon="☀" if self._theme == "dark" else "☾",
             accessible_name=self.theme_tooltip_text,
             command=self.toggle_theme,
             palette=self._icon_palette(),
         )
-        self.reconnect_button.pack(side="left", padx=(0, 5))
-        self.test_button.pack(side="left", padx=(0, 5))
-        self.theme_button.pack(side="left")
+        self.reconnect_button.grid(row=0, column=0, sticky="w")
+        self.test_button.grid(row=0, column=1, sticky="e")
+        self.theme_button.grid(row=1, column=0, sticky="w", pady=(8, 0))
         self.reconnect_button.bind(
             "<Enter>",
             lambda event: self._show_action_tooltip(
@@ -1688,7 +1755,45 @@ class JitterApp(tk.Tk):
         combo.grid(row=1, column=0, sticky="ew")
         return field, combo
 
-    def _build_quick_card(self) -> None:
+    def _build_jitter_section(self, parent: ttk.Frame) -> None:
+        self.quick_frame = parent
+        self.motion_hero_card = ttk.Frame(
+            parent,
+            style="Liquid.SettingsCard.TFrame",
+            padding=(18, 16, 18, 18),
+        )
+        self.motion_hero_card.grid(row=0, column=0, sticky="ew")
+        self.motion_hero_card.columnconfigure(0, weight=1)
+        ttk.Label(
+            self.motion_hero_card,
+            text="MOTION SHAPE",
+            style="Liquid.CardTitle.TLabel",
+            font=(FONT_FAMILY, 12, "bold"),
+        ).grid(row=0, column=0, sticky="w")
+        self.quick_grid = ttk.Frame(
+            self.motion_hero_card, style="Liquid.Surface.TFrame"
+        )
+        self.quick_grid.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        self.quick_grid.columnconfigure(0, weight=1, uniform="quick")
+        self.quick_grid.columnconfigure(1, weight=1, uniform="quick")
+        for index, control in enumerate((
+            ("Pulse Size", "pulse_size_px", 1, 8, 1),
+            ("Pulse Rate", "pulse_rate_hz", 20, 120, 1),
+        )):
+            self._numeric_control(
+                self.quick_grid, index // 2, index % 2, *control
+            )
+        ramp_row, self.ramp_mode_combo = self._dropdown_field(
+            self.quick_grid,
+            label="Ramp Mode",
+            variable=self.motion_vars["ramp_mode"],
+            values=RAMP_MODES,
+        )
+        ramp_row.grid(
+            row=1, column=0, columnspan=2, sticky="ew", padx=5, pady=(8, 4)
+        )
+        return
+
         self.motion_page.columnconfigure(0, weight=3, uniform="motion")
         self.motion_page.columnconfigure(1, weight=2, uniform="motion")
         self.motion_page.rowconfigure(1, weight=1)
@@ -1999,14 +2104,66 @@ class JitterApp(tk.Tk):
         self._build_ai_curve_card()
         self._build_overlay_custom_card()
 
-    def _build_overlay_custom_card(self) -> None:
+    def _build_ai_section(self, parent: ttk.Frame) -> None:
+        self.ai_settings_card = ttk.Frame(
+            parent, style="Liquid.SettingsCard.TFrame", padding=(18, 16, 18, 18)
+        )
+        self.ai_settings_card.grid(row=0, column=0, sticky="ew")
+        self.ai_settings_card.columnconfigure(0, weight=1)
+        ttk.Label(
+            self.ai_settings_card, text="AI AIM SETTINGS",
+            style="Liquid.CardTitle.TLabel", font=(FONT_FAMILY, 12, "bold"),
+        ).grid(row=0, column=0, sticky="w")
+        self.ai_controls_grid = ttk.Frame(
+            self.ai_settings_card, style="Liquid.Surface.TFrame"
+        )
+        self.ai_controls_grid.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        self.ai_controls_grid.columnconfigure(0, weight=1, uniform="ai_controls")
+        self.ai_controls_grid.columnconfigure(1, weight=1, uniform="ai_controls")
+        for index, (key, spec) in enumerate(_AI_CONTROL_SPECS.items()):
+            self._ai_numeric_control(
+                self.ai_controls_grid, index // 2, index % 2, spec[0], key,
+                spec[1], spec[2], spec[3],
+            )
+        target_area_field, self.target_area_combo = self._dropdown_field(
+            self.ai_settings_card, label="Target Area", variable=self.target_area_var,
+            values=tuple(_TARGET_AREA_VALUES),
+        )
+        target_area_field.grid(row=2, column=0, sticky="ew", padx=5, pady=(12, 0))
+        self.target_area_combo.bind("<<ComboboxSelected>>", self._target_area_changed)
+        self.ai_model_frame = ttk.Frame(
+            self.ai_settings_card, style="Liquid.Surface.TFrame", padding=(5, 10)
+        )
+        self.ai_model_frame.grid(row=3, column=0, sticky="ew")
+        self.ai_model_frame.columnconfigure(0, weight=1)
+        self.ai_model_frame.columnconfigure(1, weight=1)
+        ttk.Label(
+            self.ai_model_frame, text="MODEL", style="Liquid.CardBody.TLabel"
+        ).grid(row=0, column=0, columnspan=2, sticky="w")
+        ttk.Label(
+            self.ai_model_frame, textvariable=self.ai_model_var,
+            style="Liquid.CardText.TLabel", wraplength=300,
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 6))
+        self.model_browse_button = ttk.Button(
+            self.ai_model_frame, text="Browse...", style="Liquid.Secondary.TButton",
+            command=self.browse_ai_model,
+        )
+        self.model_browse_button.grid(row=2, column=0, sticky="ew", padx=(0, 3))
+        self.use_default_model_button = ttk.Button(
+            self.ai_model_frame, text="Use Default", style="Liquid.Secondary.TButton",
+            command=self.use_default_ai_model,
+        )
+        self.use_default_model_button.grid(row=2, column=1, sticky="ew", padx=(3, 0))
+        self._build_ai_curve_card(parent)
+
+    def _build_overlay_section(self, parent: ttk.Frame) -> None:
         self.overlay_custom_card = ttk.Frame(
-            self.motion_scroll_content,
+            parent,
             style="Liquid.SettingsCard.TFrame",
             padding=(18, 16, 18, 18),
         )
         self.overlay_custom_card.grid(
-            row=3,
+            row=0,
             column=0,
             columnspan=2,
             sticky="ew",
@@ -2214,14 +2371,14 @@ class JitterApp(tk.Tk):
             )
             setattr(self, f"overlay_hud_{key}_button", button)
 
-    def _build_ai_curve_card(self) -> None:
+    def _build_ai_curve_card(self, parent: ttk.Frame) -> None:
         self.ai_curve_card = ttk.Frame(
-            self.motion_scroll_content,
+            parent,
             style="Liquid.SettingsCard.TFrame",
             padding=(18, 16, 18, 18),
         )
         self.ai_curve_card.grid(
-            row=2,
+            row=1,
             column=0,
             columnspan=2,
             sticky="ew",
@@ -2617,33 +2774,33 @@ class JitterApp(tk.Tk):
                 return
             raise
 
-    def _refresh_motion_scrollregion(
+    def _refresh_dashboard_scrollregion(
         self, _event: tk.Event | None = None
     ) -> None:
-        self.motion_scroll_canvas.configure(
-            scrollregion=self.motion_scroll_canvas.bbox("all")
+        self.dashboard_scroll_canvas.configure(
+            scrollregion=self.dashboard_scroll_canvas.bbox("all")
         )
 
-    def _resize_motion_scroll_content(self, event: tk.Event) -> None:
-        self.motion_scroll_canvas.itemconfigure(
-            self._motion_scroll_window,
+    def _resize_dashboard_content(self, event: tk.Event) -> None:
+        self.dashboard_scroll_canvas.itemconfigure(
+            self._dashboard_scroll_window,
             width=max(1, int(event.width)),
         )
 
-    def _scroll_motion_page(self, event: tk.Event) -> str:
+    def _scroll_dashboard(self, event: tk.Event) -> str:
         delta = int(getattr(event, "delta", 0))
         if delta:
-            self.motion_scroll_canvas.yview_scroll(
+            self.dashboard_scroll_canvas.yview_scroll(
                 -1 if delta > 0 else 1, "units"
             )
         return "break"
 
-    def _build_settings_page(self) -> None:
-        self.settings_page.columnconfigure(0, weight=1)
-        self.settings_page.rowconfigure(1, weight=1)
+    def _build_settings_section(self, parent: ttk.Frame) -> None:
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(1, weight=1)
 
         self.settings_header_frame = ttk.Frame(
-            self.settings_page, style="Liquid.App.TFrame"
+            parent, style="Liquid.App.TFrame"
         )
         self.settings_header_frame.grid(
             row=0, column=0, sticky="ew", pady=(0, 16)
@@ -2667,7 +2824,7 @@ class JitterApp(tk.Tk):
         ).pack(anchor="w", pady=(3, 0))
 
         self.settings_content = ttk.Frame(
-            self.settings_page, style="Liquid.App.TFrame"
+            parent, style="Liquid.App.TFrame"
         )
         self.settings_content.grid(row=1, column=0, sticky="nsew")
         self.settings_content.columnconfigure(0, weight=3, uniform="settings")
@@ -2845,7 +3002,7 @@ class JitterApp(tk.Tk):
             self.console_workspace, style="Liquid.App.TFrame"
         )
         self.footer_frame.grid(
-            row=1, column=0, sticky="ew", pady=(6, 0)
+            row=2, column=0, sticky="ew", pady=(0, 2)
         )
         self.footer_label = ttk.Label(
             self.footer_frame,
@@ -2904,7 +3061,7 @@ class JitterApp(tk.Tk):
         shell_left = self.shell.winfo_rootx()
         shell_top = self.shell.winfo_rooty()
         workspace = getattr(self, "console_workspace", None)
-        workspace_left = 176
+        workspace_left = 0
         if workspace is not None:
             workspace_left = max(
                 0, workspace.winfo_rootx() - shell_left
@@ -2931,8 +3088,8 @@ class JitterApp(tk.Tk):
 
         p = self._palette
         for name, attribute in (
-            ("rail", "navigation_rail"),
-            ("page", "page_host"),
+            ("topbar", "topbar_frame"),
+            ("dashboard", "dashboard_frame"),
             ("runtime", "runtime_frame"),
         ):
             panel = getattr(self, attribute, None)
@@ -2959,8 +3116,6 @@ class JitterApp(tk.Tk):
                 "floating-panel",
                 f"floating-panel-{name}",
             )
-            if name == "rail":
-                panel_tags += ("rail-surface",)
             self.shell.create_polygon(
                 points,
                 smooth=True,
@@ -3018,14 +3173,6 @@ class JitterApp(tk.Tk):
         self.connection_status_var.set(state)
         self.connection_label.configure(style=f"Liquid.Status{state}.TLabel")
         self._redraw_connection_indicator()
-
-    def select_page(self, index: int) -> None:
-        selected = min(len(self.pages) - 1, max(0, int(index)))
-        for page in self.pages:
-            page.grid_remove()
-        self.pages[selected].grid()
-        if self.nav.selected_index != selected:
-            self.nav.select(selected, notify=False)
 
     # ---- runtime wiring -----------------------------------------------
 
@@ -4907,7 +5054,6 @@ class JitterApp(tk.Tk):
         if self._closed or self._closing:
             return
         self._closing = True
-        self.nav.cancel_animation()
         self._cancel_ai_curve_callbacks()
         for widget in self.winfo_children():
             self._cancel_slider_callbacks(widget)
