@@ -2535,62 +2535,71 @@ class JitterApp(tk.Tk):
     def _refresh_section_summaries(self) -> None:
         if self._closing:
             return
-        source_names = [
-            name
-            for selected, name in (
-                (self.jitter_selected, "Jitter"),
-                (self.ai_selected, "AI Aim"),
-            )
-            if selected
-        ]
-        sources = " + ".join(source_names) or "No sources"
-        self._set_section_summary(
-            self.control_section_summary_var,
-            sources,
-            self.trigger_var.get(),
-            self.preset_var.get(),
-            self.connection_status_var.get(),
-        )
-
-        aim = self.get_ai_settings()
-        target = _TARGET_AREA_LABELS.get(aim.target_area, "Head")
-        self._set_section_summary(
-            self.ai_section_summary_var,
-            self.ai_model_var.get(),
-            target,
-            f"Strength {_display_value(aim.aim_strength)}",
-        )
-
-        box_names = [
-            name
-            for visible, name in (
-                (self.overlay_head_visible, "Head"),
-                (self.overlay_player_visible, "Player"),
-            )
-            if visible
-        ]
-        boxes = " + ".join(box_names) or "No boxes"
-        hud = (
-            f"HUD {self.overlay_hud_corner_var.get()}"
-            if self.overlay_hud_visible else "HUD Off"
-        )
-        self._set_section_summary(
-            self.overlay_section_summary_var,
-            f"Overlay {'On' if self.overlay_visible else 'Off'}",
-            boxes,
-            hud,
-        )
-
         try:
-            volume = max(0, min(100, int(self.sound_volume_var.get())))
-        except (TypeError, ValueError):
-            volume = self.config.sound_volume
-        self._set_section_summary(
-            self.settings_section_summary_var,
-            f"Sound {'On' if self.sound_enabled_var.get() else 'Off'}",
-            f"{volume}%",
-            self.theme_var.get().title(),
-        )
+            source_names = [
+                name
+                for selected, name in (
+                    (self.jitter_selected, "Jitter"),
+                    (self.ai_selected, "AI Aim"),
+                )
+                if selected
+            ]
+            sources = " + ".join(source_names) or "No sources"
+            self._set_section_summary(
+                self.control_section_summary_var,
+                sources,
+                self.trigger_var.get(),
+                self.preset_var.get(),
+                self.connection_status_var.get(),
+            )
+
+            aim = self.get_ai_settings()
+            target = _TARGET_AREA_LABELS.get(aim.target_area, "Head")
+            strength = f"Strength {_display_value(aim.aim_strength)}"
+            ai_details = _compact_section_summary(target, strength)
+            model_limit = max(3, 72 - len(ai_details) - 3)
+            model = _compact_section_summary(
+                self.ai_model_var.get(), limit=model_limit
+            )
+            self._set_section_summary(
+                self.ai_section_summary_var,
+                model,
+                target,
+                strength,
+            )
+
+            box_names = [
+                name
+                for visible, name in (
+                    (self.overlay_head_visible, "Head"),
+                    (self.overlay_player_visible, "Player"),
+                )
+                if visible
+            ]
+            boxes = " + ".join(box_names) or "No boxes"
+            hud = (
+                f"HUD {self.overlay_hud_corner_var.get()}"
+                if self.overlay_hud_visible else "HUD Off"
+            )
+            self._set_section_summary(
+                self.overlay_section_summary_var,
+                f"Overlay {'On' if self.overlay_visible else 'Off'}",
+                boxes,
+                hud,
+            )
+
+            try:
+                volume = max(0, min(100, int(self.sound_volume_var.get())))
+            except (TypeError, ValueError):
+                volume = self.config.sound_volume
+            self._set_section_summary(
+                self.settings_section_summary_var,
+                f"Sound {'On' if self.sound_enabled_var.get() else 'Off'}",
+                f"{volume}%",
+                self.theme_var.get().title(),
+            )
+        except (tk.TclError, RuntimeError, TypeError, ValueError):
+            logging.debug("Could not refresh dashboard summaries", exc_info=True)
 
     def _set_test_button_enabled(self, enabled: bool) -> None:
         self.test_button.configure(state="normal" if enabled else "disabled")

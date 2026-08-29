@@ -1181,6 +1181,29 @@ class JitterLayoutTests(unittest.TestCase):
         self.app._ai_changed("aim_strength")
         self.assertEqual(self.app.ai_section_summary_var.get(), before)
 
+    def test_ai_model_summary_get_failure_does_not_skip_targeting_reset(self):
+        """Fails if a summary getter aborts target-change runtime work."""
+        resets = self.ai.reset_targeting_calls
+        with mock.patch.object(
+            self.app.ai_model_var,
+            "get",
+            side_effect=tk.TclError("summary getter failed"),
+        ):
+            self.app.target_area_var.set("Upper Body")
+            self.app._target_area_changed()
+
+        self.assertEqual(self.ai.reset_targeting_calls, resets + 1)
+        self.assertEqual(self.app.get_ai_settings().target_area, "upper_body")
+
+    def test_long_ai_model_summary_keeps_target_and_strength_visible(self):
+        self.app.ai_model_var.set("Custom · " + ("long-model-name-" * 12) + ".onnx")
+        self.app._refresh_section_summaries()
+
+        summary = self.app.ai_section_summary_var.get()
+        self.assertLessEqual(len(summary), 72)
+        self.assertIn("Head", summary)
+        self.assertIn("Strength", summary)
+
     def test_main_dashboard_excludes_ai_runtime_readouts(self):
         visible = set(widget_texts(self.app.dashboard_content))
         self.assertNotIn("AI RUNTIME", visible)
