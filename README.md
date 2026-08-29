@@ -236,13 +236,6 @@ Adaptive Zoom ไม่ได้ขยายภาพที่ผู้ใช้
 models/all_games_320.onnx
 ```
 
-การเลือกโมเดลภายนอกใช้ได้เฉพาะตอน runtime และระบบตรวจ contract ก่อนเริ่มใช้งาน:
-
-- input `images` แบบ float ต้องมีรูปร่างเป็น `[1,3,N,N]` โดย `N` เป็น `160`, `320` หรือ `640` เท่านั้น
-- ค่า input ที่อนุญาตคือ `[1,3,160,160]`, `[1,3,320,320]` และ `[1,3,640,640]`
-- output `output0` แบบ float ต้องมีรูปร่าง `[1,300,6]` และใช้ class `0` สำหรับ player กับ class `7` สำหรับ head
-- รองรับขนาด runtime อัตโนมัติ 160, 320 และ 640; label ในหน้าแอปจะแสดงขนาดที่ตรวจสอบแล้ว
-- โมเดลขนาด 128/256 (หรือขนาดอื่นนอกเหนือจากนี้), โมเดล dynamic/rectangular และโมเดลที่ malformed จะถูก reject
 
 พื้นที่ capture ยังคง 320×320 สำหรับทุกโมเดล เช่นเดียวกับ Overlay, FOV, targeting และ movement
 `image_resize.py` เป็น shared primitive สำหรับ resize ภาพ RGB เท่านั้น ส่วน detector จะ scale
@@ -256,18 +249,19 @@ models/all_games_320.onnx
 แถว `MODEL` จะแสดง `Default · all_games_320.onnx · 320×320` ปุ่ม `Browse...` ใช้เลือก
 ไฟล์ `.onnx` ภายนอกสำหรับ process ปัจจุบัน และ `Use Default` ใช้กลับไปโมเดลหลัก
 
-โมเดลภายนอกต้องตรง contract นี้ทุกข้อ:
 
-| รายการ | Contract |
-|---|---|
-| Input name | `images` |
-| Input shape | `[1,3,N,N]`, where `N` is `160`, `320`, or `640` |
-| Input type | float |
-| Output name | `output0` |
-| Output shape | `[1, 300, 6]` |
-| Output type | float |
-| Player class | `0` |
-| Head class | `7` |
+รองรับ output ภายนอก 2 แบบ โดยระบบตรวจจาก contract ของโมเดลอัตโนมัติ:
+
+1. แบบ post-NMS เดิม: `output0` ชนิด float รูปร่าง `[1,300,6]` (`x1,y1,x2,y2,confidence,class_id`) โดย class 0 คือ player และ class 7 คือ head
+2. แบบ raw Ultralytics หนึ่งคลาส: `output0` ชนิด float รูปร่าง `[1,5,K]` (`center_x,center_y,width,height,confidence`) โดยขนาดต้องจับคู่กับจำนวน candidate ดังนี้: `160 → K=525`, `320 → K=2100`, `640 → K=8400`
+
+แบบ raw ต้องมี metadata `task=detect` และ `names` ที่ระบุ class 0 เพียงคลาสเดียว ชื่อคลาส เช่น `Enemy` ใช้เพื่ออธิบายเท่านั้น ระบบจะ map เป็น player class 0 และจะไม่สร้าง head class 7 เพิ่มเอง
+ค่า `names` ทุก mapping ต้องเป็น string และ field Ultralytics เพิ่มเติมที่เป็น string ทั้งหมดยังอนุญาต
+การคำนวณ NMS ใช้ NumPy ภายในโปรแกรม ด้วย confidence ขั้นต่ำ `0.05`, IoU `0.45` และส่งออกไม่เกิน `300` กล่องต่อเฟรม
+
+ระบบ reject `[1,K,5]`, raw แบบหลายคลาส, tensor แบบ dynamic/rectangular, จำนวน candidate ที่ไม่ใช่จำนวนที่ระบุ และ metadata ที่ขาดหรือ malformed
+`ai_yolo.py` เป็น pure NumPy decoder สำหรับ raw และ downstream ยังใช้ Detection แบบเดิมและพิกัด canonical 320×320
+โมเดลภายนอกเป็น runtime-only และจะไม่ถูกบันทึก, copy, download หรือ package; มีเฉพาะ `models/all_games_320.onnx` ที่ถูก bundle
 
 โปรแกรมตรวจ contract นอก Tk UI thread และพัก AI ระหว่างสลับโมเดล เมื่อโมเดลใหม่
 พร้อมจึงเริ่ม runtime/motion ที่มีสิทธิ์ใหม่ หาก startup ของโมเดล candidate ล้มเหลว
@@ -290,6 +284,9 @@ SHA-256 ของโมเดลหลักที่อนุมัติคื
 Self-check ยังคงตรวจเฉพาะ bundled 320 model ตาม SHA-256 ข้างต้น และตรวจว่า
 ONNX Runtime ใช้ `DmlExecutionProvider` ได้จริง ไม่มีการเปลี่ยนไปตรวจโมเดลภายนอก
 หรือเพิ่มโมเดลอื่นเข้า package
+
+สำหรับทุก contract input `images` ต้องเป็น float รูปร่าง `[1,3,N,N]` โดย `N` เป็น `160`, `320` หรือ `640` เท่านั้น จึงรองรับ input ที่ตรวจสอบแล้ว `[1,3,160,160]`, `[1,3,320,320]` และ `[1,3,640,640]`; โมเดลขนาด `128/256` หรือขนาดอื่นนอกเหนือจากนี้ถูก reject
+path ของโมเดลภายนอกและไฟล์โมเดลจะไม่ถูกบันทึก, copy, download หรือ package และใช้ได้เฉพาะ process ปัจจุบัน
 
 ## Overlay
 
@@ -404,7 +401,7 @@ Overlay ถูกออกแบบให้ click-through และ capture-exc
 รันจาก root ของ repository:
 
 ```powershell
-python -m py_compile main.py ui.py motion.py combined_motion.py ai_targeting.py ai_tracking.py ai_detection.py ai_capture.py ai_zoom.py image_resize.py ai_service.py ai_model_selection.py display_timing.py overlay.py makcu_service.py hotkeys.py settings.py sound_service.py liquid_widgets.py distribution_metadata.py
+python -m py_compile main.py ui.py motion.py combined_motion.py ai_targeting.py ai_tracking.py ai_detection.py ai_yolo.py ai_capture.py ai_zoom.py image_resize.py ai_service.py ai_model_selection.py display_timing.py overlay.py makcu_service.py hotkeys.py settings.py sound_service.py liquid_widgets.py distribution_metadata.py
 python -m unittest discover -s tests -v
 python -c "import makcu, serial, pygame, onnxruntime, dxcam, comtypes, numpy"
 python .\main.py --ai-runtime-self-check

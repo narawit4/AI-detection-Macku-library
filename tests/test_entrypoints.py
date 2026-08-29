@@ -557,3 +557,17 @@ class EntryPointTests(unittest.TestCase):
         ):
             with self.subTest(contract=contract):
                 self.assertIn(contract, readme)
+
+    def test_readme_documents_exact_raw_single_class_contract_without_packaging_it(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("[1,5,K]", readme)
+        self.assertIn("160 → K=525", readme)
+        self.assertIn("320 → K=2100", readme)
+        self.assertIn("640 → K=8400", readme)
+        self.assertIn("task=detect", readme)
+        self.assertIn("class 0", readme)
+        self.assertIn("ai_yolo.py", readme)
+        self.assertNotIn(
+            "models/Apex_20k_pictures_640.onnx=models/Apex_20k_pictures_640.onnx",
+            readme,
+        )

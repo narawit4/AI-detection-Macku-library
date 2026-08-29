@@ -28,7 +28,9 @@ features.
 - `ai_tracking.py`: legacy pure tracker retained for compatibility tests;
   production target selection is stateless and current-frame only.
 - `ai_zoom.py`: pure adaptive zoom geometry and same-frame refinement composition.
-- `ai_detection.py`: fixed-contract ONNX Runtime detector.
+- `ai_detection.py`: dual-contract ONNX Runtime detector boundary for legacy
+  post-NMS `[1,300,6]` and raw single-class `[1,5,K]` outputs.
+- `ai_yolo.py`: pure NumPy decoder for the raw single-class Ultralytics contract.
 - `ai_capture.py`: centered DXCam capture wrapper.
 - `image_resize.py`: pure resizing and coordinate mapping for supported model sizes.
 - `ai_service.py`: generation-safe capture and inference worker.
@@ -98,13 +100,19 @@ with the supported Windows Python installation.
   Trigger/Modifier gate.
   `Browse...` accepts only runtime external ONNX models whose `images` float input
   is exactly `[1,3,N,N]` for N in 160, 320, or 640 and whose `output0` float output
-  is exactly `[1,300,6]`. Capture, Overlay, targeting, movement, and Adaptive Zoom
+  is exactly either legacy `[1,300,6]` or raw single-class `[1,5,K]`, with
+  `(N,K)` exactly `(160,525)`, `(320,2100)`, or `(640,8400)` and safe
+  `task=detect`/one-class `names` metadata (all mapping entries are strings;
+  extra all-string Ultralytics fields are allowed). Capture, Overlay, targeting, movement,
+  and Adaptive Zoom
   remain in canonical 320-by-320 coordinates; detector output is scaled back
   before publication. Validate off the UI thread, pause AI during a switch, and
   after its exact ready event restart the eligible AI runtime and motion. A
   candidate startup failure makes exactly one automatic rollback attempt to
-  restart the previous model. Never download, copy, package, or persist an
-  external model or its path; every launch starts with the bundled 320 model.
+  restart the previous model. Legacy `[1,300,6]` behavior, downstream canonical
+  `Detection`, and the bundled startup model remain unchanged. Never download,
+  copy, package, or persist an external model or its path; every launch starts
+  with the bundled 320 model.
 - On every base frame, filter detections by confidence and supported class,
   derive the configured aim point for every accepted head and player, and
   select the point with the shortest Euclidean distance to the centered
@@ -234,7 +242,7 @@ with the supported Windows Python installation.
 After implementation changes, run:
 
 ```powershell
-python -m py_compile main.py ui.py motion.py combined_motion.py ai_targeting.py ai_tracking.py ai_detection.py ai_capture.py ai_zoom.py image_resize.py ai_service.py ai_model_selection.py display_timing.py overlay.py makcu_service.py hotkeys.py settings.py sound_service.py liquid_widgets.py distribution_metadata.py
+python -m py_compile main.py ui.py motion.py combined_motion.py ai_targeting.py ai_tracking.py ai_detection.py ai_yolo.py ai_capture.py ai_zoom.py image_resize.py ai_service.py ai_model_selection.py display_timing.py overlay.py makcu_service.py hotkeys.py settings.py sound_service.py liquid_widgets.py distribution_metadata.py
 python -m unittest discover -s tests -v
 python -c "import makcu, serial, pygame, onnxruntime, dxcam, comtypes, numpy"
 python .\main.py --ai-runtime-self-check
