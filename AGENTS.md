@@ -57,7 +57,7 @@ features.
 - `jitter_app/presentation/ui.py`: one-page Tkinter Focused Dashboard.
 - `jitter_app/presentation/widgets.py`: shared Tk widgets and styles.
 - `jitter_app/presentation/overlay.py`: centered, click-through, capture-excluded
-  detection view.
+  detection and AI runtime status view.
 - `jitter_app/presentation/sound.py`: sound service.
 - `jitter_app/config/__init__.py`: configuration package marker.
 - `jitter_app/config/store.py`: independent schema-aware atomic configuration.
@@ -178,9 +178,11 @@ with the supported Windows Python installation.
   has no target.
 - The optional overlay starts off and is independent of source selection. It
   is a centered 320-by-320 configurable-color detection view that must be
-  click-through and excluded from capture. Head-box visibility affects only
-  the overlay; AI Aim still considers hidden head boxes for nearest-target
-  selection.
+  click-through and excluded from capture. Its top-left runtime HUD reports
+  FPS, provider, zoom, and the current-frame `HEAD`, `PLAYER`, or `NONE` lock;
+  a detection frame older than 150 ms reports `NONE`. Head-box visibility
+  affects only the overlay; AI Aim still considers hidden head boxes for
+  nearest-target selection.
 - STOP immediately cancels movement, hides the overlay, and ends its inference
   demand. Disable, disconnect, and source changes immediately cancel movement;
   AI inference continues only while the visible independent overlay requires

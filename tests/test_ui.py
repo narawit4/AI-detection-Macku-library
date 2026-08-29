@@ -377,11 +377,12 @@ class StubOverlay:
         now,
         color=None,
         show_heads=None,
+        runtime=None,
     ):
         if self.render_error is not None:
             raise self.render_error
         self.rendered.append((snapshot, now))
-        self.render_options.append((color, show_heads))
+        self.render_options.append((color, show_heads, runtime))
 
     def clear(self):
         self.cleared += 1
@@ -3898,6 +3899,8 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.assertEqual(self.service.composite_motion_calls, [])
 
     def test_overlay_poll_renders_detection_snapshot_with_injected_clock(self):
+        self.app.ai_fps_var.set("73.5 FPS")
+        self.app.ai_provider_var.set("DirectML")
         self.app.toggle_overlay()
 
         self.assertEqual(
@@ -3906,7 +3909,11 @@ class JitterRuntimeTests(JitterLayoutTests):
         )
         self.assertEqual(
             self.overlay.render_options[-1],
-            ("#ff2b2b", True),
+            (
+                "#ff2b2b",
+                True,
+                ("73.5 FPS", "DirectML", "1.0×"),
+            ),
         )
         self.assertIsNotNone(self.app._overlay_after_id)
 
@@ -3917,7 +3924,11 @@ class JitterRuntimeTests(JitterLayoutTests):
 
         self.assertEqual(
             self.overlay.render_options[-1],
-            ("#ff2b2b", False),
+            (
+                "#ff2b2b",
+                False,
+                ("0 FPS", "No provider", "1.0×"),
+            ),
         )
 
     def test_overlay_render_error_turns_off_overlay_and_final_ai_demand(self):

@@ -3464,6 +3464,11 @@ class JitterApp(tk.Tk):
                 now=self._clock(),
                 color=self.overlay_color,
                 show_heads=self.overlay_head_visible,
+                runtime=(
+                    self.ai_fps_var.get(),
+                    self.ai_provider_var.get(),
+                    self.ai_zoom_var.get(),
+                ),
             )
         except Exception:
             logging.exception("Detection overlay rendering failed")

@@ -291,7 +291,11 @@ class FakeCanvas:
         error = self.failures.get("delete")
         if error is not None:
             raise error
-        self.items = []
+        self.items = [
+            item
+            for item in self.items
+            if tag not in item[1].get("tags", ())
+        ]
 
     def configure(self, **options):
         self.calls.append(("canvas-configure", options))
@@ -301,6 +305,9 @@ class FakeCanvas:
         self.options.update(options)
 
     def create_rectangle(self, *coords, **options):
+        self.items.append((coords, options))
+
+    def create_text(self, *coords, **options):
         self.items.append((coords, options))
 
 
@@ -481,6 +488,152 @@ class DetectionOverlayTests(unittest.TestCase):
 
         self.assertEqual(canvases[0].items[0][1]["outline"], "#00cc88")
 
+    def test_render_draws_runtime_hud_and_selected_head_lock(self):
+        overlay, _window, canvases, _adapter, _calls = self.make_overlay()
+        overlay.show()
+        frame = DetectionFrameSnapshot(
+            1,
+            10.0,
+            (Detection(100, 110, 130, 150, 0.9, 7),),
+            0,
+        )
+
+        try:
+            overlay.render(
+                frame,
+                now=10.0,
+                color="#00cc88",
+                runtime=("120 FPS", "DirectML", "1.5×"),
+            )
+        except TypeError as exc:
+            self.fail(f"render must accept runtime status: {exc}")
+
+        self.assertEqual(len(canvases[0].items), 2)
+        self.assertEqual(
+            canvases[0].items[0][1]["tags"],
+            ("detection",),
+        )
+        self.assertEqual(
+            canvases[0].items[-1],
+            (
+                (8, 8),
+                {
+                    "anchor": "nw",
+                    "fill": "#00cc88",
+                    "font": ("Consolas", 10, "bold"),
+                    "text": (
+                        "AI RUNTIME\n"
+                        "FPS: 120 FPS\n"
+                        "PROVIDER: DirectML\n"
+                        "ZOOM: 1.5×\n"
+                        "LOCK: HEAD"
+                    ),
+                    "tags": ("runtime",),
+                },
+            ),
+        )
+
+    def test_runtime_hud_maps_only_supported_selected_classes(self):
+        overlay, _window, canvases, _adapter, _calls = self.make_overlay()
+        overlay.show()
+        cases = (
+            (Detection(1, 2, 30, 40, 0.8, 0), 0, "PLAYER"),
+            (Detection(1, 2, 30, 40, 0.8, 7), 0, "HEAD"),
+            (Detection(1, 2, 30, 40, 0.8, 99), 0, "NONE"),
+            (Detection(1, 2, 30, 40, 0.8, 0), None, "NONE"),
+            (Detection(1, 2, 30, 40, 0.8, 0), 2, "NONE"),
+        )
+
+        for detection, selected_index, expected in cases:
+            with self.subTest(
+                class_id=detection.class_id,
+                selected_index=selected_index,
+            ):
+                frame = DetectionFrameSnapshot(
+                    1,
+                    10.0,
+                    (detection,),
+                    selected_index,
+                )
+                overlay.render(
+                    frame,
+                    now=10.0,
+                    runtime=("120 FPS", "DirectML", "1.0×"),
+                )
+                self.assertIn(
+                    f"LOCK: {expected}",
+                    canvases[0].items[-1][1]["text"],
+                )
+
+    def test_hidden_head_box_still_reports_selected_head_lock(self):
+        overlay, _window, canvases, _adapter, _calls = self.make_overlay()
+        overlay.show()
+        frame = DetectionFrameSnapshot(
+            1,
+            10.0,
+            (Detection(100, 110, 130, 150, 0.9, 7),),
+            0,
+        )
+
+        overlay.render(
+            frame,
+            now=10.0,
+            show_heads=False,
+            runtime=("120 FPS", "DirectML", "1.0×"),
+        )
+
+        self.assertEqual(len(canvases[0].items), 1)
+        self.assertEqual(canvases[0].items[0][1]["tags"], ("runtime",))
+        self.assertIn("LOCK: HEAD", canvases[0].items[0][1]["text"])
+
+    def test_runtime_hud_drops_lock_when_detection_frame_is_stale(self):
+        overlay, _window, canvases, _adapter, _calls = self.make_overlay()
+        overlay.show()
+        frame = DetectionFrameSnapshot(
+            1,
+            10.0,
+            (Detection(100, 110, 130, 150, 0.9, 0),),
+            0,
+        )
+
+        try:
+            overlay.render(
+                frame,
+                now=10.151,
+                runtime=("0 FPS", "No provider", "1.0×"),
+            )
+        except TypeError as exc:
+            self.fail(f"render must accept runtime status: {exc}")
+
+        self.assertEqual(len(canvases[0].items), 1)
+        self.assertIn("LOCK: NONE", canvases[0].items[0][1]["text"])
+
+    def test_render_replaces_runtime_hud_instead_of_accumulating_text(self):
+        overlay, _window, canvases, _adapter, _calls = self.make_overlay()
+        overlay.show()
+
+        try:
+            overlay.render(
+                None,
+                now=10.0,
+                runtime=("10 FPS", "DirectML", "1.0×"),
+            )
+            overlay.render(
+                None,
+                now=10.1,
+                runtime=("20 FPS", "DirectML", "1.0×"),
+            )
+        except TypeError as exc:
+            self.fail(f"render must accept runtime status: {exc}")
+
+        runtime_items = [
+            item
+            for item in canvases[0].items
+            if "runtime" in item[1].get("tags", ())
+        ]
+        self.assertEqual(len(runtime_items), 1)
+        self.assertIn("FPS: 20 FPS", runtime_items[0][1]["text"])
+
     def test_render_keeps_transparency_key_distinct_from_requested_color(self):
         overlay, _window, canvases, _adapter, calls = self.make_overlay()
         overlay.show()
@@ -521,7 +674,10 @@ class DetectionOverlayTests(unittest.TestCase):
         overlay.hide()
         overlay.show()
 
-        self.assertEqual(calls[:2], [("delete", "detection"), "withdraw"])
+        self.assertEqual(
+            calls[:3],
+            [("delete", "detection"), ("delete", "runtime"), "withdraw"],
+        )
         self.assertEqual(adapter.handles, [1234])
         self.assertTrue(overlay.visible)
 
@@ -533,7 +689,10 @@ class DetectionOverlayTests(unittest.TestCase):
         overlay.close()
         overlay.close()
 
-        self.assertEqual(calls, [("delete", "detection"), "destroy"])
+        self.assertEqual(
+            calls,
+            [("delete", "detection"), ("delete", "runtime"), "destroy"],
+        )
         self.assertTrue(window.destroyed)
         self.assertFalse(overlay.visible)
         with self.assertRaisesRegex(OverlaySetupError, "Overlay is closed"):

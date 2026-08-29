@@ -55,7 +55,7 @@ Jitter เป็นโปรแกรมเดสก์ท็อปสำหร�
 - มี response curve 5 จุด, time-based smoothing และ Max Step
 - ปรับ capture/servo cadence ตาม refresh rate ของจอหลักโดยอัตโนมัติ
 - มี Adaptive Zoom แบบ 1.0×, 1.5× และ 2.0× โดยไม่ขยายภาพบนหน้าจอ
-- มี Overlay กล่อง detection แบบ click-through และไม่ถูกจับกลับเข้า inference
+- มี Overlay กล่อง detection พร้อม AI Runtime HUD แบบ click-through และไม่ถูกจับกลับเข้า inference
 - เลือกโมเดล `.onnx` ภายนอกได้เฉพาะ runtime โดยไม่บันทึก path ลง config
 
 ## หลักการเลือกเป้าหมาย AI
@@ -297,6 +297,8 @@ Overlay เป็นหน้าต่าง detection ขนาด 320×320 ท
 - เริ่มต้นปิดและทำงานแยกจากการเลือก AI Aim
 - click-through จึงไม่ขวางการคลิก
 - ถูก exclude จาก capture เพื่อไม่ให้เห็นกล่องของตัวเองใน inference
+- มุมซ้ายบนแสดง FPS, provider, zoom และสถานะ lock เป็น `HEAD`, `PLAYER` หรือ `NONE`
+- หากเฟรม detection เก่ากว่า 150 ms สถานะ lock จะกลับเป็น `NONE`
 - เลือก `Box Color` ได้
 - ปุ่ม `Head Boxes` ซ่อน/แสดงเฉพาะกล่อง head บน Overlay
 - การซ่อนกล่อง head ไม่ได้ตัด head ออกจาก target selection

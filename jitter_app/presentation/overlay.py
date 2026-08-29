@@ -68,6 +68,27 @@ def project_overlay_boxes(
     )
 
 
+def _selected_lock_label(
+    snapshot: DetectionFrameSnapshot | None,
+    now: float,
+) -> str:
+    if snapshot is None or max(0.0, now - snapshot.captured_at) > MAX_FRAME_AGE_S:
+        return "NONE"
+    selected_index = snapshot.selected_index
+    if (
+        selected_index is None
+        or selected_index < 0
+        or selected_index >= len(snapshot.detections)
+    ):
+        return "NONE"
+    class_id = snapshot.detections[selected_index].class_id
+    if class_id == 7:
+        return "HEAD"
+    if class_id == 0:
+        return "PLAYER"
+    return "NONE"
+
+
 class Win32OverlayAdapter:
     """Applies all native properties required before an overlay is shown."""
 
@@ -216,6 +237,7 @@ class DetectionOverlay:
         now: float,
         color: str = OVERLAY_COLOR,
         show_heads: bool = True,
+        runtime: tuple[str, str, str] | None = None,
     ) -> None:
         self._require_main_thread()
         boxes = project_overlay_boxes(snapshot, now, show_heads=show_heads)
@@ -230,6 +252,23 @@ class DetectionOverlay:
                 outline=color,
                 width=box.width,
                 tags=("detection",),
+            )
+        if runtime is not None:
+            fps, provider, zoom = runtime
+            self._canvas.create_text(
+                8,
+                8,
+                anchor="nw",
+                fill=color,
+                font=("Consolas", 10, "bold"),
+                text=(
+                    "AI RUNTIME\n"
+                    f"FPS: {fps}\n"
+                    f"PROVIDER: {provider}\n"
+                    f"ZOOM: {zoom}\n"
+                    f"LOCK: {_selected_lock_label(snapshot, now)}"
+                ),
+                tags=("runtime",),
             )
 
     def _keep_outline_visible(self, color: str) -> None:
@@ -248,6 +287,7 @@ class DetectionOverlay:
         self._require_main_thread()
         if self._canvas is not None:
             self._canvas.delete("detection")
+            self._canvas.delete("runtime")
 
     def hide(self) -> None:
         self._require_main_thread()
@@ -266,6 +306,7 @@ class DetectionOverlay:
         if canvas is not None:
             try:
                 canvas.delete("detection")
+                canvas.delete("runtime")
             except Exception:
                 LOGGER.exception("Detection overlay canvas cleanup failed")
         if window is not None:
