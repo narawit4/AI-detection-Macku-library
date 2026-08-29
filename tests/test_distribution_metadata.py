@@ -268,7 +268,7 @@ class BuildPlanTests(unittest.TestCase):
             set(plan.compile_targets),
             {
                 "main.py", "ui.py", "motion.py", "combined_motion.py",
-                "ai_targeting.py", "ai_tracking.py", "ai_detection.py",
+                "ai_targeting.py", "ai_tracking.py", "ai_detection.py", "ai_yolo.py",
                 "ai_model_selection.py",
                 "ai_capture.py", "ai_zoom.py", "image_resize.py", "ai_service.py",
                 "display_timing.py", "overlay.py", "makcu_service.py",
