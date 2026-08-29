@@ -1042,22 +1042,6 @@ class JitterLayoutTests(unittest.TestCase):
             self.app.footer_var.get(), "Test Run is active; use STOP to cancel"
         )
 
-    def _obsolete_motion_scroll_keeps_both_source_settings_available(self):
-        self.assertIsInstance(self.app.motion_scroll_canvas, tk.Canvas)
-        for card in (
-            self.app.motion_hero_card,
-            self.app.motion_summary_card,
-            self.app.ai_settings_card,
-        ):
-            self.assertIs(card.master, self.app.motion_scroll_content)
-            self.assertEqual(card.winfo_manager(), "grid")
-        self.assertEqual(
-            int(self.app.ai_settings_card.grid_info()["columnspan"]), 2
-        )
-        self.app.update_idletasks()
-        self.assertEqual(self.app.geometry().split("+")[0], "840x620")
-        self.assertEqual(self.app.stop_button.winfo_manager(), "grid")
-
     def test_single_page_shell_orders_fixed_chrome_around_one_scroll_region(self):
         widgets = (
             self.app.topbar_frame,
@@ -1164,40 +1148,6 @@ class JitterLayoutTests(unittest.TestCase):
             for widget in widgets:
                 with self.subTest(section=section_body, widget=widget):
                     self.assertTrue(self._is_descendant(widget, section_body))
-
-    def _obsolete_ai_runtime_readout_is_overlay_only(self):
-        texts = widget_texts(self.app.motion_scroll_content)
-        settings_grid = self.app.ai_settings_card.grid_info()
-
-        self.assertNotIn("AI RUNTIME", texts)
-        self.assertTrue(
-            {"e", "w"}.issubset(set(str(settings_grid["sticky"])))
-        )
-        self.assertTrue(
-            self._is_descendant(
-                self.app.overlay_button, self.app.overlay_custom_card
-            )
-        )
-        self.assertIs(
-            self.app.overlay_button.master,
-            self.app.overlay_reset_button.master,
-        )
-        overlay_grid = self.app.overlay_button.grid_info()
-        reset_grid = self.app.overlay_reset_button.grid_info()
-        self.assertEqual(overlay_grid["row"], reset_grid["row"])
-        self.assertEqual(
-            int(overlay_grid["column"]) + 1,
-            int(reset_grid["column"]),
-        )
-        self.assertIn("Overlay OFF", widget_texts(self.app.overlay_custom_card))
-
-    def _obsolete_response_curve_card_is_scrollable_and_keeps_window_fixed(self):
-        self.assertIs(self.app.ai_curve_card.master, self.app.motion_scroll_content)
-        self.assertEqual(self.app.ai_curve_card.winfo_manager(), "grid")
-        self.assertIsInstance(self.app.ai_curve_canvas, tk.Canvas)
-        self.app.update_idletasks()
-        self.assertEqual(self.app.geometry().split("+")[0], "840x620")
-        self.assertEqual(self.app.stop_button.winfo_manager(), "grid")
 
     def test_curve_exact_edit_updates_live_snapshot_and_schedules_save(self):
         self.app._cancel_after("_save_after_id")
@@ -1596,19 +1546,6 @@ class JitterLayoutTests(unittest.TestCase):
         ):
             self.assertFalse(hasattr(self.store.saved[-1], name))
 
-    def _obsolete_navigation_palette_api_tracks_the_active_theme(self):
-        palette_builder = getattr(self.app, "_navigation_palette", None)
-        self.assertIsNotNone(palette_builder)
-        self.assertEqual(
-            palette_builder()["background"],
-            "#F2F7FA",
-        )
-        self.app.toggle_theme()
-        self.assertEqual(
-            palette_builder()["background"],
-            "#0D1420",
-        )
-
     def test_every_numeric_control_uses_liquid_slider(self):
         numeric_keys = ("pulse_size_px", "pulse_rate_hz")
         for key in numeric_keys:
@@ -1669,93 +1606,6 @@ class JitterLayoutTests(unittest.TestCase):
         )
         self.assertLessEqual(label_right, card_right)
 
-    def _obsolete_shell_uses_persistent_rail_and_console_columns(self):
-        self.assertIs(self.app.navigation_rail.master, self.app.shell)
-        self.assertIs(self.app.console_workspace.master, self.app.shell)
-        self.assertEqual(int(self.app.navigation_rail.grid_info()["column"]), 0)
-        self.assertEqual(int(self.app.console_workspace.grid_info()["column"]), 1)
-        self.assertEqual(int(self.app.navigation_rail.cget("width")), 176)
-        self.assertEqual(self.app.nav.orientation, "vertical")
-        self.app.deiconify()
-        self.app.update()
-        self.assertEqual(self.app.navigation_rail.winfo_width(), 176)
-
-    def _obsolete_rail_owns_identity_connection_navigation_and_mini_actions(self):
-        for widget in (
-            self.app.rail_identity,
-            self.app.connection_indicator,
-            self.app.nav,
-            self.app.navigation_actions,
-        ):
-            with self.subTest(widget=str(widget)):
-                self.assertTrue(
-                    self._is_descendant(widget, self.app.navigation_rail)
-                )
-        for button in (
-            self.app.reconnect_button,
-            self.app.test_button,
-            self.app.theme_button,
-        ):
-            with self.subTest(button=str(button)):
-                self.assertIs(button.master, self.app.navigation_actions)
-        self.assertEqual(
-            self.app.navigation_actions.pack_info()["side"],
-            "bottom",
-        )
-
-    def _obsolete_workspace_keeps_page_footer_runtime_order(self):
-        widgets = (
-            self.app.page_host,
-            self.app.footer_frame,
-            self.app.runtime_frame,
-        )
-        self.assertEqual(
-            [int(widget.grid_info()["row"]) for widget in widgets],
-            [0, 1, 2],
-        )
-        for widget in widgets:
-            with self.subTest(widget=str(widget)):
-                self.assertIs(widget.master, self.app.console_workspace)
-
-    def _obsolete_split_console_shell_preserves_semantic_layers_in_both_themes(self):
-        """Fails if the shell drops its graded and rounded Canvas surfaces."""
-        shell = getattr(self.app, "shell", None)
-        self.assertIsInstance(shell, tk.Canvas)
-        self.app.deiconify()
-        self.app.update()
-
-        required_tags = (
-            "rail-surface",
-            "workspace-band",
-            "rounded-surface",
-            "floating-panel",
-            "floating-panel-rail",
-            "floating-panel-page",
-            "floating-panel-runtime",
-        )
-        themed_layers = {}
-        for theme in ("light", "dark"):
-            with self.subTest(theme=theme):
-                self.assertEqual(self.app.theme_var.get(), theme)
-                for tag in required_tags:
-                    self.assertTrue(shell.find_withtag(tag), tag)
-                self.assertFalse(shell.find_withtag("panel-highlight"))
-                for item in shell.find_withtag("floating-panel"):
-                    self.assertTrue(shell.itemcget(item, "outline"))
-                    self.assertEqual(float(shell.itemcget(item, "width")), 1.0)
-                rail_fill = shell.itemcget(
-                    shell.find_withtag("rail-surface")[0], "fill"
-                )
-                workspace_fills = tuple(
-                    shell.itemcget(item, "fill")
-                    for item in shell.find_withtag("workspace-band")
-                )
-                self.assertNotIn(rail_fill, workspace_fills)
-                themed_layers[theme] = (rail_fill, workspace_fills)
-            self.app.toggle_theme()
-            self.app.update()
-        self.assertNotEqual(themed_layers["light"], themed_layers["dark"])
-
     def test_connection_indicator_has_glow_and_semantic_state_tags(self):
         """Fails if connection state returns to a text-only indicator."""
         indicator = getattr(self.app, "connection_indicator", None)
@@ -1773,31 +1623,6 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertTrue(indicator.find_withtag("status-connected"))
         connected_fill = indicator.itemcget("status-marker", "fill")
         self.assertEqual(len({disconnected_fill, connecting_fill, connected_fill}), 3)
-
-    def _obsolete_navigation_contains_control_motion_and_settings(self):
-        self.assertEqual(self.app.nav.labels, ("Control", "Motion", "Settings"))
-        self.assertEqual(
-            self.app.pages,
-            (self.app.control_page, self.app.motion_page, self.app.settings_page),
-        )
-        self.assertFalse(hasattr(self.app, "advanced_page"))
-        self.assertFalse(hasattr(self.app, "advanced_canvas"))
-        for widget in (
-            self.app.trigger_combo,
-            self.app.modifier_combo,
-            self.app.preset_combo,
-            self.app.hotkey_button,
-            self.app.device_label,
-        ):
-            with self.subTest(widget=str(widget)):
-                self.assertTrue(self._is_descendant(widget, self.app.control_page))
-        for widget in (
-            self.app.pulse_size_px_entry,
-            self.app.pulse_rate_hz_entry,
-            self.app.ramp_mode_combo,
-        ):
-            with self.subTest(widget=str(widget)):
-                self.assertTrue(self._is_descendant(widget, self.app.motion_page))
 
     def test_settings_page_exposes_persisted_sound_controls(self):
         self.assertTrue(self.app.sound_enabled_var.get())
@@ -1874,56 +1699,6 @@ class JitterLayoutTests(unittest.TestCase):
 
         self.assertEqual(self.app.sound_player.played[-2:], [True, False])
         self.assertEqual(self.app.sound_player.forced[-2:], [True, True])
-
-    def _obsolete_settings_page_uses_header_and_three_to_two_dashboard(self):
-        self.assertEqual(self.app.settings_title_label.cget("text"), "SETTINGS")
-        self.assertTrue(
-            self._is_descendant(
-                self.app.settings_title_label, self.app.settings_page
-            )
-        )
-        self.assertEqual(
-            tuple(
-                int(self.app.settings_content.grid_columnconfigure(column)[
-                    "weight"
-                ])
-                for column in (0, 1)
-            ),
-            (3, 2),
-        )
-        self.assertEqual(
-            int(self.app.sound_feedback_card.grid_info()["column"]), 0
-        )
-        self.assertEqual(
-            int(self.app.sound_preview_card.grid_info()["column"]), 1
-        )
-        self.assertTrue(
-            self._is_descendant(
-                self.app.sound_preview_card, self.app.settings_content
-            )
-        )
-
-    def _obsolete_settings_has_no_duplicate_theme_controls(self):
-        self.app.deiconify()
-        self.app.select_page(2)
-        self.app.update()
-        self.assertTrue(self.app.settings_page.winfo_ismapped())
-        self.assertTrue(self.app.stop_button.winfo_ismapped())
-        visible_text = set(widget_texts(self.app.settings_page))
-        self.assertNotIn("APPEARANCE", visible_text)
-        self.assertNotIn("Dark", visible_text)
-        self.assertNotIn("Light", visible_text)
-        self.assertTrue(
-            self._is_descendant(
-                self.app.theme_button, self.app.navigation_actions
-            )
-        )
-        self.assertLessEqual(
-            self.app.stop_button.winfo_rooty()
-            + self.app.stop_button.winfo_height()
-            - self.app.winfo_rooty(),
-            self.app.winfo_height(),
-        )
 
     def test_settings_small_text_meets_contrast_in_both_themes(self):
         style = ttk.Style(self.app)
@@ -2133,58 +1908,6 @@ class JitterLayoutTests(unittest.TestCase):
             (1, 1),
         )
 
-    def _obsolete_navigation_uses_compact_equal_button_layout(self):
-        self.assertEqual(int(self.app.nav.cget("height")), 168)
-        first = self.app.nav._item_bounds(0)
-        second = self.app.nav._item_bounds(1)
-        self.assertEqual(first[3] - first[1], second[3] - second[1])
-
-    def _obsolete_split_console_control_uses_exact_three_to_two_columns(self):
-        self.assertEqual(
-            int(self.app.control_bindings_card.grid_info()["column"]), 0
-        )
-        self.assertEqual(
-            int(self.app.control_device_card.grid_info()["column"]), 1
-        )
-        self.assertEqual(
-            tuple(
-                int(self.app.control_page.grid_columnconfigure(column)["weight"])
-                for column in (0, 1)
-            ),
-            (3, 2),
-        )
-        for widget in (
-            self.app.trigger_combo,
-            self.app.modifier_combo,
-            self.app.hotkey_button,
-        ):
-            self.assertTrue(
-                self._is_descendant(widget, self.app.control_bindings_card)
-            )
-        self.assertTrue(
-            self._is_descendant(self.app.preset_combo,
-                                self.app.control_device_card)
-        )
-        self.assertTrue(
-            self._is_descendant(self.app.device_label,
-                                self.app.control_device_card)
-        )
-
-    def _obsolete_control_page_uses_dashboard_header_and_surface_cards(self):
-        self.assertEqual(self.app.control_title_label.cget("text"), "CONTROL")
-        self.assertEqual(
-            int(self.app.control_title_label.master.grid_info()["row"]), 0
-        )
-        for card in (
-            self.app.control_bindings_card,
-            self.app.control_device_card,
-        ):
-            with self.subTest(card=str(card)):
-                self.assertEqual(
-                    card.cget("style"), "Liquid.SettingsCard.TFrame"
-                )
-                self.assertEqual(int(card.grid_info()["row"]), 1)
-
     def test_split_console_device_summary_stays_inside_device_card(self):
         """Fails if real Makcu diagnostics overflow the Device card."""
         self.app.handle_service_event(ServiceEvent(
@@ -2251,114 +1974,6 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertEqual(self.app.device_status_var.get(), "Makcu on COM6")
         self.assertTrue(any(payload in line for line in captured.output))
 
-    def _obsolete_split_console_motion_uses_exact_three_to_two_columns(self):
-        self.assertEqual(int(self.app.motion_hero_card.grid_info()["column"]), 0)
-        self.assertEqual(
-            int(self.app.motion_summary_card.grid_info()["column"]), 1
-        )
-        self.assertEqual(
-            tuple(
-                int(self.app.motion_page.grid_columnconfigure(column)["weight"])
-                for column in (0, 1)
-            ),
-            (3, 2),
-        )
-        for key in ("pulse_size_px", "pulse_rate_hz"):
-            for suffix in ("scale", "entry"):
-                with self.subTest(key=key, suffix=suffix):
-                    self.assertTrue(
-                        self._is_descendant(
-                            getattr(self.app, f"{key}_{suffix}"),
-                            self.app.motion_hero_card,
-                        )
-                    )
-        self.assertTrue(
-            self._is_descendant(
-                self.app.motion_summary_label, self.app.motion_summary_card
-            )
-        )
-        self.app.deiconify()
-        self.app.select_page(1)
-        self.app.update()
-        self.assertAlmostEqual(
-            self.app.motion_hero_card.winfo_width()
-            / self.app.motion_summary_card.winfo_width(),
-            1.5,
-            delta=0.03,
-        )
-
-    def _obsolete_motion_page_uses_dashboard_header_and_live_readouts(self):
-        self.assertEqual(self.app.motion_title_label.cget("text"), "MOTION")
-        self.assertEqual(
-            int(self.app.motion_title_label.master.grid_info()["row"]), 0
-        )
-        for card in (
-            self.app.motion_hero_card,
-            self.app.motion_summary_card,
-        ):
-            with self.subTest(card=str(card)):
-                self.assertEqual(
-                    card.cget("style"), "Liquid.SettingsCard.TFrame"
-                )
-                self.assertEqual(int(card.grid_info()["row"]), 0)
-        self.assertEqual(int(self.app.ai_settings_card.grid_info()["row"]), 1)
-        self.assertEqual(
-            int(self.app.ai_settings_card.grid_info()["columnspan"]), 2
-        )
-        for readout, variable in (
-            (
-                self.app.motion_size_readout,
-                self.app.motion_snapshot_size_var,
-            ),
-            (
-                self.app.motion_rate_readout,
-                self.app.motion_snapshot_rate_var,
-            ),
-            (
-                self.app.motion_ramp_readout,
-                self.app.motion_snapshot_ramp_var,
-            ),
-        ):
-            with self.subTest(readout=str(readout)):
-                self.assertTrue(
-                    self._is_descendant(readout, self.app.motion_summary_card)
-                )
-                self.assertEqual(
-                    readout.cget("textvariable"), str(variable)
-                )
-
-    def _obsolete_motion_snapshot_text_is_not_clipped_at_fixed_window_size(self):
-        self.app.deiconify()
-        self.app.select_page(1)
-        self.app.update()
-        labels = {}
-        for widget in descendant_widgets(self.app.motion_summary_frame):
-            if isinstance(widget, ttk.Label):
-                labels[str(widget.cget("text"))] = widget
-        for text in ("PULSE SIZE", "PULSE RATE", "RAMP MODE"):
-            with self.subTest(text=text):
-                self.assertGreaterEqual(
-                    labels[text].winfo_width(), labels[text].winfo_reqwidth()
-                )
-        self.assertLessEqual(
-            int(self.app.motion_summary_label.cget("wraplength")),
-            self.app.motion_summary_frame.winfo_width(),
-        )
-        self.assertLessEqual(
-            self.app.motion_summary_frame.winfo_reqheight(),
-            self.app.motion_summary_frame.winfo_height(),
-        )
-        snapshot_copy = next(
-            widget
-            for widget in self.app.motion_summary_card.winfo_children()
-            if isinstance(widget, ttk.Label)
-            and str(widget.cget("text")).startswith("The immutable profile")
-        )
-        self.assertLessEqual(
-            int(snapshot_copy.cget("wraplength")),
-            self.app.motion_summary_frame.winfo_width(),
-        )
-
     def test_motion_page_has_snapshot_backed_live_summary(self):
         """Fails if Motion lacks a visible summary of the active snapshot."""
         summary_var = getattr(self.app, "motion_summary_var", None)
@@ -2417,45 +2032,6 @@ class JitterLayoutTests(unittest.TestCase):
             self.app.get_motion_settings(),
             MotionSettings(4.0, 45.0, "Instant"),
         )
-
-    def _obsolete_mini_actions_are_liquid_icon_buttons(self):
-        for button in (self.app.reconnect_button, self.app.test_button,
-                       self.app.theme_button):
-            self.assertIsInstance(button, LiquidIconButton)
-            self.assertIs(button.master, self.app.navigation_actions)
-        self.assertEqual(
-            [button.icon for button in (
-                self.app.reconnect_button,
-                self.app.test_button,
-                self.app.theme_button,
-            )],
-            ["↻", "▶", "☾"],
-        )
-
-    def _obsolete_split_console_keeps_actions_footer_runtime_and_stop_on_every_page(self):
-        self.app.deiconify()
-        self.app.update()
-        for index in range(2):
-            with self.subTest(index=index):
-                self.app.select_page(index)
-                self.app.update_idletasks()
-                self.assertTrue(all(widget.winfo_ismapped() for widget in (
-                    self.app.navigation_actions,
-                    self.app.reconnect_button,
-                    self.app.test_button,
-                    self.app.theme_button,
-                    self.app.footer_frame,
-                    self.app.runtime_frame,
-                    self.app.stop_button,
-                )))
-
-    def _obsolete_stop_is_visible_on_every_navigation_page(self):
-        self.app.deiconify()
-        for index in range(2):
-            with self.subTest(index=index):
-                self.app.select_page(index)
-                self.app.update()
-                self.assertEqual(self.app.stop_button.winfo_ismapped(), 1)
 
     def test_split_console_close_cancels_all_widget_callbacks_before_service_close(self):
         self.app.deiconify()
@@ -2616,20 +2192,6 @@ class JitterLayoutTests(unittest.TestCase):
                 self.assertTrue(
                     self._is_descendant(widget, self.app.console_workspace)
                 )
-
-    def _obsolete_identity_shows_connection_and_control_shows_device_summary(self):
-        self.assertTrue(self._is_descendant(self.app.device_label,
-                                            self.app.control_page))
-        self.assertTrue(self._is_descendant(self.app.connection_label,
-                                            self.app.identity_frame))
-        self.assertFalse(self._is_descendant(self.app.reconnect_button,
-                                             self.app.identity_frame))
-
-    def _obsolete_theme_toggle_lives_in_navigation_not_identity(self):
-        self.assertIs(self.app.theme_button.master, self.app.navigation_actions)
-        self.assertFalse(self._is_descendant(self.app.theme_button,
-                                             self.app.identity_frame))
-        self.assertEqual(self.app.theme_button.pack_info()["side"], "left")
 
     def test_theme_icon_tooltip_appears_on_hover_and_is_removed(self):
         self.app._show_theme_tooltip()
@@ -2880,16 +2442,6 @@ class JitterLayoutTests(unittest.TestCase):
             self.assertIn(expected, texts)
         self.assertEqual(self.app.reconnect_button.icon, "↻")
         self.assertEqual(self.app.test_button.icon, "▶")
-    def _obsolete_page_selection_does_not_change_outer_geometry(self):
-        self.app.update_idletasks()
-        before = self.app.geometry().split("+")[0]
-        self.app.select_page(1)
-        self.app.update_idletasks()
-        after = self.app.geometry().split("+")[0]
-        self.assertEqual(after, before)
-
-
-class JitterRuntimeTests(JitterLayoutTests):
     def drain_ui_queue(self):
         self.app._cancel_after("_ui_pump_after_id")
         self.app._drain_ui_queue()
