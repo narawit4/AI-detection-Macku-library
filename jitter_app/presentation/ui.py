@@ -940,6 +940,10 @@ class JitterApp(tk.Tk):
         self.overlay_hud_offset_x_var = tk.StringVar(self, "8")
         self.overlay_hud_offset_y_var = tk.StringVar(self, "8")
         self.overlay_hud_font_size_var = tk.StringVar(self, "10")
+        self._overlay_box_width_bounds = (1, 8)
+        self._overlay_hud_offset_x_bounds = (0, 500)
+        self._overlay_hud_offset_y_bounds = (0, 500)
+        self._overlay_hud_font_size_bounds = (8, 24)
         self.motion_summary_var = tk.StringVar(
             self, _motion_summary_text(self._motion_snapshot)
         )
@@ -1619,17 +1623,111 @@ class JitterApp(tk.Tk):
         self._build_ai_curve_card(parent)
 
     def _build_overlay_section(self, parent: ttk.Frame) -> None:
-        self.overlay_custom_card = ttk.Frame(
+        self.overlay_custom_window: tk.Toplevel | None = None
+        self.overlay_control_card = ttk.Frame(
             parent,
             style="Liquid.SettingsCard.TFrame",
-            padding=(18, 16, 18, 18),
+            padding=(18, 14, 18, 14),
         )
-        self.overlay_custom_card.grid(
+        self.overlay_control_card.grid(
             row=0,
             column=0,
             columnspan=2,
             sticky="ew",
             pady=(8, 0),
+        )
+        self.overlay_control_card.columnconfigure(0, weight=1)
+        ttk.Label(
+            self.overlay_control_card,
+            text="OVERLAY VISIBILITY",
+            style="Liquid.CardTitle.TLabel",
+            font=(FONT_FAMILY, 12, "bold"),
+        ).grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            self.overlay_control_card,
+            text="Detection boxes and HUD are independent from motion sources.",
+            style="Liquid.CardBody.TLabel",
+        ).grid(row=1, column=0, sticky="w", pady=(4, 0))
+
+        actions = ttk.Frame(
+            self.overlay_control_card,
+            style="Liquid.SettingsCard.TFrame",
+        )
+        actions.grid(row=0, column=1, rowspan=2, sticky="e", padx=(12, 0))
+        self.overlay_button = ttk.Button(
+            actions,
+            text="Overlay OFF",
+            style="Liquid.Secondary.TButton",
+            command=self.toggle_overlay,
+        )
+        self.overlay_button.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        self.overlay_customize_button = ttk.Button(
+            actions,
+            text="Customize Overlay",
+            style="Liquid.Secondary.TButton",
+            command=self.open_overlay_customizer,
+        )
+        self.overlay_customize_button.grid(
+            row=0,
+            column=1,
+            sticky="ew",
+            padx=(4, 0),
+        )
+
+    def _overlay_customizer_exists(self) -> bool:
+        window = self.overlay_custom_window
+        if window is None:
+            return False
+        try:
+            return bool(window.winfo_exists())
+        except tk.TclError:
+            return False
+
+    def open_overlay_customizer(self) -> None:
+        if self._overlay_customizer_exists():
+            window = self.overlay_custom_window
+            window.deiconify()
+            window.lift()
+            window.focus_set()
+            return
+
+        window = tk.Toplevel(self)
+        self.overlay_custom_window = window
+        window.withdraw()
+        window.title("Customize Overlay")
+        window.geometry("760x520")
+        window.resizable(False, False)
+        window.transient(self)
+        window.configure(background=self._palette["window"])
+        window.protocol("WM_DELETE_WINDOW", self.close_overlay_customizer)
+        self._build_overlay_customizer_contents(window)
+        self._render_runtime_controls()
+        window.deiconify()
+        window.lift()
+        window.focus_set()
+
+    def close_overlay_customizer(self) -> None:
+        window = self.overlay_custom_window
+        self.overlay_custom_window = None
+        if window is None:
+            return
+        try:
+            self._cancel_slider_callbacks(window)
+            window.destroy()
+        except tk.TclError:
+            pass
+
+    def _build_overlay_customizer_contents(self, parent: tk.Toplevel) -> None:
+        self.overlay_custom_card = ttk.Frame(
+            parent,
+            style="Liquid.SettingsCard.TFrame",
+            padding=(18, 16, 18, 18),
+        )
+        self.overlay_custom_card.pack(
+            fill="both",
+            expand=True,
+            padx=12,
+            pady=12,
         )
         self.overlay_custom_card.columnconfigure(0, weight=1, uniform="overlay")
         self.overlay_custom_card.columnconfigure(1, weight=1, uniform="overlay")
@@ -1645,14 +1743,6 @@ class JitterApp(tk.Tk):
         )
         overlay_header_actions.grid(row=0, column=1, sticky="e")
         overlay_header_actions.columnconfigure(0, weight=1)
-        overlay_header_actions.columnconfigure(1, weight=1)
-        self.overlay_button = ttk.Button(
-            overlay_header_actions,
-            text="Overlay OFF",
-            style="Liquid.Secondary.TButton",
-            command=lambda: self.toggle_overlay(),
-        )
-        self.overlay_button.grid(row=0, column=0, sticky="ew", padx=(0, 4))
         self.overlay_reset_button = ttk.Button(
             overlay_header_actions,
             text="Reset Overlay",
@@ -1660,7 +1750,7 @@ class JitterApp(tk.Tk):
             command=self.reset_overlay_customization,
         )
         self.overlay_reset_button.grid(
-            row=0, column=1, sticky="ew", padx=(4, 0)
+            row=0, column=0, sticky="ew"
         )
         ttk.Label(
             self.overlay_custom_card,
@@ -1681,7 +1771,7 @@ class JitterApp(tk.Tk):
             style="Liquid.Surface.TFrame",
         )
         detection.grid(row=2, column=0, sticky="new", padx=(0, 6))
-        for column in range(3):
+        for column in range(2):
             detection.columnconfigure(column, weight=1, uniform="boxes")
         self.overlay_color_button = ttk.Button(
             detection,
@@ -1690,7 +1780,7 @@ class JitterApp(tk.Tk):
             command=self.choose_overlay_color,
         )
         self.overlay_color_button.grid(
-            row=0, column=0, sticky="ew", padx=(0, 4)
+            row=0, column=0, columnspan=2, sticky="ew"
         )
         self.overlay_head_button = ttk.Button(
             detection,
@@ -1705,7 +1795,7 @@ class JitterApp(tk.Tk):
             command=self.toggle_overlay_heads,
         )
         self.overlay_head_button.grid(
-            row=0, column=1, sticky="ew", padx=4
+            row=1, column=0, sticky="ew", padx=(0, 4), pady=(8, 0)
         )
         self.overlay_player_button = ttk.Button(
             detection,
@@ -1714,7 +1804,7 @@ class JitterApp(tk.Tk):
             command=self.toggle_overlay_players,
         )
         self.overlay_player_button.grid(
-            row=0, column=2, sticky="ew", padx=(4, 0)
+            row=1, column=1, sticky="ew", padx=(4, 0), pady=(8, 0)
         )
         width_control = self._overlay_numeric_control(
             detection,
@@ -1724,7 +1814,7 @@ class JitterApp(tk.Tk):
             high=8,
         )
         width_control.grid(
-            row=1, column=0, sticky="ew", padx=(0, 6), pady=(10, 0)
+            row=2, column=0, sticky="ew", padx=(0, 6), pady=(10, 0)
         )
         label_field, self.overlay_label_mode_combo = self._dropdown_field(
             detection,
@@ -1733,9 +1823,8 @@ class JitterApp(tk.Tk):
             values=("Off", "Class", "Class + Confidence"),
         )
         label_field.grid(
-            row=1,
+            row=2,
             column=1,
-            columnspan=2,
             sticky="ew",
             padx=(6, 0),
             pady=(10, 0),
@@ -1763,11 +1852,10 @@ class JitterApp(tk.Tk):
             "<<ComboboxSelected>>",
             lambda _event: self._overlay_style_changed(),
         )
-        for row, (label, key, low, high) in enumerate((
+        for column, (label, key, low, high) in enumerate((
             ("HUD X Offset", "hud_offset_x", 0, 500),
             ("HUD Y Offset", "hud_offset_y", 0, 500),
-            ("HUD Font Size", "hud_font_size", 8, 24),
-        ), start=1):
+        )):
             control = self._overlay_numeric_control(
                 hud,
                 label=label,
@@ -1776,15 +1864,29 @@ class JitterApp(tk.Tk):
                 high=high,
             )
             control.grid(
-                row=row,
-                column=0,
-                columnspan=2,
+                row=1,
+                column=column,
                 sticky="ew",
+                padx=(0, 5) if column == 0 else (5, 0),
                 pady=(10, 0),
             )
+        font_control = self._overlay_numeric_control(
+            hud,
+            label="HUD Font Size",
+            key="hud_font_size",
+            low=8,
+            high=24,
+        )
+        font_control.grid(
+            row=2,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(10, 0),
+        )
         hud_actions = ttk.Frame(hud, style="Liquid.Surface.TFrame")
         hud_actions.grid(
-            row=4, column=0, columnspan=2, sticky="ew", pady=(10, 0)
+            row=3, column=0, columnspan=2, sticky="ew", pady=(10, 0)
         )
         hud_actions.columnconfigure(0, weight=1)
         hud_actions.columnconfigure(1, weight=1)
@@ -1808,7 +1910,7 @@ class JitterApp(tk.Tk):
         )
         metrics = ttk.Frame(hud, style="Liquid.Surface.TFrame")
         metrics.grid(
-            row=5, column=0, columnspan=2, sticky="ew", pady=(8, 0)
+            row=4, column=0, columnspan=2, sticky="ew", pady=(8, 0)
         )
         metrics.columnconfigure(0, weight=1)
         metrics.columnconfigure(1, weight=1)
@@ -3022,53 +3124,54 @@ class JitterApp(tk.Tk):
                 if self.overlay_visible else "Liquid.Secondary.TButton"
             ),
         )
-        self.overlay_color_button.configure(
-            text=f"Box Color {self.overlay_color.upper()}"
-        )
-        self.overlay_head_button.configure(
-            text=(
-                "Head Boxes ON"
-                if self.overlay_head_visible else "Head Boxes OFF"
-            ),
-            style=(
-                "Liquid.Primary.TButton"
-                if self.overlay_head_visible else "Liquid.Secondary.TButton"
-            ),
-        )
-        self.overlay_player_button.configure(
-            text=(
-                "Player Boxes ON"
-                if self.overlay_player_visible else "Player Boxes OFF"
-            ),
-            style=(
-                "Liquid.Primary.TButton"
-                if self.overlay_player_visible else "Liquid.Secondary.TButton"
-            ),
-        )
-        self.overlay_hud_button.configure(
-            text=f"HUD {'ON' if self.overlay_hud_visible else 'OFF'}",
-            style=(
-                "Liquid.Primary.TButton"
-                if self.overlay_hud_visible else "Liquid.Secondary.TButton"
-            ),
-        )
-        self.overlay_hud_color_button.configure(
-            text=f"HUD Color {self.overlay_hud_color.upper()}"
-        )
-        for label, key in (
-            ("FPS", "fps"),
-            ("Provider", "provider"),
-            ("Zoom", "zoom"),
-            ("Lock", "lock"),
-        ):
-            enabled = getattr(self, f"overlay_hud_show_{key}")
-            getattr(self, f"overlay_hud_{key}_button").configure(
-                text=f"{label} {'ON' if enabled else 'OFF'}",
+        if self._overlay_customizer_exists():
+            self.overlay_color_button.configure(
+                text=f"Box Color {self.overlay_color.upper()}"
+            )
+            self.overlay_head_button.configure(
+                text=(
+                    "Head Boxes ON"
+                    if self.overlay_head_visible else "Head Boxes OFF"
+                ),
                 style=(
                     "Liquid.Primary.TButton"
-                    if enabled else "Liquid.Secondary.TButton"
+                    if self.overlay_head_visible else "Liquid.Secondary.TButton"
                 ),
             )
+            self.overlay_player_button.configure(
+                text=(
+                    "Player Boxes ON"
+                    if self.overlay_player_visible else "Player Boxes OFF"
+                ),
+                style=(
+                    "Liquid.Primary.TButton"
+                    if self.overlay_player_visible else "Liquid.Secondary.TButton"
+                ),
+            )
+            self.overlay_hud_button.configure(
+                text=f"HUD {'ON' if self.overlay_hud_visible else 'OFF'}",
+                style=(
+                    "Liquid.Primary.TButton"
+                    if self.overlay_hud_visible else "Liquid.Secondary.TButton"
+                ),
+            )
+            self.overlay_hud_color_button.configure(
+                text=f"HUD Color {self.overlay_hud_color.upper()}"
+            )
+            for label, key in (
+                ("FPS", "fps"),
+                ("Provider", "provider"),
+                ("Zoom", "zoom"),
+                ("Lock", "lock"),
+            ):
+                enabled = getattr(self, f"overlay_hud_show_{key}")
+                getattr(self, f"overlay_hud_{key}_button").configure(
+                    text=f"{label} {'ON' if enabled else 'OFF'}",
+                    style=(
+                        "Liquid.Primary.TButton"
+                        if enabled else "Liquid.Secondary.TButton"
+                    ),
+                )
         self._render_model_controls()
         self._refresh_section_summaries()
 

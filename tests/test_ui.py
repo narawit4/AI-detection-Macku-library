@@ -664,6 +664,7 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertFalse(app.overlay_visible)
 
     def test_overlay_color_button_applies_choice_and_schedules_save(self):
+        self.app.open_overlay_customizer()
         self.app._color_chooser = lambda **_kwargs: (
             (0.0, 204.0, 136.0),
             "#00CC88",
@@ -679,6 +680,7 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertIn("#00CC88", button.cget("text"))
 
     def test_overlay_color_cancel_keeps_current_choice(self):
+        self.app.open_overlay_customizer()
         self.app._color_chooser = lambda **_kwargs: (None, None)
         before = self.app.overlay_color
         button = self.app.overlay_color_button
@@ -689,6 +691,8 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertIsNone(self.app._save_after_id)
 
     def test_overlay_color_chooser_error_keeps_current_choice(self):
+        self.app.open_overlay_customizer()
+
         def fail_chooser(**_kwargs):
             raise tk.TclError("chooser failed")
 
@@ -706,6 +710,7 @@ class JitterLayoutTests(unittest.TestCase):
         )
 
     def test_head_boxes_button_toggles_visibility_and_schedules_save(self):
+        self.app.open_overlay_customizer()
         self.app._cancel_after("_save_after_id")
         button = self.app.overlay_head_button
         button.invoke()
@@ -717,6 +722,7 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertEqual(button.cget("text"), "Head Boxes OFF")
 
     def test_player_boxes_button_is_runtime_only_and_reaches_overlay_style(self):
+        self.app.open_overlay_customizer()
         self.assertTrue(
             hasattr(self.app, "overlay_player_button"),
             "Overlay customization must expose a Player Boxes control",
@@ -734,6 +740,7 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertIsNone(self.app._save_after_id)
 
     def test_detection_custom_controls_publish_width_and_label_mode_runtime_only(self):
+        self.app.open_overlay_customizer()
         self.assertTrue(hasattr(self.app, "overlay_box_width_entry"))
         self.assertTrue(hasattr(self.app, "overlay_box_width_scale"))
         self.assertTrue(hasattr(self.app, "overlay_label_mode_combo"))
@@ -751,6 +758,7 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertIsNone(self.app._save_after_id)
 
     def test_hud_placement_controls_publish_corner_offsets_and_font_size(self):
+        self.app.open_overlay_customizer()
         for name in (
             "overlay_hud_corner_combo",
             "overlay_hud_offset_x_entry",
@@ -779,6 +787,7 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertIsNone(self.app._save_after_id)
 
     def test_hud_visibility_color_and_metric_buttons_are_runtime_only(self):
+        self.app.open_overlay_customizer()
         for name in (
             "overlay_hud_button",
             "overlay_hud_color_button",
@@ -810,6 +819,7 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertIsNone(self.app._save_after_id)
 
     def test_reset_overlay_restores_complete_default_and_saves_only_legacy_preferences(self):
+        self.app.open_overlay_customizer()
         self.assertTrue(hasattr(self.app, "overlay_reset_button"))
         self.app.overlay_color = "#00cc88"
         self.app.overlay_head_visible = False
@@ -1075,6 +1085,131 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertTrue(self.app.ai_section.expanded)
         self.assertTrue(self.app.overlay_section.expanded)
 
+    def test_overlay_section_opens_custom_controls_in_separate_window(self):
+        self.assertTrue(
+            hasattr(self.app, "overlay_customize_button"),
+            "Overlay section must expose the separate customizer action",
+        )
+        self.assertEqual(
+            self.app.overlay_customize_button.cget("text"),
+            "Customize Overlay",
+        )
+        self.assertTrue(
+            self._is_descendant(
+                self.app.overlay_customize_button,
+                self.app.overlay_section.body,
+            )
+        )
+
+        self.app.deiconify()
+        self.app.overlay_customize_button.invoke()
+        self.app.update()
+
+        customizer = self.app.overlay_custom_window
+        self.assertIsInstance(customizer, tk.Toplevel)
+        self.assertEqual(customizer.title(), "Customize Overlay")
+        self.assertTrue(customizer.winfo_viewable())
+        self.assertTrue(
+            self._is_descendant(self.app.overlay_color_button, customizer)
+        )
+        self.assertFalse(
+            self._is_descendant(
+                self.app.overlay_color_button,
+                self.app.dashboard_content,
+            )
+        )
+
+    def test_opening_overlay_customizer_twice_reuses_one_window(self):
+        self.app.deiconify()
+        self.app.open_overlay_customizer()
+        first = self.app.overlay_custom_window
+
+        self.app.open_overlay_customizer()
+        self.app.update()
+
+        self.assertIs(self.app.overlay_custom_window, first)
+        self.assertEqual(
+            [
+                child
+                for child in self.app.winfo_children()
+                if isinstance(child, tk.Toplevel)
+                and child.title() == "Customize Overlay"
+            ],
+            [first],
+        )
+
+    def test_overlay_customizer_keeps_all_controls_inside_fixed_window(self):
+        self.app.deiconify()
+        self.app.open_overlay_customizer()
+        self.app.update()
+        customizer = self.app.overlay_custom_window
+        controls = (
+            self.app.overlay_color_button,
+            self.app.overlay_head_button,
+            self.app.overlay_player_button,
+            self.app.overlay_box_width_scale,
+            self.app.overlay_label_mode_combo,
+            self.app.overlay_hud_corner_combo,
+            self.app.overlay_hud_offset_x_scale,
+            self.app.overlay_hud_offset_y_scale,
+            self.app.overlay_hud_font_size_scale,
+            self.app.overlay_hud_button,
+            self.app.overlay_hud_color_button,
+            self.app.overlay_hud_fps_button,
+            self.app.overlay_hud_provider_button,
+            self.app.overlay_hud_zoom_button,
+            self.app.overlay_hud_lock_button,
+        )
+        left = customizer.winfo_rootx()
+        top = customizer.winfo_rooty()
+        right = left + customizer.winfo_width()
+        bottom = top + customizer.winfo_height()
+
+        for control in controls:
+            with self.subTest(control=control):
+                self.assertGreaterEqual(control.winfo_rootx(), left)
+                self.assertGreaterEqual(control.winfo_rooty(), top)
+                self.assertLessEqual(
+                    control.winfo_rootx() + control.winfo_width(),
+                    right,
+                )
+                self.assertLessEqual(
+                    control.winfo_rooty() + control.winfo_height(),
+                    bottom,
+                )
+
+    def test_overlay_customizer_keeps_action_labels_unclipped(self):
+        self.app.deiconify()
+        self.app.open_overlay_customizer()
+        self.app.update()
+
+        for button in (
+            self.app.overlay_color_button,
+            self.app.overlay_head_button,
+            self.app.overlay_player_button,
+            self.app.overlay_hud_button,
+            self.app.overlay_hud_color_button,
+        ):
+            with self.subTest(button=button):
+                self.assertGreaterEqual(
+                    button.winfo_width(),
+                    button.winfo_reqwidth(),
+                )
+
+    def test_closing_overlay_customizer_keeps_detection_overlay_enabled(self):
+        self.app.toggle_overlay()
+        self.app.deiconify()
+        self.app.open_overlay_customizer()
+        customizer = self.app.overlay_custom_window
+
+        self.app.close_overlay_customizer()
+        self.app.update()
+
+        self.assertTrue(self.app.overlay_visible)
+        self.assertFalse(
+            customizer.winfo_exists() and customizer.winfo_viewable()
+        )
+
     def test_dashboard_uses_one_vertical_scrollbar_and_no_motion_scroll(self):
         vertical = [
             widget
@@ -1225,6 +1360,7 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertEqual(self.app.test_off_button.cget("text"), "Play Disabled Cue")
 
     def test_numeric_controls_still_pair_slider_and_exact_entry(self):
+        self.app.open_overlay_customizer()
         pairs = (
             (self.app.pulse_size_px_scale, self.app.pulse_size_px_entry),
             (self.app.pulse_rate_hz_scale, self.app.pulse_rate_hz_entry),
@@ -1286,6 +1422,7 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertEqual(self.app.dashboard_scroll_canvas.yview(), before)
 
     def test_each_existing_control_belongs_to_its_approved_section(self):
+        self.app.open_overlay_customizer()
         ownership = {
             self.app.control_section.body: (
                 self.app.jitter_source_button, self.app.ai_source_button,
@@ -1309,15 +1446,7 @@ class JitterLayoutTests(unittest.TestCase):
                 self.app.ai_curve_reset_button,
             ),
             self.app.overlay_section.body: (
-                self.app.overlay_button, self.app.overlay_reset_button,
-                self.app.overlay_color_button, self.app.overlay_head_button,
-                self.app.overlay_player_button, self.app.overlay_box_width_scale,
-                self.app.overlay_box_width_entry, self.app.overlay_label_mode_combo,
-                self.app.overlay_hud_button, self.app.overlay_hud_color_button,
-                self.app.overlay_hud_corner_combo,
-                self.app.overlay_hud_offset_x_scale,
-                self.app.overlay_hud_offset_y_scale,
-                self.app.overlay_hud_font_size_scale,
+                self.app.overlay_button, self.app.overlay_customize_button,
             ),
             self.app.settings_section.body: (
                 self.app.sound_enabled_check, self.app.sound_volume_scale,
@@ -1329,6 +1458,29 @@ class JitterLayoutTests(unittest.TestCase):
             for widget in widgets:
                 with self.subTest(section=section_body, widget=widget):
                     self.assertTrue(self._is_descendant(widget, section_body))
+
+        customizer = self.app.overlay_custom_window
+        custom_controls = (
+            self.app.overlay_reset_button,
+            self.app.overlay_color_button,
+            self.app.overlay_head_button,
+            self.app.overlay_player_button,
+            self.app.overlay_box_width_scale,
+            self.app.overlay_box_width_entry,
+            self.app.overlay_label_mode_combo,
+            self.app.overlay_hud_button,
+            self.app.overlay_hud_color_button,
+            self.app.overlay_hud_corner_combo,
+            self.app.overlay_hud_offset_x_scale,
+            self.app.overlay_hud_offset_y_scale,
+            self.app.overlay_hud_font_size_scale,
+        )
+        for widget in custom_controls:
+            with self.subTest(widget=widget):
+                self.assertTrue(self._is_descendant(widget, customizer))
+                self.assertFalse(
+                    self._is_descendant(widget, self.app.dashboard_content)
+                )
 
     def test_curve_exact_edit_updates_live_snapshot_and_schedules_save(self):
         self.app._cancel_after("_save_after_id")
@@ -3870,6 +4022,7 @@ class JitterLayoutTests(unittest.TestCase):
         )
 
     def test_head_boxes_off_reaches_overlay_render(self):
+        self.app.open_overlay_customizer()
         self.app.overlay_head_button.invoke()
 
         self.app.toggle_overlay()
