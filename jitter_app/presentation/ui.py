@@ -1073,9 +1073,7 @@ class JitterApp(tk.Tk):
         self.dashboard_scroll_canvas.bind(
             "<Configure>", self._resize_dashboard_content, add="+"
         )
-        self.dashboard_scroll_canvas.bind(
-            "<MouseWheel>", self._scroll_dashboard, add="+"
-        )
+        self.bind("<MouseWheel>", self._scroll_dashboard, add="+")
         definitions = (
             ("control_section", 1, "Control", self.control_section_summary_var, True),
             ("jitter_section", 2, "Jitter", self.motion_summary_var, False),
@@ -2241,7 +2239,14 @@ class JitterApp(tk.Tk):
             width=max(1, int(event.width)),
         )
 
-    def _scroll_dashboard(self, event: tk.Event) -> str:
+    def _scroll_dashboard(self, event: tk.Event) -> str | None:
+        widget = event.widget
+        while widget is not None:
+            if widget is self.dashboard_frame:
+                break
+            widget = getattr(widget, "master", None)
+        else:
+            return None
         delta = int(getattr(event, "delta", 0))
         if delta:
             self.dashboard_scroll_canvas.yview_scroll(

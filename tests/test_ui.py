@@ -25,7 +25,6 @@ from jitter_app.presentation.ui import JitterApp
 from jitter_app.device.makcu import ServiceEvent
 from jitter_app.presentation.widgets import (
     CollapsibleSection,
-    LiquidIconButton,
     LiquidSlider,
 )
 from jitter_app.motion.engine import MotionSettings
@@ -1260,6 +1259,32 @@ class JitterLayoutTests(unittest.TestCase):
             self.app.winfo_rooty() + self.app.winfo_height(),
         )
 
+    def test_mouse_wheel_on_dashboard_control_scrolls_shared_canvas(self):
+        self.app.deiconify()
+        for section in self.app.sections:
+            section.set_expanded(True)
+        self.app.update()
+        self.app.dashboard_scroll_canvas.yview_moveto(0.0)
+        before = self.app.dashboard_scroll_canvas.yview()
+
+        self.app.pulse_size_px_entry.event_generate("<MouseWheel>", delta=-120)
+        self.app.update()
+
+        self.assertGreater(self.app.dashboard_scroll_canvas.yview()[0], before[0])
+
+    def test_mouse_wheel_on_fixed_runtime_control_does_not_scroll_dashboard(self):
+        self.app.deiconify()
+        for section in self.app.sections:
+            section.set_expanded(True)
+        self.app.update()
+        self.app.dashboard_scroll_canvas.yview_moveto(0.0)
+        before = self.app.dashboard_scroll_canvas.yview()
+
+        self.app.stop_button.event_generate("<MouseWheel>", delta=-120)
+        self.app.update()
+
+        self.assertEqual(self.app.dashboard_scroll_canvas.yview(), before)
+
     def test_each_existing_control_belongs_to_its_approved_section(self):
         ownership = {
             self.app.control_section.body: (
@@ -2207,7 +2232,7 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertTrue(self.app.jitter_section.expanded)
         self.assertTrue(self.app.footer_var.get().startswith("Invalid value for "))
 
-    def test_mini_actions_keep_icon_button_size_and_tooltips(self):
+    def test_session_and_theme_actions_use_labeled_ttk_buttons(self):
         labels = {
             self.app.reconnect_button: "Reconnect",
             self.app.test_button: "Test 3s",
@@ -2218,7 +2243,7 @@ class JitterLayoutTests(unittest.TestCase):
                 self.assertEqual(button.cget("text"), label)
                 self.assertEqual(button.winfo_manager(), "grid")
 
-    def test_mini_action_tooltips_are_available_from_keyboard_focus(self):
+    def test_theme_action_activates_from_keyboard_focus(self):
         self.app.settings_section.set_expanded(True)
         self.app.deiconify()
         self.app.update()
@@ -2297,7 +2322,7 @@ class JitterLayoutTests(unittest.TestCase):
                     self._is_descendant(widget, self.app.console_workspace)
                 )
 
-    def test_theme_icon_tooltip_appears_on_hover_and_is_removed(self):
+    def test_theme_action_updates_its_label(self):
         self.assertEqual(self.app.theme_button.cget("text"), "Switch to Dark Mode")
         self.app.theme_button.invoke()
         self.assertEqual(self.app.theme_button.cget("text"), "Switch to Light Mode")
@@ -2454,7 +2479,7 @@ class JitterLayoutTests(unittest.TestCase):
                     )
             self.app.toggle_theme()
 
-    def test_mini_icon_contrast_across_themes_and_interaction_states(self):
+    def test_labeled_action_text_contrast_across_themes_and_interaction_states(self):
         """Fails if compact action labels become unreadable."""
         for theme in ("light", "dark"):
             cases = (
