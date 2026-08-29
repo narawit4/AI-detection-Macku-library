@@ -1,5 +1,7 @@
-"""Fixed-contract ONNX detection for the bundled AI aim model."""
+"""Exact dual-contract ONNX detection for AI aim models."""
 
+import ast
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Callable
 
@@ -7,6 +9,7 @@ import numpy as np
 import onnxruntime as ort
 
 from ai_targeting import Detection
+from ai_yolo import RAW_CANDIDATE_COUNTS, decode_single_class_yolo
 from image_resize import resize_rgb_bilinear
 
 
@@ -14,12 +17,42 @@ LOGICAL_FRAME_SIZE = 320
 SUPPORTED_INPUT_SIZES: tuple[int, ...] = (160, 320, 640)
 _INPUT_NAME = "images"
 _OUTPUT_NAME = "output0"
-_OUTPUT_SHAPE = [1, 300, 6]
+_POST_NMS_OUTPUT_SHAPE = [1, 300, 6]
+_POST_NMS_FORMAT = "post_nms"
+_RAW_SINGLE_CLASS_FORMAT = "raw_single_class"
 _TENSOR_TYPE = "tensor(float)"
+_OUTPUT_CONTRACT_MESSAGE = (
+    "AI model output must be output0 tensor(float) [1,300,6] "
+    "or supported raw one-class [1,5,K]"
+)
+_RAW_METADATA_MESSAGE = (
+    "Raw YOLO metadata must declare task=detect and exactly one named class 0"
+)
 
 
 class ModelContractError(RuntimeError):
     """Raised when a model or inference result differs from the fixed contract."""
+
+
+def _validate_raw_metadata(session: object) -> None:
+    try:
+        metadata = session.get_modelmeta().custom_metadata_map
+    except Exception as error:
+        raise ModelContractError(_RAW_METADATA_MESSAGE) from error
+    if not isinstance(metadata, Mapping) or metadata.get("task") != "detect":
+        raise ModelContractError(_RAW_METADATA_MESSAGE)
+    raw_names = metadata.get("names")
+    if not isinstance(raw_names, str):
+        raise ModelContractError(_RAW_METADATA_MESSAGE)
+    try:
+        names = ast.literal_eval(raw_names)
+    except (SyntaxError, ValueError, TypeError) as error:
+        raise ModelContractError(_RAW_METADATA_MESSAGE) from error
+    if not isinstance(names, dict) or len(names) != 1:
+        raise ModelContractError(_RAW_METADATA_MESSAGE)
+    key, label = next(iter(names.items()))
+    if type(key) is not int or key != 0 or not isinstance(label, str) or not label:
+        raise ModelContractError(_RAW_METADATA_MESSAGE)
 
 
 def model_resource_path() -> Path:
@@ -62,7 +95,10 @@ def parse_output(
     input_size: int = LOGICAL_FRAME_SIZE,
 ) -> tuple[Detection, ...]:
     input_size = _validated_input_size(input_size)
-    if not isinstance(output, np.ndarray) or output.shape != tuple(_OUTPUT_SHAPE):
+    if (
+        not isinstance(output, np.ndarray)
+        or output.shape != tuple(_POST_NMS_OUTPUT_SHAPE)
+    ):
         raise ModelContractError(
             "AI model output must have shape [1, 300, 6]"
         )
@@ -113,7 +149,7 @@ class OnnxDetector:
                 sess_options=options,
                 providers=["CPUExecutionProvider"],
             )
-        self._input_size = self._validate_contract()
+        self._input_size, self._output_format = self._validate_contract()
         providers = self._session.get_providers()
         if not providers:
             raise ModelContractError("AI model session has no execution provider")
@@ -123,7 +159,7 @@ class OnnxDetector:
     def input_size(self) -> int:
         return self._input_size
 
-    def _validate_contract(self) -> int:
+    def _validate_contract(self) -> tuple[int, str]:
         inputs = self._session.get_inputs()
         if len(inputs) != 1:
             raise ModelContractError("AI model must have exactly one input")
@@ -142,28 +178,33 @@ class OnnxDetector:
                 "[1,3,N,N] where N is 160, 320, or 640"
             )
         input_size = _validated_input_size(shape[2])
-        self._validate_node(
-            self._session.get_outputs(), _OUTPUT_NAME, _OUTPUT_SHAPE, "output"
-        )
-        return input_size
+        return input_size, self._validate_output_contract(input_size)
 
-    @staticmethod
-    def _validate_node(nodes, name: str, shape: list[int], kind: str) -> None:
-        if len(nodes) != 1:
-            raise ModelContractError(f"AI model must have exactly one {kind}")
-        node = nodes[0]
-        node_shape = list(node.shape)
+    def _validate_output_contract(self, input_size: int) -> str:
+        outputs = self._session.get_outputs()
+        if len(outputs) != 1:
+            raise ModelContractError("AI model must have exactly one output")
+        node = outputs[0]
+        shape = list(node.shape)
         if (
-            node.name != name
+            node.name != _OUTPUT_NAME
             or node.type != _TENSOR_TYPE
-            or any(type(dimension) is not int for dimension in node_shape)
-            or node_shape != shape
+            or any(type(dimension) is not int for dimension in shape)
         ):
-            raise ModelContractError(
-                f"AI model {kind} must be {name} {_TENSOR_TYPE}{shape}"
-            )
+            raise ModelContractError(_OUTPUT_CONTRACT_MESSAGE)
+        if shape == _POST_NMS_OUTPUT_SHAPE:
+            return _POST_NMS_FORMAT
+        if shape == [1, 5, RAW_CANDIDATE_COUNTS[input_size]]:
+            _validate_raw_metadata(self._session)
+            return _RAW_SINGLE_CLASS_FORMAT
+        raise ModelContractError(_OUTPUT_CONTRACT_MESSAGE)
 
     def detect(self, frame: np.ndarray) -> tuple[Detection, ...]:
         tensor = preprocess_frame(frame, self._input_size)
         output = self._session.run([_OUTPUT_NAME], {_INPUT_NAME: tensor})[0]
-        return parse_output(output, self._input_size)
+        try:
+            if self._output_format == _POST_NMS_FORMAT:
+                return parse_output(output, self._input_size)
+            return decode_single_class_yolo(output, self._input_size)
+        except (ModelContractError, TypeError, ValueError) as error:
+            raise ModelContractError(_OUTPUT_CONTRACT_MESSAGE) from error

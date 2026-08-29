@@ -284,6 +284,29 @@ class ModelValidatorTests(unittest.TestCase):
             "AI model input must use a 160, 320, or 640 square input",
         )
 
+    def test_dual_output_contract_failure_is_safe_and_actionable(self):
+        events = []
+        finished = threading.Event()
+        message = (
+            "AI model output must be output0 tensor(float) [1,300,6] "
+            "or supported raw one-class [1,5,K]"
+        )
+
+        def fail(_path):
+            raise ModelContractError(message)
+
+        choice = ModelChoice(Path("private-model.onnx"), "private-model.onnx", False)
+        validator = ModelValidator(
+            lambda event: (events.append(event), finished.set()),
+            detector_factory=fail,
+        )
+        self.addCleanup(validator.close)
+        with self.assertLogs("ai_model_selection", level="ERROR"):
+            self.assertTrue(validator.start(choice, 19))
+            self.assertTrue(finished.wait(1.0))
+        self.assertEqual(events[0].safe_message, message)
+        self.assertNotIn(str(choice.path.resolve()), events[0].safe_message)
+
     def test_thread_start_failure_returns_false_without_duplicate_error_event(self):
         class FailingThread:
             def __init__(self, **_kwargs):
