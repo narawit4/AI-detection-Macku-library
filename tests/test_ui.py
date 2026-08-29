@@ -4369,4 +4369,23 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertGreater(scrollregion[3] - scrollregion[1],
                            self.app.dashboard_scroll_canvas.winfo_height())
         self.assertTrue(self.app.footer_frame.winfo_ismapped())
+        self.assertTrue(self.app.runtime_frame.winfo_ismapped())
+        self.assertTrue(self.app.stop_button.winfo_ismapped())
+        fixed_positions = (
+            self.app.footer_frame.winfo_rooty(),
+            self.app.runtime_frame.winfo_rooty(),
+            self.app.stop_button.winfo_rooty(),
+        )
+        self.app.dashboard_scroll_canvas.yview_moveto(1.0)
+        self.app.update()
+        self.assertEqual(
+            (
+                self.app.footer_frame.winfo_rooty(),
+                self.app.runtime_frame.winfo_rooty(),
+                self.app.stop_button.winfo_rooty(),
+            ),
+            fixed_positions,
+        )
+        self.assertTrue(self.app.footer_frame.winfo_ismapped())
+        self.assertTrue(self.app.runtime_frame.winfo_ismapped())
         self.assertTrue(self.app.stop_button.winfo_ismapped())
