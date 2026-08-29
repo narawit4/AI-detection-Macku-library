@@ -1057,7 +1057,6 @@ class JitterLayoutTests(unittest.TestCase):
             all(widget.master is self.app.console_workspace for widget in widgets)
         )
         self.assertIsInstance(self.app.dashboard_scroll_canvas, tk.Canvas)
-        self.assertFalse(hasattr(self.app, "navigation_rail"))
         self.assertFalse(hasattr(self.app, "nav"))
         self.assertFalse(hasattr(self.app, "pages"))
 
@@ -1085,7 +1084,6 @@ class JitterLayoutTests(unittest.TestCase):
             and str(widget.cget("orient")) == "vertical"
         ]
         self.assertEqual(vertical, [self.app.dashboard_scrollbar])
-        self.assertFalse(hasattr(self.app, "motion_scroll_canvas"))
         self.assertFalse(hasattr(self.app, "motion_scrollbar"))
 
     def test_single_page_shell_keeps_semantic_layers_in_both_themes(self):
@@ -1774,7 +1772,7 @@ class JitterLayoutTests(unittest.TestCase):
         connected_fill = indicator.itemcget("status-marker", "fill")
         self.assertEqual(len({disconnected_fill, connecting_fill, connected_fill}), 3)
 
-    def test_settings_page_exposes_persisted_sound_controls(self):
+    def test_settings_section_exposes_persisted_sound_controls(self):
         self.assertTrue(self.app.sound_enabled_var.get())
         self.assertEqual(self.app.sound_volume_var.get(), "70")
         self.assertEqual(self.app.sound_volume_scale.from_, 0.0)
@@ -1896,7 +1894,7 @@ class JitterLayoutTests(unittest.TestCase):
                 )
             self.app.toggle_theme()
 
-    def test_motion_page_exposes_only_paired_pulse_controls(self):
+    def test_jitter_section_exposes_only_paired_pulse_controls(self):
         self.assertEqual(
             set(self.app.motion_vars),
             {"pulse_size_px", "pulse_rate_hz", "ramp_mode"},
@@ -2121,7 +2119,7 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertEqual(self.app.device_status_var.get(), "Makcu on COM6")
         self.assertTrue(any(payload in line for line in captured.output))
 
-    def test_motion_page_has_snapshot_backed_live_summary(self):
+    def test_jitter_section_has_snapshot_backed_live_summary(self):
         """Fails if Motion lacks a visible summary of the active snapshot."""
         summary_var = getattr(self.app, "motion_summary_var", None)
         self.assertIsInstance(summary_var, tk.StringVar)
@@ -4319,3 +4317,56 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertEqual(self.app.runtime_state_var.get(), "MOVING")
         self.app.emergency_stop("Stopped")
         self.assertEqual(self.app.runtime_state_var.get(), "DISABLED")
+
+    def test_expansion_and_theme_changes_preserve_values_and_outer_geometry(self):
+        self.app.deiconify()
+        self.app.update()
+        expected_geometry = self.app.geometry()
+        expected_motion = self.app.get_motion_settings()
+        expected_ai = self.app.get_ai_settings()
+        expected_bindings = (
+            self.app.trigger_var.get(),
+            self.app.modifier_var.get(),
+            self.app.hotkey_name_var.get(),
+        )
+        for section in self.app.sections:
+            section.set_expanded(True)
+        self.app.toggle_theme()
+        self.app.dashboard_scroll_canvas.yview_moveto(1.0)
+        self.app.update_idletasks()
+        self.assertEqual(self.app.geometry(), expected_geometry)
+        self.assertEqual(self.app.get_motion_settings(), expected_motion)
+        self.assertEqual(self.app.get_ai_settings(), expected_ai)
+        self.assertEqual(
+            (
+                self.app.trigger_var.get(),
+                self.app.modifier_var.get(),
+                self.app.hotkey_name_var.get(),
+            ),
+            expected_bindings,
+        )
+
+    def test_section_expansion_is_not_serialized(self):
+        self.app.ai_section.set_expanded(True)
+        self.app.settings_section.set_expanded(True)
+        self.app._cancel_after("_save_after_id")
+        self.app.save_config()
+        saved = self.store.saved[-1]
+        self.assertFalse(hasattr(saved, "section_state"))
+        self.assertFalse(hasattr(saved, "expanded_sections"))
+
+    def test_all_sections_expanded_create_scroll_without_moving_fixed_controls(self):
+        self.app.deiconify()
+        for section in self.app.sections:
+            section.set_expanded(True)
+        self.app.update()
+        scrollregion = tuple(
+            float(value)
+            for value in self.app.tk.splitlist(
+                self.app.dashboard_scroll_canvas.cget("scrollregion")
+            )
+        )
+        self.assertGreater(scrollregion[3] - scrollregion[1],
+                           self.app.dashboard_scroll_canvas.winfo_height())
+        self.assertTrue(self.app.footer_frame.winfo_ismapped())
+        self.assertTrue(self.app.stop_button.winfo_ismapped())
