@@ -15,10 +15,10 @@ from jitter_app.ai.targeting import DetectionFrameSnapshot
 
 LOGGER = logging.getLogger(__name__)
 
-OVERLAY_SIZE = 320
+CAPTURE_SIZE = 320
 OVERLAY_COLOR = "#ff2b2b"
 MAX_FRAME_AGE_S = 0.150
-_TRANSPARENT_KEY_CANDIDATES = ("#010203", "#010204")
+_TRANSPARENT_KEY_CANDIDATES = ("#010203", "#010204", "#010205")
 
 WDA_EXCLUDEFROMCAPTURE = 0x00000011
 WS_EX_TRANSPARENT = 0x00000020
@@ -44,6 +44,61 @@ class OverlayBox:
     x2: float
     y2: float
     width: int
+    label: str | None = None
+
+
+@dataclass(frozen=True)
+class OverlayStyle:
+    """Immutable runtime-only visual choices for one overlay frame."""
+
+    box_color: str = OVERLAY_COLOR
+    show_heads: bool = True
+    show_players: bool = True
+    box_width: int = 2
+    label_mode: str = "off"
+    hud_visible: bool = True
+    hud_corner: str = "top_left"
+    hud_offset_x: int = 8
+    hud_offset_y: int = 8
+    hud_color: str = OVERLAY_COLOR
+    hud_font_size: int = 10
+    hud_show_fps: bool = True
+    hud_show_provider: bool = True
+    hud_show_zoom: bool = True
+    hud_show_lock: bool = True
+
+
+def _detection_label(class_id: int, confidence: float, mode: str) -> str | None:
+    if mode not in {"class", "class_confidence"}:
+        return None
+    if class_id == 7:
+        label = "HEAD"
+    elif class_id == 0:
+        label = "PLAYER"
+    else:
+        return None
+    if mode == "class":
+        return label
+    return f"{label} {confidence:.0%}"
+
+
+def _hud_position(
+    style: OverlayStyle,
+    screen_width: int,
+    screen_height: int,
+) -> tuple[int, int, str]:
+    corner = style.hud_corner
+    if corner not in {"top_left", "top_right", "bottom_left", "bottom_right"}:
+        corner = "top_left"
+    offset_x = max(0, min(screen_width, int(style.hud_offset_x)))
+    offset_y = max(0, min(screen_height, int(style.hud_offset_y)))
+    right = corner.endswith("right")
+    bottom = corner.startswith("bottom")
+    return (
+        screen_width - offset_x if right else offset_x,
+        screen_height - offset_y if bottom else offset_y,
+        ("s" if bottom else "n") + ("e" if right else "w"),
+    )
 
 
 def project_overlay_boxes(
@@ -51,20 +106,31 @@ def project_overlay_boxes(
     now: float,
     *,
     show_heads: bool = True,
+    show_players: bool = True,
+    box_width: int = 2,
+    label_mode: str = "off",
 ) -> tuple[OverlayBox, ...]:
     """Project a fresh immutable detector frame into canvas rectangles."""
     if snapshot is None or max(0.0, now - snapshot.captured_at) > MAX_FRAME_AGE_S:
         return ()
+    box_width = max(1, min(8, int(box_width)))
     return tuple(
         OverlayBox(
             detection.x1,
             detection.y1,
             detection.x2,
             detection.y2,
-            4 if index == snapshot.selected_index else 2,
+            box_width + 2 if index == snapshot.selected_index
+            else box_width,
+            _detection_label(
+                detection.class_id,
+                detection.confidence,
+                label_mode,
+            ),
         )
         for index, detection in enumerate(snapshot.detections)
-        if show_heads or detection.class_id != 7
+        if (show_heads or detection.class_id != 7)
+        and (show_players or detection.class_id != 0)
     )
 
 
@@ -178,6 +244,10 @@ class DetectionOverlay:
         self._transparent_key = transparent_key
         self._window = None
         self._canvas = None
+        self._capture_left = 0
+        self._capture_top = 0
+        self._screen_width = 0
+        self._screen_height = 0
         self._visible = False
         self._closed = False
 
@@ -196,13 +266,17 @@ class DetectionOverlay:
                 window.overrideredirect(True)
                 window.attributes("-topmost", True)
                 window.attributes("-transparentcolor", self._transparent_key)
-                left = (window.winfo_screenwidth() - OVERLAY_SIZE) // 2
-                top = (window.winfo_screenheight() - OVERLAY_SIZE) // 2
-                window.geometry(f"{OVERLAY_SIZE}x{OVERLAY_SIZE}+{left}+{top}")
+                screen_width = window.winfo_screenwidth()
+                screen_height = window.winfo_screenheight()
+                self._screen_width = screen_width
+                self._screen_height = screen_height
+                self._capture_left = (screen_width - CAPTURE_SIZE) // 2
+                self._capture_top = (screen_height - CAPTURE_SIZE) // 2
+                window.geometry(f"{screen_width}x{screen_height}+0+0")
                 canvas = self._canvas_factory(
                     window,
-                    width=OVERLAY_SIZE,
-                    height=OVERLAY_SIZE,
+                    width=screen_width,
+                    height=screen_height,
                     background=self._transparent_key,
                     highlightthickness=0,
                 )
@@ -214,6 +288,19 @@ class DetectionOverlay:
                 raise
             self._window = window
             self._canvas = canvas
+        else:
+            window = self._window
+            screen_width = window.winfo_screenwidth()
+            screen_height = window.winfo_screenheight()
+            self._screen_width = screen_width
+            self._screen_height = screen_height
+            self._capture_left = (screen_width - CAPTURE_SIZE) // 2
+            self._capture_top = (screen_height - CAPTURE_SIZE) // 2
+            window.geometry(f"{screen_width}x{screen_height}+0+0")
+            self._canvas.configure(
+                width=screen_width,
+                height=screen_height,
+            )
         window = self._window
         try:
             window.deiconify()
@@ -238,46 +325,100 @@ class DetectionOverlay:
         color: str = OVERLAY_COLOR,
         show_heads: bool = True,
         runtime: tuple[str, str, str] | None = None,
+        style: OverlayStyle | None = None,
     ) -> None:
         self._require_main_thread()
-        boxes = project_overlay_boxes(snapshot, now, show_heads=show_heads)
+        if style is None:
+            style = OverlayStyle(
+                box_color=color,
+                show_heads=show_heads,
+                hud_color=color,
+            )
+        color = style.box_color
+        boxes = project_overlay_boxes(
+            snapshot,
+            now,
+            show_heads=style.show_heads,
+            show_players=style.show_players,
+            box_width=style.box_width,
+            label_mode=style.label_mode,
+        )
         self.clear()
-        self._keep_outline_visible(color)
+        visible_colors = [color]
+        if runtime is not None and style.hud_visible:
+            visible_colors.append(style.hud_color)
+        self._keep_foregrounds_visible(*visible_colors)
         for box in boxes:
             self._canvas.create_rectangle(
-                box.x1,
-                box.y1,
-                box.x2,
-                box.y2,
+                box.x1 + self._capture_left,
+                box.y1 + self._capture_top,
+                box.x2 + self._capture_left,
+                box.y2 + self._capture_top,
                 outline=color,
                 width=box.width,
                 tags=("detection",),
             )
-        if runtime is not None:
+            if box.label is not None:
+                self._canvas.create_text(
+                    box.x1 + self._capture_left,
+                    box.y1 + self._capture_top - 2,
+                    anchor="sw",
+                    fill=color,
+                    font=("Consolas", 9, "bold"),
+                    text=box.label,
+                    tags=("detection",),
+                )
+        if runtime is not None and style.hud_visible:
             fps, provider, zoom = runtime
-            self._canvas.create_text(
-                8,
-                8,
-                anchor="nw",
-                fill=color,
-                font=("Consolas", 10, "bold"),
-                text=(
-                    "AI RUNTIME\n"
-                    f"FPS: {fps}\n"
-                    f"PROVIDER: {provider}\n"
-                    f"ZOOM: {zoom}\n"
+            hud_lines = ["AI RUNTIME"]
+            if style.hud_show_fps:
+                hud_lines.append(f"FPS: {fps}")
+            if style.hud_show_provider:
+                hud_lines.append(f"PROVIDER: {provider}")
+            if style.hud_show_zoom:
+                hud_lines.append(f"ZOOM: {zoom}")
+            if style.hud_show_lock:
+                hud_lines.append(
                     f"LOCK: {_selected_lock_label(snapshot, now)}"
+                )
+            hud_x, hud_y, hud_anchor = _hud_position(
+                style,
+                self._screen_width,
+                self._screen_height,
+            )
+            hud_item = self._canvas.create_text(
+                hud_x,
+                hud_y,
+                anchor=hud_anchor,
+                fill=style.hud_color,
+                font=(
+                    "Consolas",
+                    max(8, min(24, int(style.hud_font_size))),
+                    "bold",
                 ),
+                text="\n".join(hud_lines),
                 tags=("runtime",),
             )
+            self._keep_item_on_screen(hud_item)
 
-    def _keep_outline_visible(self, color: str) -> None:
-        if color.casefold() != self._transparent_key.casefold():
+    def _keep_item_on_screen(self, item_id: Any) -> None:
+        bounds = self._canvas.bbox(item_id)
+        if bounds is None:
+            return
+        left, top, right, bottom = bounds
+        dx = -left if left < 0 else min(0, self._screen_width - right)
+        dy = -top if top < 0 else min(0, self._screen_height - bottom)
+        if dx or dy:
+            self._canvas.move(item_id, dx, dy)
+
+    def _keep_foregrounds_visible(self, *colors: str) -> None:
+        folded = {color.casefold() for color in colors}
+        if self._transparent_key.casefold() not in folded:
             return
         replacement = next(
             candidate
             for candidate in _TRANSPARENT_KEY_CANDIDATES
-            if candidate.casefold() != color.casefold()
+            if candidate.casefold() not in folded
         )
         self._canvas.configure(background=replacement)
         self._window.attributes("-transparentcolor", replacement)

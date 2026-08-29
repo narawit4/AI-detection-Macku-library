@@ -25,7 +25,7 @@ from jitter_app.presentation.ui import JitterApp
 from jitter_app.device.makcu import ServiceEvent
 from jitter_app.presentation.widgets import LiquidIconButton, LiquidSlider
 from jitter_app.motion.engine import MotionSettings
-from jitter_app.presentation.overlay import OverlaySetupError
+from jitter_app.presentation.overlay import OverlaySetupError, OverlayStyle
 from jitter_app.config.store import AppConfig
 from jitter_app.presentation.sound import ToggleSoundPlayer
 
@@ -361,6 +361,7 @@ class StubOverlay:
         self.cleared = 0
         self.rendered = []
         self.render_options = []
+        self.styles = []
         self.show_error = None
         self.hide_error = None
         self.render_error = None
@@ -378,11 +379,13 @@ class StubOverlay:
         color=None,
         show_heads=None,
         runtime=None,
+        style=None,
     ):
         if self.render_error is not None:
             raise self.render_error
         self.rendered.append((snapshot, now))
         self.render_options.append((color, show_heads, runtime))
+        self.styles.append(style)
 
     def clear(self):
         self.cleared += 1
@@ -555,7 +558,6 @@ class JitterLayoutTests(unittest.TestCase):
             app.ai_cadence_var.get(),
             "DISPLAY 144 HZ · SERVO 288 HZ",
         )
-        self.assertIn(app.ai_cadence_var.get(), widget_texts(app.ai_status_card))
 
     def test_fallback_cadence_status_is_explicit(self):
         self.app.close_app()
@@ -710,6 +712,139 @@ class JitterLayoutTests(unittest.TestCase):
         )
         self.assertIsNotNone(self.app._save_after_id)
         self.assertEqual(button.cget("text"), "Head Boxes OFF")
+
+    def test_player_boxes_button_is_runtime_only_and_reaches_overlay_style(self):
+        self.assertTrue(
+            hasattr(self.app, "overlay_player_button"),
+            "Overlay customization must expose a Player Boxes control",
+        )
+        self.app._cancel_after("_save_after_id")
+
+        self.app.overlay_player_button.invoke()
+        style = self.app._overlay_style_snapshot()
+
+        self.assertFalse(style.show_players)
+        self.assertEqual(
+            self.app.overlay_player_button.cget("text"),
+            "Player Boxes OFF",
+        )
+        self.assertIsNone(self.app._save_after_id)
+
+    def test_detection_custom_controls_publish_width_and_label_mode_runtime_only(self):
+        self.assertTrue(hasattr(self.app, "overlay_box_width_entry"))
+        self.assertTrue(hasattr(self.app, "overlay_box_width_scale"))
+        self.assertTrue(hasattr(self.app, "overlay_label_mode_combo"))
+        self.app._cancel_after("_save_after_id")
+        self.app.overlay_box_width_var.set("20")
+        self.app.overlay_label_mode_var.set("Class + Confidence")
+
+        self.app._overlay_entry_changed("box_width")
+        self.app._overlay_style_changed()
+        style = self.app._overlay_style_snapshot()
+
+        self.assertEqual(self.app.overlay_box_width_var.get(), "8")
+        self.assertEqual(style.box_width, 8)
+        self.assertEqual(style.label_mode, "class_confidence")
+        self.assertIsNone(self.app._save_after_id)
+
+    def test_hud_placement_controls_publish_corner_offsets_and_font_size(self):
+        for name in (
+            "overlay_hud_corner_combo",
+            "overlay_hud_offset_x_entry",
+            "overlay_hud_offset_x_scale",
+            "overlay_hud_offset_y_entry",
+            "overlay_hud_offset_y_scale",
+            "overlay_hud_font_size_entry",
+            "overlay_hud_font_size_scale",
+        ):
+            self.assertTrue(hasattr(self.app, name), name)
+        self.app._cancel_after("_save_after_id")
+        self.app.overlay_hud_corner_var.set("Bottom Right")
+        self.app.overlay_hud_offset_x_var.set("40")
+        self.app.overlay_hud_offset_y_var.set("50")
+        self.app.overlay_hud_font_size_var.set("18")
+
+        for key in ("hud_offset_x", "hud_offset_y", "hud_font_size"):
+            self.app._overlay_entry_changed(key)
+        self.app._overlay_style_changed()
+        style = self.app._overlay_style_snapshot()
+
+        self.assertEqual(style.hud_corner, "bottom_right")
+        self.assertEqual(style.hud_offset_x, 40)
+        self.assertEqual(style.hud_offset_y, 50)
+        self.assertEqual(style.hud_font_size, 18)
+        self.assertIsNone(self.app._save_after_id)
+
+    def test_hud_visibility_color_and_metric_buttons_are_runtime_only(self):
+        for name in (
+            "overlay_hud_button",
+            "overlay_hud_color_button",
+            "overlay_hud_fps_button",
+            "overlay_hud_provider_button",
+            "overlay_hud_zoom_button",
+            "overlay_hud_lock_button",
+        ):
+            self.assertTrue(hasattr(self.app, name), name)
+        self.app._color_chooser = lambda **_kwargs: (
+            (0.0, 204.0, 136.0),
+            "#00CC88",
+        )
+        self.app._cancel_after("_save_after_id")
+
+        self.app.overlay_hud_color_button.invoke()
+        self.app.overlay_hud_button.invoke()
+        self.app.overlay_hud_fps_button.invoke()
+        self.app.overlay_hud_zoom_button.invoke()
+        style = self.app._overlay_style_snapshot()
+
+        self.assertFalse(style.hud_visible)
+        self.assertEqual(style.hud_color, "#00cc88")
+        self.assertFalse(style.hud_show_fps)
+        self.assertTrue(style.hud_show_provider)
+        self.assertFalse(style.hud_show_zoom)
+        self.assertTrue(style.hud_show_lock)
+        self.assertEqual(style.box_color, "#ff2b2b")
+        self.assertIsNone(self.app._save_after_id)
+
+    def test_reset_overlay_restores_complete_default_and_saves_only_legacy_preferences(self):
+        self.assertTrue(hasattr(self.app, "overlay_reset_button"))
+        self.app.overlay_color = "#00cc88"
+        self.app.overlay_head_visible = False
+        self.app.overlay_player_visible = False
+        self.app.overlay_box_width_var.set("8")
+        self.app.overlay_label_mode_var.set("Class + Confidence")
+        self.app.overlay_hud_visible = False
+        self.app.overlay_hud_corner_var.set("Bottom Right")
+        self.app.overlay_hud_offset_x_var.set("40")
+        self.app.overlay_hud_offset_y_var.set("50")
+        self.app.overlay_hud_font_size_var.set("18")
+        self.app.overlay_hud_color = "#123456"
+        self.app.overlay_hud_show_fps = False
+        self.app.overlay_hud_show_provider = False
+        self.app.overlay_hud_show_zoom = False
+        self.app.overlay_hud_show_lock = False
+        self.app._cancel_after("_save_after_id")
+
+        self.app.overlay_reset_button.invoke()
+
+        self.assertEqual(self.app._overlay_style_snapshot(), OverlayStyle())
+        self.assertIsNotNone(self.app._save_after_id)
+
+    def test_overlay_style_snapshot_uses_safe_defaults_while_exact_input_is_incomplete(self):
+        self.app.overlay_box_width_var.set("")
+        self.app.overlay_hud_offset_x_var.set("-")
+        self.app.overlay_hud_offset_y_var.set("not a number")
+        self.app.overlay_hud_font_size_var.set("")
+
+        try:
+            style = self.app._overlay_style_snapshot()
+        except ValueError as exc:
+            self.fail(f"Incomplete exact input must not stop the overlay: {exc}")
+
+        self.assertEqual(style.box_width, 2)
+        self.assertEqual(style.hud_offset_x, 8)
+        self.assertEqual(style.hud_offset_y, 8)
+        self.assertEqual(style.hud_font_size, 10)
 
     def test_ai_service_is_injected_after_widgets_without_autostart(self):
         self.assertIs(self.ai.event_sink.__self__, self.app)
@@ -909,13 +1044,41 @@ class JitterLayoutTests(unittest.TestCase):
             self.app.motion_hero_card,
             self.app.motion_summary_card,
             self.app.ai_settings_card,
-            self.app.ai_status_card,
         ):
             self.assertIs(card.master, self.app.motion_scroll_content)
             self.assertEqual(card.winfo_manager(), "grid")
+        self.assertEqual(
+            int(self.app.ai_settings_card.grid_info()["columnspan"]), 2
+        )
         self.app.update_idletasks()
         self.assertEqual(self.app.geometry().split("+")[0], "840x620")
         self.assertEqual(self.app.stop_button.winfo_manager(), "grid")
+
+    def test_ai_runtime_readout_is_overlay_only(self):
+        texts = widget_texts(self.app.motion_scroll_content)
+        settings_grid = self.app.ai_settings_card.grid_info()
+
+        self.assertNotIn("AI RUNTIME", texts)
+        self.assertTrue(
+            {"e", "w"}.issubset(set(str(settings_grid["sticky"])))
+        )
+        self.assertTrue(
+            self._is_descendant(
+                self.app.overlay_button, self.app.overlay_custom_card
+            )
+        )
+        self.assertIs(
+            self.app.overlay_button.master,
+            self.app.overlay_reset_button.master,
+        )
+        overlay_grid = self.app.overlay_button.grid_info()
+        reset_grid = self.app.overlay_reset_button.grid_info()
+        self.assertEqual(overlay_grid["row"], reset_grid["row"])
+        self.assertEqual(
+            int(overlay_grid["column"]) + 1,
+            int(reset_grid["column"]),
+        )
+        self.assertIn("Overlay OFF", widget_texts(self.app.overlay_custom_card))
 
     def test_response_curve_card_is_scrollable_and_keeps_window_fixed(self):
         self.assertIs(self.app.ai_curve_card.master, self.app.motion_scroll_content)
@@ -2029,12 +2192,10 @@ class JitterLayoutTests(unittest.TestCase):
                     card.cget("style"), "Liquid.SettingsCard.TFrame"
                 )
                 self.assertEqual(int(card.grid_info()["row"]), 0)
-        for card in (
-            self.app.ai_settings_card,
-            self.app.ai_status_card,
-        ):
-            with self.subTest(card=str(card)):
-                self.assertEqual(int(card.grid_info()["row"]), 1)
+        self.assertEqual(int(self.app.ai_settings_card.grid_info()["row"]), 1)
+        self.assertEqual(
+            int(self.app.ai_settings_card.grid_info()["columnspan"]), 2
+        )
         for readout, variable in (
             (
                 self.app.motion_size_readout,
@@ -3366,9 +3527,8 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.app.close_app()
         self.assertFalse(self.app.get_adaptive_zoom_gate())
 
-    def test_zoom_metric_starts_one_x_and_tracks_valid_events(self):
+    def test_zoom_runtime_value_starts_one_x_and_tracks_valid_events(self):
         self.assertEqual(self.app.ai_zoom_var.get(), "1.0×")
-        self.assertIn("ZOOM", widget_texts(self.app))
         self.app.handle_ai_event(AiEvent("zoom", 2.0))
         self.assertEqual(self.app.ai_zoom_var.get(), "1.0×")
         self.prepare_armed_sources(MotionSources(False, True), gate_active=True)
@@ -3916,6 +4076,18 @@ class JitterRuntimeTests(JitterLayoutTests):
             ),
         )
         self.assertIsNotNone(self.app._overlay_after_id)
+
+    def test_overlay_poll_publishes_complete_default_runtime_style(self):
+        self.app.toggle_overlay()
+
+        self.assertEqual(
+            self.overlay.styles[-1],
+            OverlayStyle(
+                box_color="#ff2b2b",
+                show_heads=True,
+                hud_color="#ff2b2b",
+            ),
+        )
 
     def test_head_boxes_off_reaches_overlay_render(self):
         self.app.overlay_head_button.invoke()

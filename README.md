@@ -238,7 +238,8 @@ models/all_games_320.onnx
 ```
 
 
-พื้นที่ capture ยังคง 320×320 สำหรับทุกโมเดล เช่นเดียวกับ Overlay, FOV, targeting และ movement
+พื้นที่ capture ยังคง 320×320 สำหรับทุกโมเดล และ FOV, targeting กับ movement
+ยังใช้พิกัด canonical 320×320 เดิม
 `jitter_app/ai/resize.py` เป็น shared primitive สำหรับ resize ภาพ RGB เท่านั้น ส่วน detector จะ scale
 ผลลัพธ์กลับมาเป็นพิกัด 320×320 ก่อนเผยแพร่ โมเดล 640 จึงเป็นการ upscale
 พื้นที่จริง 320×320 เดิม ไม่ใช่การขยายพื้นที่ที่จับภาพ โมเดล 160 อาจใช้ inference น้อยลง,
@@ -292,15 +293,21 @@ path ของโมเดลภายนอกและไฟล์โมเด
 
 ## Overlay
 
-Overlay เป็นหน้าต่าง detection ขนาด 320×320 ที่กึ่งกลางจอ:
+Overlay เป็นหน้าต่างโปร่งใสเต็มขนาดจอหลัก โดยกล่อง detection ถูกวางทับพื้นที่
+capture 320×320 ที่กึ่งกลางจอ:
 
 - เริ่มต้นปิดและทำงานแยกจากการเลือก AI Aim
 - click-through จึงไม่ขวางการคลิก
 - ถูก exclude จาก capture เพื่อไม่ให้เห็นกล่องของตัวเองใน inference
-- มุมซ้ายบนแสดง FPS, provider, zoom และสถานะ lock เป็น `HEAD`, `PLAYER` หรือ `NONE`
+- HUD แสดง FPS, provider, zoom และสถานะ lock เป็น `HEAD`, `PLAYER` หรือ `NONE`
 - หากเฟรม detection เก่ากว่า 150 ms สถานะ lock จะกลับเป็น `NONE`
-- เลือก `Box Color` ได้
-- ปุ่ม `Head Boxes` ซ่อน/แสดงเฉพาะกล่อง head บน Overlay
+- ส่วน `OVERLAY CUSTOM` ในหน้า Motion ใช้ปรับ Overlay แบบสดขณะรัน
+- เลือก `Box Color`, เปิด/ปิดกล่อง Head และ Player แยกกัน และปรับความหนากรอบ `1–8`
+- Label เลือกได้ระหว่างปิด, ชื่อคลาส หรือชื่อคลาสพร้อม confidence
+- HUD เปิด/ปิดได้ เลือกมุมทั้ง 4 มุม ตั้งระยะ X/Y จากขอบจอ และปรับขนาดตัวอักษร `8–24`
+- เลือกสี HUD แยกจากสีกรอบ และเปิด/ปิด FPS, Provider, Zoom และ Lock แยกกันได้
+- `Reset Overlay` คืนค่าเริ่มต้นทั้งหมด โดยตำแหน่ง HUD จะถูกจำกัดไม่ให้อยู่นอกจอ
+- ตัวเลือกใหม่เป็น runtime-only และเริ่มจากค่า default ทุกครั้งที่เปิดโปรแกรม ส่วน `Box Color` กับ `Head Boxes` ยังบันทึกตาม schema 5
 - การซ่อนกล่อง head ไม่ได้ตัด head ออกจาก target selection
 - Overlay-only สามารถเรียก inference ได้โดยไม่เปิด AI Aim สำหรับ movement
 

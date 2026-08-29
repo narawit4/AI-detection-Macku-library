@@ -56,8 +56,8 @@ features.
 - `jitter_app/presentation/__init__.py`: presentation package marker.
 - `jitter_app/presentation/ui.py`: one-page Tkinter Focused Dashboard.
 - `jitter_app/presentation/widgets.py`: shared Tk widgets and styles.
-- `jitter_app/presentation/overlay.py`: centered, click-through, capture-excluded
-  detection and AI runtime status view.
+- `jitter_app/presentation/overlay.py`: primary-display-sized, click-through,
+  capture-excluded detection and AI runtime status view.
 - `jitter_app/presentation/sound.py`: sound service.
 - `jitter_app/config/__init__.py`: configuration package marker.
 - `jitter_app/config/store.py`: independent schema-aware atomic configuration.
@@ -177,12 +177,17 @@ with the supported Windows Python installation.
 - Combined movement sums current source deltas; Jitter continues when AI Aim
   has no target.
 - The optional overlay starts off and is independent of source selection. It
-  is a centered 320-by-320 configurable-color detection view that must be
-  click-through and excluded from capture. Its top-left runtime HUD reports
-  FPS, provider, zoom, and the current-frame `HEAD`, `PLAYER`, or `NONE` lock;
-  a detection frame older than 150 ms reports `NONE`. Head-box visibility
-  affects only the overlay; AI Aim still considers hidden head boxes for
-  nearest-target selection.
+  fills the primary display, must be click-through and excluded from capture,
+  and translates canonical detection boxes into the centered 320-by-320
+  capture region. Its screen-top-left runtime HUD reports FPS, provider, zoom,
+  and the current-frame `HEAD`, `PLAYER`, or `NONE` lock; a detection frame
+  older than 150 ms reports `NONE`. Head-box visibility affects only the
+  overlay; AI Aim still considers hidden head boxes for nearest-target
+  selection. Runtime-only customization may independently hide player boxes,
+  set box width and labels, hide or place the HUD at any screen corner with
+  exact offsets, set HUD color and font size, and filter individual HUD
+  metrics. Clamp exact visual values safely and keep HUD placement on-screen;
+  these added visual choices reset on every launch and are never serialized.
 - STOP immediately cancels movement, hides the overlay, and ends its inference
   demand. Disable, disconnect, and source changes immediately cancel movement;
   AI inference continues only while the visible independent overlay requires

@@ -1,6 +1,7 @@
 import threading
 import unittest
 
+import jitter_app.presentation.overlay as overlay_module
 from jitter_app.ai.targeting import Detection, DetectionFrameSnapshot
 from jitter_app.presentation.overlay import (
     DetectionOverlay,
@@ -221,9 +222,10 @@ class Win32OverlayAdapterTests(unittest.TestCase):
 
 
 class FakeWindow:
-    def __init__(self, calls, failures=None):
+    def __init__(self, calls, failures=None, screen_size=(1920, 1080)):
         self.calls = calls
         self.failures = failures or {}
+        self.screen_size = screen_size
         self.destroyed = False
         self.visible = False
 
@@ -245,10 +247,10 @@ class FakeWindow:
         self._fail(name)
 
     def winfo_screenwidth(self):
-        return 1920
+        return self.screen_size[0]
 
     def winfo_screenheight(self):
-        return 1080
+        return self.screen_size[1]
 
     def geometry(self, value):
         self.calls.append(("geometry", value))
@@ -282,6 +284,8 @@ class FakeCanvas:
         self.options = options
         self.failures = failures or {}
         self.items = []
+        self.bbox_value = None
+        self.moves = []
 
     def pack(self, **options):
         self.pack_options = options
@@ -309,6 +313,18 @@ class FakeCanvas:
 
     def create_text(self, *coords, **options):
         self.items.append((coords, options))
+        return len(self.items) - 1
+
+    def bbox(self, _item_id):
+        return self.bbox_value
+
+    def move(self, item_id, dx, dy):
+        self.moves.append((item_id, dx, dy))
+        coords, options = self.items[item_id]
+        self.items[item_id] = (
+            (coords[0] + dx, coords[1] + dy),
+            options,
+        )
 
 
 class RecordingAdapter:
@@ -331,9 +347,10 @@ class DetectionOverlayTests(unittest.TestCase):
         setup_error=None,
         window_failures=None,
         canvas_failures=None,
+        screen_size=(1920, 1080),
     ):
         calls = []
-        window = FakeWindow(calls, window_failures)
+        window = FakeWindow(calls, window_failures, screen_size)
         canvases = []
 
         def canvas_factory(owner, **options):
@@ -350,7 +367,7 @@ class DetectionOverlayTests(unittest.TestCase):
         )
         return overlay, window, canvases, adapter, calls
 
-    def test_show_configures_hidden_centered_window_before_deiconifying(self):
+    def test_show_configures_hidden_full_screen_window_before_deiconifying(self):
         overlay, window, canvases, adapter, calls = self.make_overlay()
 
         overlay.show()
@@ -365,14 +382,14 @@ class DetectionOverlayTests(unittest.TestCase):
                 ("borderless", True),
                 ("-topmost", True),
                 ("-transparentcolor", "#010203"),
-                ("geometry", "320x320+800+380"),
+                ("geometry", "1920x1080+0+0"),
             ],
         )
         self.assertEqual(
             canvases[0].options,
             {
-                "width": 320,
-                "height": 320,
+                "width": 1920,
+                "height": 1080,
                 "background": "#010203",
                 "highlightthickness": 0,
             },
@@ -464,15 +481,201 @@ class DetectionOverlayTests(unittest.TestCase):
             canvases[0].items,
             [
                 (
-                    (5, 6, 25, 26),
+                    (805, 386, 825, 406),
                     {"outline": "#ff2b2b", "width": 2, "tags": ("detection",)},
                 ),
                 (
-                    (100, 110, 130, 150),
+                    (900, 490, 930, 530),
                     {"outline": "#ff2b2b", "width": 4, "tags": ("detection",)},
                 ),
             ],
         )
+
+    def test_overlay_style_can_hide_players_without_hiding_heads(self):
+        self.assertTrue(
+            hasattr(overlay_module, "OverlayStyle"),
+            "OverlayStyle must expose immutable per-frame customization",
+        )
+        overlay, _window, canvases, _adapter, _calls = self.make_overlay()
+        overlay.show()
+        frame = DetectionFrameSnapshot(
+            1,
+            10.0,
+            (
+                Detection(1, 2, 30, 40, 0.8, 0),
+                Detection(100, 110, 130, 150, 0.9, 7),
+            ),
+            1,
+        )
+        style = overlay_module.OverlayStyle(show_players=False)
+
+        overlay.render(frame, now=10.0, style=style)
+
+        self.assertEqual(len(canvases[0].items), 1)
+        self.assertEqual(canvases[0].items[0][0], (900, 490, 930, 530))
+
+    def test_overlay_style_controls_normal_and_selected_box_width(self):
+        overlay, _window, canvases, _adapter, _calls = self.make_overlay()
+        overlay.show()
+        frame = DetectionFrameSnapshot(
+            1,
+            10.0,
+            (
+                Detection(1, 2, 30, 40, 0.8, 0),
+                Detection(100, 110, 130, 150, 0.9, 7),
+            ),
+            1,
+        )
+        try:
+            style = overlay_module.OverlayStyle(box_width=6)
+        except TypeError as exc:
+            self.fail(f"OverlayStyle must accept box_width: {exc}")
+
+        overlay.render(frame, now=10.0, style=style)
+
+        self.assertEqual(
+            [item[1]["width"] for item in canvases[0].items],
+            [6, 8],
+        )
+
+    def test_selected_box_remains_emphasized_at_maximum_base_width(self):
+        overlay, _window, canvases, _adapter, _calls = self.make_overlay()
+        overlay.show()
+        frame = DetectionFrameSnapshot(
+            1,
+            10.0,
+            (
+                Detection(1, 2, 30, 40, 0.8, 0),
+                Detection(100, 110, 130, 150, 0.9, 7),
+            ),
+            1,
+        )
+
+        overlay.render(
+            frame,
+            now=10.0,
+            style=overlay_module.OverlayStyle(box_width=8),
+        )
+
+        self.assertEqual(
+            [item[1]["width"] for item in canvases[0].items],
+            [8, 10],
+        )
+
+    def test_class_confidence_mode_labels_each_detection(self):
+        overlay, _window, canvases, _adapter, _calls = self.make_overlay()
+        overlay.show()
+        frame = DetectionFrameSnapshot(
+            1,
+            10.0,
+            (
+                Detection(1, 2, 30, 40, 0.806, 0),
+                Detection(100, 110, 130, 150, 0.934, 7),
+            ),
+            None,
+        )
+        try:
+            style = overlay_module.OverlayStyle(
+                label_mode="class_confidence"
+            )
+        except TypeError as exc:
+            self.fail(f"OverlayStyle must accept label_mode: {exc}")
+
+        overlay.render(frame, now=10.0, style=style)
+
+        labels = [
+            item[1]["text"]
+            for item in canvases[0].items
+            if "text" in item[1]
+        ]
+        self.assertEqual(labels, ["PLAYER 81%", "HEAD 93%"])
+        self.assertTrue(all(
+            item[1]["tags"] == ("detection",)
+            for item in canvases[0].items
+        ))
+
+    def test_class_mode_omits_confidence_from_detection_label(self):
+        overlay, _window, canvases, _adapter, _calls = self.make_overlay()
+        overlay.show()
+        frame = DetectionFrameSnapshot(
+            1,
+            10.0,
+            (Detection(1, 2, 30, 40, 0.806, 0),),
+            None,
+        )
+
+        overlay.render(
+            frame,
+            now=10.0,
+            style=overlay_module.OverlayStyle(label_mode="class"),
+        )
+
+        labels = [
+            item[1]["text"]
+            for item in canvases[0].items
+            if "text" in item[1]
+        ]
+        self.assertEqual(labels, ["PLAYER"])
+
+    def test_detection_label_never_maps_an_unsupported_class_to_player(self):
+        overlay, _window, canvases, _adapter, _calls = self.make_overlay()
+        overlay.show()
+        frame = DetectionFrameSnapshot(
+            1,
+            10.0,
+            (Detection(1, 2, 30, 40, 0.806, 99),),
+            None,
+        )
+
+        overlay.render(
+            frame,
+            now=10.0,
+            style=overlay_module.OverlayStyle(label_mode="class"),
+        )
+
+        labels = [
+            item[1]["text"]
+            for item in canvases[0].items
+            if "text" in item[1]
+        ]
+        self.assertEqual(labels, [])
+
+    def test_render_centers_detection_region_on_non_hd_display(self):
+        overlay, _window, canvases, _adapter, _calls = self.make_overlay(
+            screen_size=(2560, 1440)
+        )
+        overlay.show()
+        frame = DetectionFrameSnapshot(
+            1,
+            10.0,
+            (Detection(0, 0, 320, 320, 0.8, 0),),
+            0,
+        )
+
+        overlay.render(frame, now=10.0)
+
+        self.assertEqual(canvases[0].items[0][0], (1120, 560, 1440, 880))
+
+    def test_show_refreshes_geometry_and_box_offset_after_display_change(self):
+        overlay, window, canvases, _adapter, calls = self.make_overlay()
+        overlay.show()
+        overlay.hide()
+        window.screen_size = (2560, 1440)
+        calls.clear()
+
+        overlay.show()
+        frame = DetectionFrameSnapshot(
+            1,
+            10.0,
+            (Detection(0, 0, 320, 320, 0.8, 0),),
+            0,
+        )
+        overlay.render(frame, now=10.0)
+
+        self.assertIn(("geometry", "2560x1440+0+0"), calls)
+        self.assertEqual(canvases[0].options["width"], 2560)
+        self.assertEqual(canvases[0].options["height"], 1440)
+        self.assertEqual(canvases[0].items[0][0], (1120, 560, 1440, 880))
 
     def test_render_uses_requested_box_color(self):
         overlay, _window, canvases, _adapter, _calls = self.make_overlay()
@@ -531,6 +734,163 @@ class DetectionOverlayTests(unittest.TestCase):
                     "tags": ("runtime",),
                 },
             ),
+        )
+
+    def test_runtime_hud_supports_all_screen_corners_with_exact_offsets(self):
+        expected = {
+            "top_left": ((12, 34), "nw"),
+            "top_right": ((1908, 34), "ne"),
+            "bottom_left": ((12, 1046), "sw"),
+            "bottom_right": ((1908, 1046), "se"),
+        }
+
+        for corner, (coords, anchor) in expected.items():
+            with self.subTest(corner=corner):
+                overlay, _window, canvases, _adapter, _calls = self.make_overlay()
+                overlay.show()
+                try:
+                    style = overlay_module.OverlayStyle(
+                        hud_corner=corner,
+                        hud_offset_x=12,
+                        hud_offset_y=34,
+                    )
+                except TypeError as exc:
+                    self.fail(f"OverlayStyle must accept HUD placement: {exc}")
+
+                overlay.render(
+                    None,
+                    now=10.0,
+                    runtime=("120 FPS", "DirectML", "1.0Ã—"),
+                    style=style,
+                )
+
+                self.assertEqual(canvases[0].items[-1][0], coords)
+                self.assertEqual(canvases[0].items[-1][1]["anchor"], anchor)
+
+    def test_runtime_hud_offsets_are_clamped_to_the_current_screen(self):
+        overlay, _window, canvases, _adapter, _calls = self.make_overlay()
+        overlay.show()
+        style = overlay_module.OverlayStyle(
+            hud_corner="bottom_right",
+            hud_offset_x=5000,
+            hud_offset_y=-5,
+        )
+
+        overlay.render(
+            None,
+            now=10.0,
+            runtime=("120 FPS", "DirectML", "1.0Ã—"),
+            style=style,
+        )
+
+        self.assertEqual(canvases[0].items[-1][0], (0, 1080))
+
+    def test_runtime_hud_moves_minimally_to_keep_full_text_bbox_on_screen(self):
+        overlay, _window, canvases, _adapter, _calls = self.make_overlay()
+        overlay.show()
+        canvases[0].bbox_value = (-200, 900, 100, 1120)
+        style = overlay_module.OverlayStyle(
+            hud_corner="bottom_right",
+            hud_offset_x=5000,
+            hud_offset_y=-5,
+        )
+
+        overlay.render(
+            None,
+            now=10.0,
+            runtime=("120 FPS", "DirectML", "1.0Ã—"),
+            style=style,
+        )
+
+        self.assertEqual(canvases[0].moves, [(0, 200, -40)])
+        left, top, right, bottom = (
+            value + delta
+            for value, delta in zip(
+                canvases[0].bbox_value,
+                (200, -40, 200, -40),
+            )
+        )
+        self.assertGreaterEqual(left, 0)
+        self.assertGreaterEqual(top, 0)
+        self.assertLessEqual(right, 1920)
+        self.assertLessEqual(bottom, 1080)
+
+    def test_runtime_hud_can_be_hidden_without_hiding_detection_boxes(self):
+        overlay, _window, canvases, _adapter, _calls = self.make_overlay()
+        overlay.show()
+        frame = DetectionFrameSnapshot(
+            1,
+            10.0,
+            (Detection(1, 2, 30, 40, 0.8, 0),),
+            None,
+        )
+        try:
+            style = overlay_module.OverlayStyle(hud_visible=False)
+        except TypeError as exc:
+            self.fail(f"OverlayStyle must accept hud_visible: {exc}")
+
+        overlay.render(
+            frame,
+            now=10.0,
+            runtime=("120 FPS", "DirectML", "1.0Ã—"),
+            style=style,
+        )
+
+        self.assertEqual(len(canvases[0].items), 1)
+        self.assertEqual(canvases[0].items[0][1]["tags"], ("detection",))
+
+    def test_runtime_hud_uses_independent_text_color_and_font_size(self):
+        overlay, _window, canvases, _adapter, _calls = self.make_overlay()
+        overlay.show()
+        try:
+            style = overlay_module.OverlayStyle(
+                box_color="#ff2b2b",
+                hud_color="#00cc88",
+                hud_font_size=18,
+            )
+        except TypeError as exc:
+            self.fail(f"OverlayStyle must accept HUD typography: {exc}")
+
+        overlay.render(
+            None,
+            now=10.0,
+            runtime=("120 FPS", "DirectML", "1.0Ã—"),
+            style=style,
+        )
+
+        hud = canvases[0].items[-1][1]
+        self.assertEqual(hud["fill"], "#00cc88")
+        self.assertEqual(hud["font"], ("Consolas", 18, "bold"))
+
+    def test_runtime_hud_metrics_can_be_enabled_independently(self):
+        overlay, _window, canvases, _adapter, _calls = self.make_overlay()
+        overlay.show()
+        frame = DetectionFrameSnapshot(
+            1,
+            10.0,
+            (Detection(1, 2, 30, 40, 0.8, 0),),
+            0,
+        )
+        try:
+            style = overlay_module.OverlayStyle(
+                hud_show_fps=False,
+                hud_show_provider=True,
+                hud_show_zoom=False,
+                hud_show_lock=True,
+            )
+        except TypeError as exc:
+            self.fail(f"OverlayStyle must accept HUD metric toggles: {exc}")
+
+        overlay.render(
+            frame,
+            now=10.0,
+            runtime=("120 FPS", "DirectML", "1.5Ã—"),
+            style=style,
+        )
+
+        self.assertEqual(
+            canvases[0].items[-1][1]["text"],
+            "AI RUNTIME\nPROVIDER: DirectML\nLOCK: PLAYER",
         )
 
     def test_runtime_hud_maps_only_supported_selected_classes(self):
@@ -647,6 +1007,21 @@ class DetectionOverlayTests(unittest.TestCase):
         overlay.render(frame, now=10.0, color="#010203")
 
         self.assertEqual(canvases[0].items[0][1]["outline"], "#010203")
+        self.assertEqual(canvases[0].options["background"], "#010204")
+        self.assertIn(("-transparentcolor", "#010204"), calls)
+
+    def test_render_keeps_transparency_key_distinct_from_hud_color(self):
+        overlay, _window, canvases, _adapter, calls = self.make_overlay()
+        overlay.show()
+
+        overlay.render(
+            None,
+            now=10.0,
+            runtime=("120 FPS", "DirectML", "1.0Ã—"),
+            style=overlay_module.OverlayStyle(hud_color="#010203"),
+        )
+
+        self.assertEqual(canvases[0].items[-1][1]["fill"], "#010203")
         self.assertEqual(canvases[0].options["background"], "#010204")
         self.assertIn(("-transparentcolor", "#010204"), calls)
 
