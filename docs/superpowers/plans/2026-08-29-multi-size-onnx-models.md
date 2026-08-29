@@ -983,7 +983,7 @@ git commit -m "feat: show validated AI model input size"
 **Interfaces:**
 - Consumes: the new top-level source `image_resize.py` and the finalized 160/320/640 runtime behavior.
 - Produces: repository guidance and Thai README accurately describing fixed 320 capture and runtime-only multi-size models; entrypoint tests lock the published documentation contract.
-- Preserves: exactly one packaged model data directory and the bundled 320 hash/DirectML self-check.
+- Preserves: exactly one packaged model data file and the bundled 320 hash/DirectML self-check.
 
 - [ ] **Step 1: Add failing README contract assertions**
 
@@ -1003,9 +1003,10 @@ def test_readme_documents_supported_external_sizes_and_fixed_capture(self):
             self.assertIn(contract, readme)
 ```
 
-Retain the existing entrypoint assertion that package options contain only the
-approved model/licenses/sound directories. Do not add
-`models/all_games_640.onnx`, `models/all_games.onnx`, or another data option.
+Require the entrypoint assertion to use an exact data-file option for
+`models/all_games_320.onnx`, alongside only the approved licenses/sound
+directories. Do not recursively package `models/` or add
+`models/all_games_640.onnx`, `models/all_games.onnx`, or another model option.
 
 - [ ] **Step 2: Run distribution and entrypoint tests to verify RED**
 
@@ -1120,7 +1121,8 @@ Expected:
 - imports exit 0;
 - self-check JSON reports `"status": "ok"`, the approved 320 model hash, and
   `"provider": "DmlExecutionProvider"`;
-- review JSON includes `image_resize.py` and no alternate model data option;
+- review JSON includes `image_resize.py` and only the exact
+  `models/all_games_320.onnx` model data-file option;
 - diff check emits no whitespace errors.
 
 - [ ] **Step 5: Inspect the final repository state and protect user files**

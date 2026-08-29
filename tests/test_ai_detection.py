@@ -176,6 +176,41 @@ class OnnxDetectorTests(unittest.TestCase):
                         session_factory=lambda *_args, **_kwargs: session,
                     )
 
+    def test_rejects_type_coercible_non_integer_input_dimensions(self):
+        rejected_shapes = (
+            [True, 3, 320, 320],
+            [1, 3.0, 320, 320],
+            [1, 3, 320.0, 320],
+            [1, 3, 320, 320.0],
+        )
+        for shape in rejected_shapes:
+            with self.subTest(shape=shape):
+                session = Session(inputs=[NodeArg(
+                    "images", "tensor(float)", shape
+                )])
+                with self.assertRaises(ModelContractError):
+                    OnnxDetector(
+                        "model.onnx",
+                        session_factory=lambda *_args, **_kwargs: session,
+                    )
+
+    def test_rejects_type_coercible_non_integer_output_dimensions(self):
+        rejected_shapes = (
+            [True, 300, 6],
+            [1, 300.0, 6],
+            [1, 300, 6.0],
+        )
+        for shape in rejected_shapes:
+            with self.subTest(shape=shape):
+                session = Session(outputs=[NodeArg(
+                    "output0", "tensor(float)", shape
+                )])
+                with self.assertRaises(ModelContractError):
+                    OnnxDetector(
+                        "model.onnx",
+                        session_factory=lambda *_args, **_kwargs: session,
+                    )
+
     def test_detect_uses_validated_size_for_tensor_and_output_mapping(self):
         output = np.zeros((1, 300, 6), dtype=np.float32)
         output[0, 0] = (300, 300, 340, 340, 0.9, 7)

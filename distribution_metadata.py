@@ -470,7 +470,8 @@ def build_plan(root: Path = ROOT) -> BuildPlan:
 
     compile_targets = tuple(path.relative_to(root).as_posix() for path in sources)
     data_options = [
-        "--include-data-dir=models=models",
+        "--include-data-files="
+        "models/all_games_320.onnx=models/all_games_320.onnx",
         "--include-data-dir=licenses=licenses",
     ]
     if sound_source.is_file():

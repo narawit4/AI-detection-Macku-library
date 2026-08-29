@@ -245,14 +245,15 @@ models/all_games_320.onnx
 - โมเดลขนาด 128/256 (หรือขนาดอื่นนอกเหนือจากนี้), โมเดล dynamic/rectangular และโมเดลที่ malformed จะถูก reject
 
 พื้นที่ capture ยังคง 320×320 สำหรับทุกโมเดล เช่นเดียวกับ Overlay, FOV, targeting และ movement
-ผลจาก detector จะถูก scale กลับมาเป็นพิกัด 320×320 ก่อนเผยแพร่ โมเดล 640 จึงเป็นการ upscale
+`image_resize.py` เป็น shared primitive สำหรับ resize ภาพ RGB เท่านั้น ส่วน detector จะ scale
+ผลลัพธ์กลับมาเป็นพิกัด 320×320 ก่อนเผยแพร่ โมเดล 640 จึงเป็นการ upscale
 พื้นที่จริง 320×320 เดิม ไม่ใช่การขยายพื้นที่ที่จับภาพ โมเดล 160 อาจใช้ inference น้อยลง,
 320 เป็นจุดสมดุลเริ่มต้น และ 640 อาจใช้เวลามากขึ้น ทั้งหมดนี้ไม่รับประกัน FPS หรือความแม่นยำ
 
 โมเดลเริ่มต้นเมื่อเปิดโปรแกรมยังคงเป็น bundled `models/all_games_320.onnx` เสมอ path และขนาดของ
 โมเดลภายนอกเป็น runtime-only: ไม่ถูกบันทึกลง config, copy, หรือ package ไปกับ release
 
-แถว `MODEL` จะแสดง `Default · all_games_320.onnx` ปุ่ม `Browse...` ใช้เลือก
+แถว `MODEL` จะแสดง `Default · all_games_320.onnx · 320×320` ปุ่ม `Browse...` ใช้เลือก
 ไฟล์ `.onnx` ภายนอกสำหรับ process ปัจจุบัน และ `Use Default` ใช้กลับไปโมเดลหลัก
 
 โมเดลภายนอกต้องตรง contract นี้ทุกข้อ:

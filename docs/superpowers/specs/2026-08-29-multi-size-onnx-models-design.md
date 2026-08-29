@@ -271,7 +271,9 @@ approved bundled model hash, `[1,3,320,320]` input, `[1,300,6]` output, and
 self-check.
 
 The new `image_resize.py` source module must be included in compile/review and
-packaging source inventories. No additional model data option is added.
+packaging source inventories. The canonical Nuitka plan includes only
+`models/all_games_320.onnx` through an exact data-file option; it never packages
+the `models/` directory recursively.
 
 ## Error Handling
 

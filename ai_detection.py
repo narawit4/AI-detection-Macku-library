@@ -133,6 +133,7 @@ class OnnxDetector:
             node.name != _INPUT_NAME
             or node.type != _TENSOR_TYPE
             or len(shape) != 4
+            or any(type(dimension) is not int for dimension in shape)
             or shape[:2] != [1, 3]
             or shape[2] != shape[3]
         ):
@@ -151,10 +152,12 @@ class OnnxDetector:
         if len(nodes) != 1:
             raise ModelContractError(f"AI model must have exactly one {kind}")
         node = nodes[0]
+        node_shape = list(node.shape)
         if (
             node.name != name
             or node.type != _TENSOR_TYPE
-            or list(node.shape) != shape
+            or any(type(dimension) is not int for dimension in node_shape)
+            or node_shape != shape
         ):
             raise ModelContractError(
                 f"AI model {kind} must be {name} {_TENSOR_TYPE}{shape}"

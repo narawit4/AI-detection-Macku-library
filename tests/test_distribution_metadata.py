@@ -255,7 +255,8 @@ class BuildPlanTests(unittest.TestCase):
         )
 
         expected_data_options = {
-            "--include-data-dir=models=models",
+            "--include-data-files="
+            "models/all_games_320.onnx=models/all_games_320.onnx",
             "--include-data-dir=licenses=licenses",
         }
         if (ROOT / "sound_service.py").is_file() and (ROOT / "sound").is_dir():
@@ -374,6 +375,22 @@ class BuildPlanTests(unittest.TestCase):
             str(executable_plan.build_log),
         )
         self.assertIs(nuitka_kwargs["stderr"], subprocess.STDOUT)
+
+    def test_canonical_package_data_includes_only_the_bundled_model_file(self):
+        plan = build_plan(ROOT)
+
+        model_options = tuple(
+            option for option in plan.nuitka_data_options
+            if "models/" in option or "models=" in option
+        )
+        self.assertEqual(
+            model_options,
+            (
+                "--include-data-files="
+                "models/all_games_320.onnx=models/all_games_320.onnx",
+            ),
+        )
+        self.assertNotIn("--include-data-dir=models=models", plan.nuitka_argv)
 
     def test_failed_packaged_self_check_prevents_release_copying(self):
         plan = build_plan(ROOT)

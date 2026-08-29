@@ -327,7 +327,8 @@ class EntryPointTests(unittest.TestCase):
             "makcu", "serial", "onnxruntime", "dxcam", "comtypes", "numpy",
         }
         expected_data_options = {
-            "--include-data-dir=models=models",
+            "--include-data-files="
+            "models/all_games_320.onnx=models/all_games_320.onnx",
             "--include-data-dir=licenses=licenses",
         }
         sound_is_present = (
