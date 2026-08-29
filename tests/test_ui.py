@@ -1392,10 +1392,10 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertEqual(self.app.get_ai_settings().response_curve[2], 0.12)
         self.assertEqual(self.app.get_ai_settings().response_curve[0], 0.0)
 
-    def _obsolete_curve_real_canvas_drag_survives_redraw_until_release(self):
+    def test_curve_real_canvas_drag_survives_redraw_until_release(self):
         self.app.deiconify()
-        self.app.select_page(1)
-        self.app.motion_scroll_canvas.yview_moveto(1.0)
+        self.app.ai_section.set_expanded(True)
+        self.app.dashboard_scroll_canvas.yview_moveto(1.0)
         self.app.update()
         canvas = self.app.ai_curve_canvas
         node_bounds = canvas.bbox("ai-curve-node-2")
@@ -1433,7 +1433,8 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertEqual(canvas.cget("background"), "#202F43")
         self.assertEqual(canvas.itemcget("ai-curve-sample", "fill"), "#63E6FF")
 
-    def _obsolete_curve_sample_is_unsmoothed_response_curve_polyline(self):
+    def test_curve_sample_is_unsmoothed_response_curve_polyline(self):
+        self.app.ai_section.set_expanded(True)
         self.app.update_idletasks()
         canvas = self.app.ai_curve_canvas
         actual = canvas.coords("ai-curve-sample")
@@ -1798,7 +1799,7 @@ class JitterLayoutTests(unittest.TestCase):
             with self.subTest(widget=str(widget)):
                 self.assertTrue(self._is_descendant(widget, self.app.motion_page))
 
-    def _obsolete_settings_page_exposes_persisted_sound_controls(self):
+    def test_settings_page_exposes_persisted_sound_controls(self):
         self.assertTrue(self.app.sound_enabled_var.get())
         self.assertEqual(self.app.sound_volume_var.get(), "70")
         self.assertEqual(self.app.sound_volume_scale.from_, 0.0)
@@ -1811,7 +1812,7 @@ class JitterLayoutTests(unittest.TestCase):
             self.app.test_off_button,
         ):
             with self.subTest(widget=str(widget)):
-                self.assertTrue(self._is_descendant(widget, self.app.settings_page))
+                self.assertTrue(self._is_descendant(widget, self.app.settings_section.body))
 
     def test_sound_preview_uses_two_compact_labeled_rows(self):
         actions = self.app.test_on_button.master
@@ -1973,7 +1974,7 @@ class JitterLayoutTests(unittest.TestCase):
                 )
             self.app.toggle_theme()
 
-    def _obsolete_motion_page_exposes_only_paired_pulse_controls(self):
+    def test_motion_page_exposes_only_paired_pulse_controls(self):
         self.assertEqual(
             set(self.app.motion_vars),
             {"pulse_size_px", "pulse_rate_hz", "ramp_mode"},
@@ -2358,12 +2359,12 @@ class JitterLayoutTests(unittest.TestCase):
             self.app.motion_summary_frame.winfo_width(),
         )
 
-    def _obsolete_motion_page_has_snapshot_backed_live_summary(self):
+    def test_motion_page_has_snapshot_backed_live_summary(self):
         """Fails if Motion lacks a visible summary of the active snapshot."""
         summary_var = getattr(self.app, "motion_summary_var", None)
         self.assertIsInstance(summary_var, tk.StringVar)
         self.assertTrue(
-            self._is_descendant(self.app.motion_summary_label, self.app.motion_page)
+            self._is_descendant(self.app.motion_summary_label, self.app.jitter_section.body)
         )
         self.assertEqual(
             self.app.motion_summary_label.cget("textvariable"),
@@ -2456,11 +2457,9 @@ class JitterLayoutTests(unittest.TestCase):
                 self.app.update()
                 self.assertEqual(self.app.stop_button.winfo_ismapped(), 1)
 
-    def _obsolete_split_console_close_cancels_all_widget_callbacks_before_service_close(self):
+    def test_split_console_close_cancels_all_widget_callbacks_before_service_close(self):
         self.app.deiconify()
         self.app.update()
-        self.app.nav.select(1)
-        self.assertIsNotNone(self.app.nav._animation_after_id)
         sliders = [
             widget for widget in self._descendants(self.app)
             if isinstance(widget, LiquidSlider)
@@ -2480,7 +2479,6 @@ class JitterLayoutTests(unittest.TestCase):
         def observe_service_close():
             callback_states_at_service_close.append((
                 self.app._closing,
-                self.app.nav._animation_after_id,
                 tuple(slider._bubble_after_id for slider in sliders),
                 self.app._action_tooltip,
                 self.app._theme_tooltip,
@@ -2491,23 +2489,22 @@ class JitterLayoutTests(unittest.TestCase):
         self.app.close_app()
         self.assertEqual(
             callback_states_at_service_close,
-            [(True, None, tuple(None for _slider in sliders), None, None)],
+            [(True, tuple(None for _slider in sliders), None, None)],
         )
-        self.assertIsNone(self.app.nav._animation_after_id)
 
-    def _obsolete_invalid_motion_edit_does_not_change_page(self):
-        self.app.select_page(1)
+    def test_invalid_motion_edit_does_not_change_page(self):
+        self.app.jitter_section.set_expanded(True)
         self.app.pulse_size_px_var.set("not-a-number")
         self.app._motion_changed("pulse_size_px")
-        self.assertEqual(self.app.nav.selected_index, 1)
+        self.assertTrue(self.app.jitter_section.expanded)
         self.assertTrue(self.app.footer_var.get().startswith("Invalid value for "))
 
-    def _obsolete_mini_actions_keep_icon_button_size_and_tooltips(self):
+    def test_mini_actions_keep_icon_button_size_and_tooltips(self):
         for button in (self.app.reconnect_button, self.app.test_button,
                        self.app.theme_button):
             with self.subTest(button=str(button)):
                 self.assertEqual(int(button.cget("width")), 34)
-                self.assertEqual(button.pack_info()["side"], "left")
+                self.assertEqual(button.winfo_manager(), "grid")
         self.assertEqual(self.app.reconnect_tooltip_text, "Reconnect Makcu")
         self.assertEqual(self.app.test_tooltip_text, "Test Run 3s")
         self.assertEqual(self.app.reconnect_button.accessible_name,
@@ -2549,7 +2546,7 @@ class JitterLayoutTests(unittest.TestCase):
                 button.event_generate("<FocusOut>")
                 self.assertIsNone(getattr(self.app, tooltip_attribute))
 
-    def _obsolete_split_console_page_and_theme_changes_preserve_state_and_geometry(self):
+    def test_split_console_page_and_theme_changes_preserve_state_and_geometry(self):
         self.app.pulse_size_px_var.set("4")
         self.app.pulse_rate_hz_var.set("45")
         self.app.ramp_mode_var.set("Instant")
@@ -2570,15 +2567,12 @@ class JitterLayoutTests(unittest.TestCase):
         )
         expected_geometry = self.app.geometry()
 
-        for index in (1, 0):
-            with self.subTest(index=index):
-                self.app.select_page(index)
+        for section in (self.app.jitter_section, self.app.control_section):
+            with self.subTest(section=section.title):
+                section.set_expanded(True)
                 self.app.toggle_theme()
                 self.app.update_idletasks()
-                self.assertEqual(self.app.nav.selected_index, index)
-                self.assertEqual(
-                    self.app.page_host.grid_slaves(), [self.app.pages[index]]
-                )
+                self.assertTrue(section.expanded)
                 self.assertEqual(self.app.motion_summary_var.get(), expected_summary)
                 self.assertEqual(
                     {

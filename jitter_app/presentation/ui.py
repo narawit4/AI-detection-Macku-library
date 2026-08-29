@@ -1082,10 +1082,6 @@ class JitterApp(tk.Tk):
             setattr(self, attribute, section)
             sections.append(section)
         self.sections = tuple(sections)
-        self.settings_action_frame = ttk.Frame(
-            self.settings_section.body, style="Liquid.App.TFrame"
-        )
-        self.settings_action_frame.grid(row=2, column=0, sticky="w", pady=(8, 0))
         self._build_control_section(self.control_section.body)
         self._build_jitter_section(self.jitter_section.body)
         self._build_ai_section(self.ai_section.body)
@@ -1506,21 +1502,8 @@ class JitterApp(tk.Tk):
             command=self.test_run,
             palette=self._icon_palette(),
         )
-        self.theme_tooltip_text = (
-            "Switch to Light Mode" if self._theme == "dark"
-            else "Switch to Dark Mode"
-        )
-        self._theme_tooltip: tk.Toplevel | None = None
-        self.theme_button = LiquidIconButton(
-            self.settings_action_frame,
-            icon="☀" if self._theme == "dark" else "☾",
-            accessible_name=self.theme_tooltip_text,
-            command=self.toggle_theme,
-            palette=self._icon_palette(),
-        )
         self.reconnect_button.grid(row=0, column=0, sticky="w")
         self.test_button.grid(row=0, column=1, sticky="e")
-        self.theme_button.grid(row=1, column=0, sticky="w", pady=(8, 0))
         self.reconnect_button.bind(
             "<Enter>",
             lambda event: self._show_action_tooltip(
@@ -1557,18 +1540,6 @@ class JitterApp(tk.Tk):
             "<FocusOut>", self._hide_action_tooltip, add="+"
         )
         self.test_button.bind("<FocusOut>", self._hide_action_tooltip, add="+")
-        self.theme_button.bind(
-            "<Enter>", self._show_theme_tooltip, add="+"
-        )
-        self.theme_button.bind(
-            "<Leave>", self._hide_theme_tooltip, add="+"
-        )
-        self.theme_button.bind(
-            "<FocusIn>", self._show_theme_tooltip, add="+"
-        )
-        self.theme_button.bind(
-            "<FocusOut>", self._hide_theme_tooltip, add="+"
-        )
 
     def _show_action_tooltip(self, event: tk.Event, text: str) -> None:
         self._hide_action_tooltip()
@@ -1757,352 +1728,52 @@ class JitterApp(tk.Tk):
 
     def _build_jitter_section(self, parent: ttk.Frame) -> None:
         self.quick_frame = parent
-        self.motion_hero_card = ttk.Frame(
-            parent,
-            style="Liquid.SettingsCard.TFrame",
-            padding=(18, 16, 18, 18),
-        )
-        self.motion_hero_card.grid(row=0, column=0, sticky="ew")
+        parent.columnconfigure(0, weight=3, uniform="motion")
+        parent.columnconfigure(1, weight=2, uniform="motion")
+        self.motion_hero_card = ttk.Frame(parent, style="Liquid.SettingsCard.TFrame",
+                                           padding=(18, 16, 18, 18))
+        self.motion_hero_card.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
         self.motion_hero_card.columnconfigure(0, weight=1)
-        ttk.Label(
-            self.motion_hero_card,
-            text="MOTION SHAPE",
-            style="Liquid.CardTitle.TLabel",
-            font=(FONT_FAMILY, 12, "bold"),
-        ).grid(row=0, column=0, sticky="w")
-        self.quick_grid = ttk.Frame(
-            self.motion_hero_card, style="Liquid.Surface.TFrame"
-        )
+        ttk.Label(self.motion_hero_card, text="MOTION SHAPE",
+                  style="Liquid.CardTitle.TLabel",
+                  font=(FONT_FAMILY, 12, "bold")).grid(row=0, column=0, sticky="w")
+        self.quick_grid = ttk.Frame(self.motion_hero_card, style="Liquid.Surface.TFrame")
         self.quick_grid.grid(row=1, column=0, sticky="ew", pady=(8, 0))
         self.quick_grid.columnconfigure(0, weight=1, uniform="quick")
         self.quick_grid.columnconfigure(1, weight=1, uniform="quick")
-        for index, control in enumerate((
-            ("Pulse Size", "pulse_size_px", 1, 8, 1),
-            ("Pulse Rate", "pulse_rate_hz", 20, 120, 1),
-        )):
-            self._numeric_control(
-                self.quick_grid, index // 2, index % 2, *control
-            )
-        ramp_row, self.ramp_mode_combo = self._dropdown_field(
-            self.quick_grid,
-            label="Ramp Mode",
-            variable=self.motion_vars["ramp_mode"],
-            values=RAMP_MODES,
-        )
-        ramp_row.grid(
-            row=1, column=0, columnspan=2, sticky="ew", padx=5, pady=(8, 4)
-        )
-        return
-
-        self.motion_page.columnconfigure(0, weight=3, uniform="motion")
-        self.motion_page.columnconfigure(1, weight=2, uniform="motion")
-        self.motion_page.rowconfigure(1, weight=1)
-        self.motion_header_frame, self.motion_title_label = (
-            self._build_dashboard_header(
-                self.motion_page,
-                "PAIRED PULSE ENGINE",
-                "MOTION",
-                "Tune movement strength, cadence, and acceleration feel.",
-            )
-        )
-        self.motion_scroll_frame = ttk.Frame(
-            self.motion_page, style="Liquid.App.TFrame"
-        )
-        self.motion_scroll_frame.grid(
-            row=1, column=0, columnspan=2, sticky="nsew"
-        )
-        self.motion_scroll_frame.columnconfigure(0, weight=1)
-        self.motion_scroll_frame.rowconfigure(0, weight=1)
-        self.motion_scroll_canvas = tk.Canvas(
-            self.motion_scroll_frame,
-            background=self._palette["window"],
-            highlightthickness=0,
-            borderwidth=0,
-            takefocus=False,
-        )
-        self.motion_scroll_canvas.grid(row=0, column=0, sticky="nsew")
-        self.motion_scrollbar = ttk.Scrollbar(
-            self.motion_scroll_frame,
-            orient="vertical",
-            style="Liquid.Vertical.TScrollbar",
-            command=self.motion_scroll_canvas.yview,
-        )
-        self.motion_scrollbar.grid(row=0, column=1, sticky="ns", padx=(6, 0))
-        self.motion_scroll_canvas.configure(
-            yscrollcommand=self.motion_scrollbar.set
-        )
-        self.motion_scroll_content = ttk.Frame(
-            self.motion_scroll_canvas, style="Liquid.App.TFrame"
-        )
-        self.motion_scroll_content.columnconfigure(
-            0, weight=3, uniform="motion"
-        )
-        self.motion_scroll_content.columnconfigure(
-            1, weight=2, uniform="motion"
-        )
-        self._motion_scroll_window = self.motion_scroll_canvas.create_window(
-            (0, 0), window=self.motion_scroll_content, anchor="nw"
-        )
-        self.motion_scroll_content.bind(
-            "<Configure>", self._refresh_motion_scrollregion, add="+"
-        )
-        self.motion_scroll_canvas.bind(
-            "<Configure>", self._resize_motion_scroll_content, add="+"
-        )
-        self.motion_scroll_canvas.bind(
-            "<MouseWheel>", self._scroll_motion_page, add="+"
-        )
-        self.motion_hero_card = ttk.Frame(
-            self.motion_scroll_content,
-            style="Liquid.SettingsCard.TFrame",
-            padding=(18, 16, 18, 18),
-        )
-        self.motion_hero_card.grid(
-            row=0, column=0, sticky="nsew", padx=(0, 6), pady=(0, 8)
-        )
-        self.motion_hero_card.columnconfigure(0, weight=1)
-        self.motion_hero_card.rowconfigure(2, weight=1)
-        self.motion_summary_card = ttk.Frame(
-            self.motion_scroll_content,
-            style="Liquid.SettingsCard.TFrame",
-            padding=(16, 16, 16, 18),
-        )
-        self.motion_summary_card.grid(
-            row=0, column=1, sticky="nsew", padx=(6, 0), pady=(0, 8)
-        )
-        self.motion_summary_card.columnconfigure(0, weight=1)
-        self.motion_summary_card.rowconfigure(2, weight=1)
-        # Preserve the established public seams for integrations.
-        self.quick_frame = self.motion_hero_card
-        ttk.Label(
-            self.motion_hero_card,
-            text="MOTION SHAPE",
-            style="Liquid.CardTitle.TLabel",
-            font=(FONT_FAMILY, 12, "bold"),
-        ).grid(row=0, column=0, sticky="w")
-        ttk.Label(
-            self.motion_hero_card,
-            text="Adjust the two-dimensional paired pulse sent to Makcu.",
-            style="Liquid.CardBody.TLabel",
-            wraplength=330,
-            justify="left",
-        ).grid(row=1, column=0, sticky="ew", pady=(5, 12))
-        self.quick_grid = ttk.Frame(
-            self.motion_hero_card, style="Liquid.Surface.TFrame"
-        )
-        self.quick_grid.grid(row=2, column=0, sticky="new")
-        self.quick_grid.columnconfigure(0, weight=1, uniform="quick")
-        self.quick_grid.columnconfigure(1, weight=1, uniform="quick")
-        controls = (
-            ("Pulse Size", "pulse_size_px", 1, 8, 1),
-            ("Pulse Rate", "pulse_rate_hz", 20, 120, 1),
-        )
-        for index, control in enumerate(controls):
+        for index, control in enumerate((("Pulse Size", "pulse_size_px", 1, 8, 1),
+                                         ("Pulse Rate", "pulse_rate_hz", 20, 120, 1))):
             self._numeric_control(self.quick_grid, index // 2, index % 2, *control)
         ramp_row, self.ramp_mode_combo = self._dropdown_field(
-            self.quick_grid,
-            label="Ramp Mode",
-            variable=self.motion_vars["ramp_mode"],
-            values=RAMP_MODES,
-        )
-        ramp_row.grid(
-            row=1, column=0, columnspan=2, sticky="ew", padx=5, pady=(8, 4)
-        )
-
-        ttk.Label(
-            self.motion_summary_card,
-            text="LIVE SNAPSHOT",
-            style="Liquid.CardTitle.TLabel",
-            font=(FONT_FAMILY, 12, "bold"),
-        ).grid(row=0, column=0, sticky="w")
-        ttk.Label(
-            self.motion_summary_card,
-            text="The immutable profile currently shared with the mover.",
-            style="Liquid.CardBody.TLabel",
-            wraplength=200,
-            justify="left",
-        ).grid(row=1, column=0, sticky="ew", pady=(5, 12))
-        self.motion_summary_frame = ttk.Frame(
-            self.motion_summary_card,
-            style="Liquid.Surface.TFrame",
-            padding=0,
-        )
-        self.motion_summary_frame.grid(row=2, column=0, sticky="nsew")
-        self.motion_summary_frame.columnconfigure(0, weight=1, uniform="metric")
-        self.motion_summary_frame.columnconfigure(1, weight=1, uniform="metric")
-        size_metric = ttk.Frame(
-            self.motion_summary_frame,
-            style="Liquid.Metric.TFrame",
-            padding=(10, 6),
-        )
-        size_metric.grid(
-            row=0, column=0, columnspan=2, sticky="ew"
-        )
-        ttk.Label(
-            size_metric, text="PULSE SIZE", style="Liquid.MetricLabel.TLabel"
-        ).pack(anchor="w")
-        size_value = ttk.Frame(size_metric, style="Liquid.Metric.TFrame")
-        size_value.pack(anchor="w", pady=(3, 0))
-        self.motion_size_readout = ttk.Label(
-            size_value,
-            textvariable=self.motion_snapshot_size_var,
-            style="Liquid.MetricValue.TLabel",
-            font=(FONT_FAMILY, 22, "bold"),
-        )
-        self.motion_size_readout.pack(side="left")
-        ttk.Label(
-            size_value, text=" px", style="Liquid.MetricUnit.TLabel"
-        ).pack(side="left", pady=(8, 0))
-
-        rate_metric = ttk.Frame(
-            self.motion_summary_frame,
-            style="Liquid.Metric.TFrame",
-            padding=(10, 6),
-        )
-        rate_metric.grid(
-            row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0)
-        )
-        ttk.Label(
-            rate_metric, text="PULSE RATE", style="Liquid.MetricLabel.TLabel"
-        ).pack(anchor="w")
-        rate_value = ttk.Frame(rate_metric, style="Liquid.Metric.TFrame")
-        rate_value.pack(anchor="w", pady=(3, 0))
-        self.motion_rate_readout = ttk.Label(
-            rate_value,
-            textvariable=self.motion_snapshot_rate_var,
-            style="Liquid.MetricValue.TLabel",
-            font=(FONT_FAMILY, 22, "bold"),
-        )
-        self.motion_rate_readout.pack(side="left")
-        ttk.Label(
-            rate_value, text=" Hz", style="Liquid.MetricUnit.TLabel"
-        ).pack(side="left", pady=(8, 0))
-
-        ramp_metric = ttk.Frame(
-            self.motion_summary_frame,
-            style="Liquid.Metric.TFrame",
-            padding=(10, 6),
-        )
-        ramp_metric.grid(
-            row=2, column=0, columnspan=2, sticky="ew", pady=(6, 0)
-        )
-        ttk.Label(
-            ramp_metric, text="RAMP MODE", style="Liquid.MetricLabel.TLabel"
-        ).pack(anchor="w")
-        self.motion_ramp_readout = ttk.Label(
-            ramp_metric,
-            textvariable=self.motion_snapshot_ramp_var,
-            style="Liquid.MetricValue.TLabel",
-            font=(FONT_FAMILY, 13, "bold"),
-        )
-        self.motion_ramp_readout.pack(anchor="w", pady=(4, 0))
-
-        ttk.Label(
-            self.motion_summary_frame,
-            text="ACTIVE PROFILE",
-            style="Liquid.CardBody.TLabel",
-        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(10, 0))
+            self.quick_grid, label="Ramp Mode",
+            variable=self.motion_vars["ramp_mode"], values=RAMP_MODES)
+        ramp_row.grid(row=1, column=0, columnspan=2, sticky="ew", padx=5, pady=(8, 4))
+        self.motion_summary_card = ttk.Frame(parent, style="Liquid.SettingsCard.TFrame",
+                                              padding=(16, 16, 16, 18))
+        self.motion_summary_card.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        self.motion_summary_card.columnconfigure(0, weight=1)
+        ttk.Label(self.motion_summary_card, text="LIVE SNAPSHOT",
+                  style="Liquid.CardTitle.TLabel",
+                  font=(FONT_FAMILY, 12, "bold")).grid(row=0, column=0, sticky="w")
+        self.motion_summary_frame = ttk.Frame(self.motion_summary_card,
+                                              style="Liquid.Surface.TFrame")
+        self.motion_summary_frame.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        for row, (label, variable, attribute) in enumerate((
+            ("PULSE SIZE", self.motion_snapshot_size_var, "motion_size_readout"),
+            ("PULSE RATE", self.motion_snapshot_rate_var, "motion_rate_readout"),
+            ("RAMP MODE", self.motion_snapshot_ramp_var, "motion_ramp_readout"))):
+            metric = ttk.Frame(self.motion_summary_frame, style="Liquid.Metric.TFrame",
+                               padding=(10, 6))
+            metric.grid(row=row, column=0, sticky="ew", pady=(0, 6) if row else 0)
+            ttk.Label(metric, text=label, style="Liquid.MetricLabel.TLabel").pack(anchor="w")
+            value = ttk.Label(metric, textvariable=variable, style="Liquid.MetricValue.TLabel",
+                              font=(FONT_FAMILY, 13 if row == 2 else 22, "bold"))
+            value.pack(anchor="w", pady=(3, 0))
+            setattr(self, attribute, value)
         self.motion_summary_label = ttk.Label(
-            self.motion_summary_frame,
-            textvariable=self.motion_summary_var,
-            style="Liquid.CardText.TLabel",
-            wraplength=200,
-            justify="left",
-        )
-        self.motion_summary_label.grid(
-            row=4, column=0, columnspan=2, sticky="ew", pady=(3, 0)
-        )
-
-        self.ai_settings_card = ttk.Frame(
-            self.motion_scroll_content,
-            style="Liquid.SettingsCard.TFrame",
-            padding=(18, 16, 18, 18),
-        )
-        self.ai_settings_card.grid(
-            row=1, column=0, columnspan=2, sticky="nsew"
-        )
-        self.ai_settings_card.columnconfigure(0, weight=1)
-        ttk.Label(
-            self.ai_settings_card,
-            text="AI AIM SETTINGS",
-            style="Liquid.CardTitle.TLabel",
-            font=(FONT_FAMILY, 12, "bold"),
-        ).grid(row=0, column=0, sticky="w")
-        ttk.Label(
-            self.ai_settings_card,
-            text="Tune target acceptance and smooth closed-loop movement.",
-            style="Liquid.CardBody.TLabel",
-            wraplength=330,
-            justify="left",
-        ).grid(row=1, column=0, sticky="ew", pady=(5, 12))
-        self.ai_controls_grid = ttk.Frame(
-            self.ai_settings_card, style="Liquid.Surface.TFrame"
-        )
-        self.ai_controls_grid.grid(row=2, column=0, sticky="new")
-        self.ai_controls_grid.columnconfigure(0, weight=1, uniform="ai_controls")
-        self.ai_controls_grid.columnconfigure(1, weight=1, uniform="ai_controls")
-        for index, (key, spec) in enumerate(_AI_CONTROL_SPECS.items()):
-            self._ai_numeric_control(
-                self.ai_controls_grid,
-                index // 2,
-                index % 2,
-                spec[0],
-                key,
-                spec[1],
-                spec[2],
-                spec[3],
-            )
-        target_area_field, self.target_area_combo = self._dropdown_field(
-            self.ai_settings_card,
-            label="Target Area",
-            variable=self.target_area_var,
-            values=tuple(_TARGET_AREA_VALUES),
-        )
-        target_area_field.grid(
-            row=3, column=0, sticky="ew", padx=5, pady=(12, 0)
-        )
-        self.target_area_combo.bind(
-            "<<ComboboxSelected>>", self._target_area_changed
-        )
-
-        self.ai_model_frame = ttk.Frame(
-            self.ai_settings_card,
-            style="Liquid.Surface.TFrame",
-            padding=(5, 10),
-        )
-        self.ai_model_frame.grid(row=4, column=0, sticky="ew")
-        self.ai_model_frame.columnconfigure(0, weight=1)
-        self.ai_model_frame.columnconfigure(1, weight=1)
-        ttk.Label(
-            self.ai_model_frame,
-            text="MODEL",
-            style="Liquid.CardBody.TLabel",
-        ).grid(row=0, column=0, columnspan=2, sticky="w")
-        ttk.Label(
-            self.ai_model_frame,
-            textvariable=self.ai_model_var,
-            style="Liquid.CardText.TLabel",
-            wraplength=300,
-        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 6))
-        self.model_browse_button = ttk.Button(
-            self.ai_model_frame,
-            text="Browse...",
-            style="Liquid.Secondary.TButton",
-            command=self.browse_ai_model,
-        )
-        self.model_browse_button.grid(row=2, column=0, sticky="ew", padx=(0, 3))
-        self.use_default_model_button = ttk.Button(
-            self.ai_model_frame,
-            text="Use Default",
-            style="Liquid.Secondary.TButton",
-            command=self.use_default_ai_model,
-        )
-        self.use_default_model_button.grid(
-            row=2, column=1, sticky="ew", padx=(3, 0)
-        )
-
-        self._build_ai_curve_card()
-        self._build_overlay_custom_card()
+            self.motion_summary_frame, textvariable=self.motion_summary_var,
+            style="Liquid.CardText.TLabel", wraplength=200, justify="left")
+        self.motion_summary_label.grid(row=3, column=0, sticky="ew", pady=(4, 0))
 
     def _build_ai_section(self, parent: ttk.Frame) -> None:
         self.ai_settings_card = ttk.Frame(
@@ -2797,36 +2468,7 @@ class JitterApp(tk.Tk):
 
     def _build_settings_section(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)
-        parent.rowconfigure(1, weight=1)
-
-        self.settings_header_frame = ttk.Frame(
-            parent, style="Liquid.App.TFrame"
-        )
-        self.settings_header_frame.grid(
-            row=0, column=0, sticky="ew", pady=(0, 16)
-        )
-        ttk.Label(
-            self.settings_header_frame,
-            text="PERSONALIZE YOUR CONTROL DECK",
-            style="Liquid.SettingsEyebrow.TLabel",
-        ).pack(anchor="w")
-        self.settings_title_label = ttk.Label(
-            self.settings_header_frame,
-            text="SETTINGS",
-            style="Liquid.SettingsTitle.TLabel",
-            font=(FONT_FAMILY, 22, "bold"),
-        )
-        self.settings_title_label.pack(anchor="w", pady=(2, 0))
-        ttk.Label(
-            self.settings_header_frame,
-            text="Tune the audible feedback used by the global hotkey.",
-            style="Liquid.Muted.TLabel",
-        ).pack(anchor="w", pady=(3, 0))
-
-        self.settings_content = ttk.Frame(
-            parent, style="Liquid.App.TFrame"
-        )
-        self.settings_content.grid(row=1, column=0, sticky="nsew")
+        self.settings_content = parent
         self.settings_content.columnconfigure(0, weight=3, uniform="settings")
         self.settings_content.columnconfigure(1, weight=2, uniform="settings")
         self.settings_content.rowconfigure(0, weight=1)
@@ -2996,6 +2638,23 @@ class JitterApp(tk.Tk):
             command=lambda: self.preview_sound(False),
         )
         self.test_off_button.grid(row=2, column=1, sticky="e")
+        self.theme_tooltip_text = (
+            "Switch to Light Mode" if self._theme == "dark"
+            else "Switch to Dark Mode"
+        )
+        self._theme_tooltip: tk.Toplevel | None = None
+        self.theme_button = LiquidIconButton(
+            actions,
+            icon="☀" if self._theme == "dark" else "☾",
+            accessible_name=self.theme_tooltip_text,
+            command=self.toggle_theme,
+            palette=self._icon_palette(),
+        )
+        self.theme_button.grid(row=3, column=1, sticky="e", pady=(8, 0))
+        self.theme_button.bind("<Enter>", self._show_theme_tooltip, add="+")
+        self.theme_button.bind("<Leave>", self._hide_theme_tooltip, add="+")
+        self.theme_button.bind("<FocusIn>", self._show_theme_tooltip, add="+")
+        self.theme_button.bind("<FocusOut>", self._hide_theme_tooltip, add="+")
 
     def _build_footer(self) -> None:
         self.footer_frame = ttk.Frame(
