@@ -102,8 +102,10 @@ with the supported Windows Python installation.
   is exactly `[1,3,N,N]` for N in 160, 320, or 640 and whose `output0` float output
   is exactly either legacy `[1,300,6]` or raw single-class `[1,5,K]`, with
   `(N,K)` exactly `(160,525)`, `(320,2100)`, or `(640,8400)` and safe
-  `task=detect`/one-class `names` metadata (all mapping entries are strings;
-  extra all-string Ultralytics fields are allowed). Capture, Overlay, targeting, movement,
+  `task=detect`/one-class `names` metadata. Custom metadata-map keys/values are
+  strings; additional all-string Ultralytics fields are allowed. The string-valued
+  `names` field is safely parsed with `ast.literal_eval` and must equal exactly
+  `{0: "<non-empty label>"}`. Capture, Overlay, targeting, movement,
   and Adaptive Zoom
   remain in canonical 320-by-320 coordinates; detector output is scaled back
   before publication. Validate off the UI thread, pause AI during a switch, and

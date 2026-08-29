@@ -256,7 +256,8 @@ models/all_games_320.onnx
 2. แบบ raw Ultralytics หนึ่งคลาส: `output0` ชนิด float รูปร่าง `[1,5,K]` (`center_x,center_y,width,height,confidence`) โดยขนาดต้องจับคู่กับจำนวน candidate ดังนี้: `160 → K=525`, `320 → K=2100`, `640 → K=8400`
 
 แบบ raw ต้องมี metadata `task=detect` และ `names` ที่ระบุ class 0 เพียงคลาสเดียว ชื่อคลาส เช่น `Enemy` ใช้เพื่ออธิบายเท่านั้น ระบบจะ map เป็น player class 0 และจะไม่สร้าง head class 7 เพิ่มเอง
-ค่า `names` ทุก mapping ต้องเป็น string และ field Ultralytics เพิ่มเติมที่เป็น string ทั้งหมดยังอนุญาต
+ใน metadata map: custom metadata-map keys/values are strings และ additional all-string fields are allowed
+ค่า `names` string-valued field ต้องถูก parse อย่างปลอดภัยด้วย `ast.literal_eval` และต้องได้ผล exactly `{0: "<non-empty label>"}` เท่านั้น (key เป็น integer 0 และ label เป็น string ที่ไม่ว่าง)
 การคำนวณ NMS ใช้ NumPy ภายในโปรแกรม ด้วย confidence ขั้นต่ำ `0.05`, IoU `0.45` และส่งออกไม่เกิน `300` กล่องต่อเฟรม
 
 ระบบ reject `[1,K,5]`, raw แบบหลายคลาส, tensor แบบ dynamic/rectangular, จำนวน candidate ที่ไม่ใช่จำนวนที่ระบุ และ metadata ที่ขาดหรือ malformed

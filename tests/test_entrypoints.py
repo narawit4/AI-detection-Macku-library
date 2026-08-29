@@ -567,6 +567,12 @@ class EntryPointTests(unittest.TestCase):
         self.assertIn("task=detect", readme)
         self.assertIn("class 0", readme)
         self.assertIn("ai_yolo.py", readme)
+        self.assertIn("metadata-map keys/values are strings", readme)
+        self.assertIn("additional all-string fields are allowed", readme)
+        self.assertIn("names` string-valued field", readme)
+        self.assertIn("ast.literal_eval", readme)
+        self.assertIn('{0: "<non-empty label>"}', readme)
+        self.assertNotIn("names mapping entries are strings", readme)
         self.assertNotIn(
             "models/Apex_20k_pictures_640.onnx=models/Apex_20k_pictures_640.onnx",
             readme,
