@@ -1127,7 +1127,7 @@ class JitterApp(tk.Tk):
         slider_palette = self._slider_palette()
         for widget in self.winfo_children():
             self._apply_slider_palette(widget, slider_palette)
-        for name in (
+        surface_slider_names = (
             "sound_volume_scale",
             "pulse_size_px_scale",
             "pulse_rate_hz_scale",
@@ -1135,11 +1135,15 @@ class JitterApp(tk.Tk):
             "ai_aim_strength_scale",
             "ai_smoothing_scale",
             "ai_max_step_scale",
-            "overlay_box_width_scale",
-            "overlay_hud_offset_x_scale",
-            "overlay_hud_offset_y_scale",
-            "overlay_hud_font_size_scale",
-        ):
+        )
+        if self._overlay_customizer_exists():
+            surface_slider_names += (
+                "overlay_box_width_scale",
+                "overlay_hud_offset_x_scale",
+                "overlay_hud_offset_y_scale",
+                "overlay_hud_font_size_scale",
+            )
+        for name in surface_slider_names:
             surface_slider = getattr(self, name, None)
             if surface_slider is not None:
                 surface_slider.set_palette(

@@ -1240,10 +1240,10 @@ class JitterLayoutTests(unittest.TestCase):
         self.app.deiconify()
         with mock.patch.object(
             self.app,
-            "_build_overlay_customizer_contents",
-            side_effect=tk.TclError("build failed"),
+            "_dropdown_field",
+            side_effect=tk.TclError("partial build failed"),
         ):
-            with self.assertRaisesRegex(tk.TclError, "build failed"):
+            with self.assertRaisesRegex(tk.TclError, "partial build failed"):
                 self.app.open_overlay_customizer()
 
         try:
@@ -1260,6 +1260,24 @@ class JitterLayoutTests(unittest.TestCase):
             self.app.overlay_custom_window = None
             if leaked is not None and leaked.winfo_exists():
                 leaked.destroy()
+
+        try:
+            self.app.toggle_theme()
+        except tk.TclError as exc:
+            self.fail(f"theme toggle used a stale partial-build slider: {exc}")
+
+    def test_theme_toggle_after_closing_overlay_customizer_ignores_stale_sliders(self):
+        self.app.deiconify()
+        self.app.open_overlay_customizer()
+        self.app.close_overlay_customizer()
+        before = self.app.theme_var.get()
+
+        try:
+            self.app.toggle_theme()
+        except tk.TclError as exc:
+            self.fail(f"theme toggle used a stale customizer slider: {exc}")
+
+        self.assertNotEqual(self.app.theme_var.get(), before)
 
     def test_overlay_customizer_native_background_tracks_theme(self):
         self.app.deiconify()
