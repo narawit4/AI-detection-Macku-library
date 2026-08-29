@@ -36,6 +36,7 @@ Jitter เป็นโปรแกรมเดสก์ท็อปสำหร�
 - [ปุ่มควบคุมและความปลอดภัย](#ปุ่มควบคุมและความปลอดภัย)
 - [ไฟล์ตั้งค่าและข้อมูลผู้ใช้](#ไฟล์ตั้งค่าและข้อมูลผู้ใช้)
 - [การแก้ปัญหาเบื้องต้น](#การแก้ปัญหาเบื้องต้น)
+- [โครงสร้าง repository ที่รองรับ](#โครงสร้าง-repository-ที่รองรับ)
 - [การตรวจสอบสำหรับนักพัฒนา](#การตรวจสอบสำหรับนักพัฒนา)
 - [การสร้างไฟล์ EXE](#การสร้างไฟล์-exe)
 - [สัญญาอนุญาตและไฟล์ประกอบการเผยแพร่](#สัญญาอนุญาตและไฟล์ประกอบการเผยแพร่)
@@ -238,7 +239,7 @@ models/all_games_320.onnx
 
 
 พื้นที่ capture ยังคง 320×320 สำหรับทุกโมเดล เช่นเดียวกับ Overlay, FOV, targeting และ movement
-`image_resize.py` เป็น shared primitive สำหรับ resize ภาพ RGB เท่านั้น ส่วน detector จะ scale
+`jitter_app/ai/resize.py` เป็น shared primitive สำหรับ resize ภาพ RGB เท่านั้น ส่วน detector จะ scale
 ผลลัพธ์กลับมาเป็นพิกัด 320×320 ก่อนเผยแพร่ โมเดล 640 จึงเป็นการ upscale
 พื้นที่จริง 320×320 เดิม ไม่ใช่การขยายพื้นที่ที่จับภาพ โมเดล 160 อาจใช้ inference น้อยลง,
 320 เป็นจุดสมดุลเริ่มต้น และ 640 อาจใช้เวลามากขึ้น ทั้งหมดนี้ไม่รับประกัน FPS หรือความแม่นยำ
@@ -261,7 +262,7 @@ models/all_games_320.onnx
 การคำนวณ NMS ใช้ NumPy ภายในโปรแกรม ด้วย confidence ขั้นต่ำ `0.05`, IoU `0.45` และส่งออกไม่เกิน `300` กล่องต่อเฟรม
 
 ระบบ reject `[1,K,5]`, raw แบบหลายคลาส, tensor แบบ dynamic/rectangular, จำนวน candidate ที่ไม่ใช่จำนวนที่ระบุ และ metadata ที่ขาดหรือ malformed
-`ai_yolo.py` เป็น pure NumPy decoder สำหรับ raw และ downstream ยังใช้ Detection แบบเดิมและพิกัด canonical 320×320
+`jitter_app/ai/yolo.py` เป็น pure NumPy decoder สำหรับ raw และ downstream ยังใช้ Detection แบบเดิมและพิกัด canonical 320×320
 โมเดลภายนอกเป็น runtime-only และจะไม่ถูกบันทึก, copy, download หรือ package; มีเฉพาะ `models/all_games_320.onnx` ที่ถูก bundle
 
 โปรแกรมตรวจ contract นอก Tk UI thread และพัก AI ระหว่างสลับโมเดล เมื่อโมเดลใหม่
@@ -397,17 +398,53 @@ python .\main.py --ai-runtime-self-check
 Overlay ถูกออกแบบให้ click-through และ capture-excluded บน Windows หากพฤติกรรม
 ไม่ตรง ให้ดู `app.log`, ตรวจว่าใช้ Windows รุ่นที่รองรับ และ restart โปรแกรม
 
+## โครงสร้าง repository ที่รองรับ
+
+ไฟล์ source ที่ใช้งานจริงอยู่ตามโครงสร้าง package นี้:
+
+- `main.py`
+- `distribution_metadata.py`
+- `jitter_app/__init__.py`
+- `jitter_app/resources.py`
+- `jitter_app/ai/__init__.py`
+- `jitter_app/ai/capture.py`
+- `jitter_app/ai/detection.py`
+- `jitter_app/ai/model_selection.py`
+- `jitter_app/ai/service.py`
+- `jitter_app/ai/targeting.py`
+- `jitter_app/ai/tracking.py`
+- `jitter_app/ai/resize.py`
+- `jitter_app/ai/yolo.py`
+- `jitter_app/ai/zoom.py`
+- `jitter_app/motion/__init__.py`
+- `jitter_app/motion/engine.py`
+- `jitter_app/motion/combined.py`
+- `jitter_app/device/__init__.py`
+- `jitter_app/device/makcu.py`
+- `jitter_app/device/hotkeys.py`
+- `jitter_app/device/display_timing.py`
+- `jitter_app/presentation/__init__.py`
+- `jitter_app/presentation/ui.py`
+- `jitter_app/presentation/widgets.py`
+- `jitter_app/presentation/overlay.py`
+- `jitter_app/presentation/sound.py`
+- `jitter_app/config/__init__.py`
+- `jitter_app/config/store.py`
+
+โมเดลที่ bundle มีเพียง `models/all_games_320.onnx` เท่านั้น; โมเดลภายนอกเป็น
+runtime-only และไม่ถูก copy, package หรือบันทึก path ลง config
+
 ## การตรวจสอบสำหรับนักพัฒนา
 
 รันจาก root ของ repository:
 
 ```powershell
-python -m py_compile main.py ui.py motion.py combined_motion.py ai_targeting.py ai_tracking.py ai_detection.py ai_yolo.py ai_capture.py ai_zoom.py image_resize.py ai_service.py ai_model_selection.py display_timing.py overlay.py makcu_service.py hotkeys.py settings.py sound_service.py liquid_widgets.py distribution_metadata.py
+$jitterSources = @('main.py', 'distribution_metadata.py') + @(Get-ChildItem -LiteralPath 'jitter_app' -Recurse -Filter '*.py' | Sort-Object FullName | ForEach-Object { $_.FullName })
+python -m py_compile @jitterSources
 python -m unittest discover -s tests -v
 python -c "import makcu, serial, pygame, onnxruntime, dxcam, comtypes, numpy"
 python .\main.py --ai-runtime-self-check
 python .\distribution_metadata.py --review-json
-git diff --check
 ```
 
 การเปลี่ยนแปลงที่เกี่ยวกับ hardware ต้องตรวจด้วย Makcu จริงเพิ่มเติม:

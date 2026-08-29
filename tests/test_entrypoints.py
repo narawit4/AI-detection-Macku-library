@@ -49,6 +49,19 @@ class FakeKernel32:
 
 
 class EntryPointTests(unittest.TestCase):
+    def test_documentation_describes_the_supported_package_layout(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+
+        for text in (readme, agents):
+            self.assertIn("jitter_app/ai/detection.py", text)
+            self.assertIn("jitter_app/presentation/ui.py", text)
+            self.assertIn("jitter_app/config/store.py", text)
+            self.assertIn("Get-ChildItem", text)
+
+        self.assertNotIn("python -m py_compile main.py ui.py", readme)
+        self.assertNotIn("python -m py_compile main.py ui.py", agents)
+
     def test_ai_runtime_self_check_reports_verified_directml_json(self):
         output = io.StringIO()
         model = ROOT / "models" / "all_games_320.onnx"
@@ -586,7 +599,7 @@ class EntryPointTests(unittest.TestCase):
         self.assertIn("640 → K=8400", readme)
         self.assertIn("task=detect", readme)
         self.assertIn("class 0", readme)
-        self.assertIn("ai_yolo.py", readme)
+        self.assertIn("jitter_app/ai/yolo.py", readme)
         self.assertIn("metadata-map keys/values are strings", readme)
         self.assertIn("additional all-string fields are allowed", readme)
         self.assertIn("names` string-valued field", readme)

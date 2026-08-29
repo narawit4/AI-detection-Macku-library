@@ -18,32 +18,52 @@ contract-compatible external `.onnx` files is allowed; do not add training,
 profiles, downloads, copying, persistence, tray behavior, or other upstream
 features.
 
-## Planned repository layout
+## Supported repository layout
 
 - `main.py`: process entry point, single-instance mutex, and shutdown.
-- `ui.py`: one-page Tkinter Focused Dashboard.
-- `motion.py`: settings, validation, presets, and pure motion engine.
-- `combined_motion.py`: pure composition of selected Jitter and AI Aim deltas.
-- `ai_targeting.py`: immutable AI settings, target selection, and movement.
-- `ai_tracking.py`: legacy pure tracker retained for compatibility tests;
-  production target selection is stateless and current-frame only.
-- `ai_zoom.py`: pure adaptive zoom geometry and same-frame refinement composition.
-- `ai_detection.py`: dual-contract ONNX Runtime detector boundary for legacy
-  post-NMS `[1,300,6]` and raw single-class `[1,5,K]` outputs.
-- `ai_yolo.py`: pure NumPy decoder for the raw single-class Ultralytics contract.
-- `ai_capture.py`: centered DXCam capture wrapper.
-- `image_resize.py`: pure resizing and coordinate mapping for supported model sizes.
-- `ai_service.py`: generation-safe capture and inference worker.
-- `ai_model_selection.py`: runtime-only external ONNX selection and validation.
-- `display_timing.py`: primary-display cadence detection and pure runtime policy.
-- `overlay.py`: centered, click-through, capture-excluded detection view.
 - `distribution_metadata.py`: validates, reviews, and executes the canonical
   packaging command and release-material plan.
+- `jitter_app/__init__.py`: application package marker.
+- `jitter_app/resources.py`: bundle and repository resource resolution.
+- `jitter_app/ai/__init__.py`: AI package marker.
+- `jitter_app/ai/capture.py`: centered DXCam capture wrapper.
+- `jitter_app/ai/detection.py`: dual-contract ONNX Runtime detector boundary for
+  legacy post-NMS `[1,300,6]` and raw single-class `[1,5,K]` outputs.
+- `jitter_app/ai/model_selection.py`: runtime-only external ONNX selection and
+  validation.
+- `jitter_app/ai/service.py`: generation-safe capture and inference worker.
+- `jitter_app/ai/targeting.py`: immutable AI settings, target selection, and
+  movement.
+- `jitter_app/ai/tracking.py`: legacy pure tracker retained for compatibility
+  tests; production target selection is stateless and current-frame only.
+- `jitter_app/ai/resize.py`: pure resizing and coordinate mapping for supported
+  model sizes.
+- `jitter_app/ai/yolo.py`: pure NumPy decoder for the raw single-class
+  Ultralytics contract.
+- `jitter_app/ai/zoom.py`: pure adaptive zoom geometry and same-frame refinement
+  composition.
+- `jitter_app/motion/__init__.py`: motion package marker.
+- `jitter_app/motion/engine.py`: settings, validation, presets, and pure motion
+  engine.
+- `jitter_app/motion/combined.py`: pure composition of selected Jitter and AI
+  Aim deltas.
+- `jitter_app/device/__init__.py`: device package marker.
+- `jitter_app/device/makcu.py`: Makcu connection, callbacks, movement, and
+  cleanup.
+- `jitter_app/device/hotkeys.py`: Windows global-hotkey polling.
+- `jitter_app/device/display_timing.py`: primary-display cadence detection and
+  pure runtime policy.
+- `jitter_app/presentation/__init__.py`: presentation package marker.
+- `jitter_app/presentation/ui.py`: one-page Tkinter Focused Dashboard.
+- `jitter_app/presentation/widgets.py`: shared Tk widgets and styles.
+- `jitter_app/presentation/overlay.py`: centered, click-through, capture-excluded
+  detection view.
+- `jitter_app/presentation/sound.py`: sound service.
+- `jitter_app/config/__init__.py`: configuration package marker.
+- `jitter_app/config/store.py`: independent schema-aware atomic configuration.
 - `nuitka-package.config.yml`: explicitly bundles ONNX Runtime's DirectML DLL.
-- `makcu_service.py`: Makcu connection, callbacks, movement, and cleanup.
-- `hotkeys.py`: Windows global-hotkey polling.
-- `settings.py`: independent schema-aware atomic configuration.
-- `models/all_games_320.onnx`: approved bundled startup-default AI Aim model resource.
+- `models/all_games_320.onnx`: approved bundled startup-default AI Aim model
+  resource; this is the only bundled model.
 - `licenses/`: exact dependency notices, provenance manifest, and required
   GPL/LGPL source archives.
 - `tests/`: hardware-free unit and integration-style tests.
@@ -244,7 +264,8 @@ with the supported Windows Python installation.
 After implementation changes, run:
 
 ```powershell
-python -m py_compile main.py ui.py motion.py combined_motion.py ai_targeting.py ai_tracking.py ai_detection.py ai_yolo.py ai_capture.py ai_zoom.py image_resize.py ai_service.py ai_model_selection.py display_timing.py overlay.py makcu_service.py hotkeys.py settings.py sound_service.py liquid_widgets.py distribution_metadata.py
+$jitterSources = @('main.py', 'distribution_metadata.py') + @(Get-ChildItem -LiteralPath 'jitter_app' -Recurse -Filter '*.py' | Sort-Object FullName | ForEach-Object { $_.FullName })
+python -m py_compile @jitterSources
 python -m unittest discover -s tests -v
 python -c "import makcu, serial, pygame, onnxruntime, dxcam, comtypes, numpy"
 python .\main.py --ai-runtime-self-check
