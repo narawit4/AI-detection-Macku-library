@@ -39,7 +39,14 @@ def _validate_raw_metadata(session: object) -> None:
         metadata = session.get_modelmeta().custom_metadata_map
     except Exception as error:
         raise ModelContractError(_RAW_METADATA_MESSAGE) from error
-    if not isinstance(metadata, Mapping) or metadata.get("task") != "detect":
+    if (
+        not isinstance(metadata, Mapping)
+        or any(
+            not isinstance(key, str) or not isinstance(value, str)
+            for key, value in metadata.items()
+        )
+        or metadata.get("task") != "detect"
+    ):
         raise ModelContractError(_RAW_METADATA_MESSAGE)
     raw_names = metadata.get("names")
     if not isinstance(raw_names, str):

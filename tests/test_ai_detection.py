@@ -239,6 +239,24 @@ class OnnxDetectorTests(unittest.TestCase):
                     np.zeros((320, 320, 3), dtype=np.uint8)
                 )[0].class_id, 0)
 
+    def test_raw_contract_allows_additional_string_metadata(self):
+        session = Session(
+            outputs=[NodeArg("output0", "tensor(float)", [1, 5, 2100])],
+            result=valid_raw_output(320),
+            metadata={
+                "task": "detect",
+                "names": "{0: 'Enemy'}",
+                "author": "Ultralytics",
+            },
+        )
+        detector = OnnxDetector(
+            "model.onnx",
+            session_factory=lambda *_args, **_kwargs: session,
+        )
+        self.assertEqual(len(detector.detect(
+            np.zeros((320, 320, 3), dtype=np.uint8)
+        )), 1)
+
     def test_rejects_raw_shape_mismatch_orientation_and_wrong_static_types(self):
         rejected = (
             (160, [1, 5, 2100]),
@@ -278,6 +296,8 @@ class OnnxDetectorTests(unittest.TestCase):
             {"task": "detect", "names": "{1: 'Enemy'}"},
             {"task": "detect", "names": "{0: ''}"},
             {"task": "detect", "names": "{0: 'Enemy', 1: 'Other'}"},
+            {"task": "detect", "names": "{0: 'Enemy'}", 1: "x"},
+            {"task": "detect", "names": "{0: 'Enemy'}", "author": 1},
         )
         for metadata in rejected_metadata:
             with self.subTest(metadata=metadata):
