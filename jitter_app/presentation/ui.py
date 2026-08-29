@@ -1107,6 +1107,10 @@ class JitterApp(tk.Tk):
         self.theme_var.set(self._theme)
         self._configure_styles()
         self.configure(background=self._palette["window"])
+        if self._overlay_customizer_exists():
+            self.overlay_custom_window.configure(
+                background=self._palette["window"]
+            )
         self.shell.configure(background=self._palette["window"])
         self.dashboard_scroll_canvas.configure(background=self._palette["window"])
         self._redraw_shell_art()
@@ -1131,6 +1135,10 @@ class JitterApp(tk.Tk):
             "ai_aim_strength_scale",
             "ai_smoothing_scale",
             "ai_max_step_scale",
+            "overlay_box_width_scale",
+            "overlay_hud_offset_x_scale",
+            "overlay_hud_offset_y_scale",
+            "overlay_hud_font_size_scale",
         ):
             surface_slider = getattr(self, name, None)
             if surface_slider is not None:
@@ -1683,6 +1691,22 @@ class JitterApp(tk.Tk):
         except tk.TclError:
             return False
 
+    def _normalize_overlay_numeric_values(self) -> None:
+        defaults = {
+            "box_width": 2,
+            "hud_offset_x": 8,
+            "hud_offset_y": 8,
+            "hud_font_size": 10,
+        }
+        for key, default in defaults.items():
+            variable = getattr(self, f"overlay_{key}_var")
+            low, high = getattr(self, f"_overlay_{key}_bounds")
+            try:
+                value = int(variable.get())
+            except (TypeError, ValueError):
+                value = default
+            variable.set(str(max(low, min(high, value))))
+
     def open_overlay_customizer(self) -> None:
         if self._overlay_customizer_exists():
             window = self.overlay_custom_window
@@ -1691,20 +1715,30 @@ class JitterApp(tk.Tk):
             window.focus_set()
             return
 
+        self._normalize_overlay_numeric_values()
         window = tk.Toplevel(self)
         self.overlay_custom_window = window
-        window.withdraw()
-        window.title("Customize Overlay")
-        window.geometry("760x520")
-        window.resizable(False, False)
-        window.transient(self)
-        window.configure(background=self._palette["window"])
-        window.protocol("WM_DELETE_WINDOW", self.close_overlay_customizer)
-        self._build_overlay_customizer_contents(window)
-        self._render_runtime_controls()
-        window.deiconify()
-        window.lift()
-        window.focus_set()
+        try:
+            window.withdraw()
+            window.title("Customize Overlay")
+            window.geometry("760x520")
+            window.resizable(False, False)
+            window.transient(self)
+            window.configure(background=self._palette["window"])
+            window.protocol("WM_DELETE_WINDOW", self.close_overlay_customizer)
+            self._build_overlay_customizer_contents(window)
+            self._render_runtime_controls()
+            window.deiconify()
+            window.lift()
+            window.focus_set()
+        except Exception:
+            self.overlay_custom_window = None
+            try:
+                self._cancel_slider_callbacks(window)
+                window.destroy()
+            except Exception:
+                pass
+            raise
 
     def close_overlay_customizer(self) -> None:
         window = self.overlay_custom_window

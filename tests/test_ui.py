@@ -1210,6 +1210,76 @@ class JitterLayoutTests(unittest.TestCase):
             customizer.winfo_exists() and customizer.winfo_viewable()
         )
 
+    def test_reopening_overlay_customizer_normalizes_incomplete_numeric_edits(self):
+        self.app.deiconify()
+        self.app.open_overlay_customizer()
+        self.app.overlay_box_width_var.set("")
+        self.app.overlay_hud_offset_x_var.set("-")
+        self.app.overlay_hud_offset_y_var.set("9999")
+        self.app.overlay_hud_font_size_var.set("0")
+        self.app.close_overlay_customizer()
+
+        try:
+            self.app.open_overlay_customizer()
+        except (tk.TclError, TypeError, ValueError) as exc:
+            self.fail(f"reopening the customizer raised {type(exc).__name__}: {exc}")
+        self.app.update()
+
+        self.assertEqual(
+            (
+                self.app.overlay_box_width_var.get(),
+                self.app.overlay_hud_offset_x_var.get(),
+                self.app.overlay_hud_offset_y_var.get(),
+                self.app.overlay_hud_font_size_var.get(),
+            ),
+            ("2", "8", "500", "8"),
+        )
+        self.assertTrue(self.app.overlay_custom_window.winfo_viewable())
+
+    def test_open_overlay_customizer_cleans_up_failed_window_build(self):
+        self.app.deiconify()
+        with mock.patch.object(
+            self.app,
+            "_build_overlay_customizer_contents",
+            side_effect=tk.TclError("build failed"),
+        ):
+            with self.assertRaisesRegex(tk.TclError, "build failed"):
+                self.app.open_overlay_customizer()
+
+        try:
+            self.assertIsNone(self.app.overlay_custom_window)
+            self.assertFalse(
+                any(
+                    isinstance(child, tk.Toplevel)
+                    and child.title() == "Customize Overlay"
+                    for child in self.app.winfo_children()
+                )
+            )
+        finally:
+            leaked = self.app.overlay_custom_window
+            self.app.overlay_custom_window = None
+            if leaked is not None and leaked.winfo_exists():
+                leaked.destroy()
+
+    def test_overlay_customizer_native_background_tracks_theme(self):
+        self.app.deiconify()
+        self.app.open_overlay_customizer()
+        customizer = self.app.overlay_custom_window
+        before = str(customizer.cget("background"))
+
+        self.app.toggle_theme()
+        self.app.update()
+
+        self.assertEqual(
+            str(customizer.cget("background")),
+            self.app._palette["window"],
+        )
+        self.assertEqual(
+            str(self.app.overlay_box_width_scale.cget("background")),
+            self.app._palette["surface"],
+        )
+        self.assertNotEqual(str(customizer.cget("background")), before)
+
     def test_dashboard_uses_one_vertical_scrollbar_and_no_motion_scroll(self):
         vertical = [
             widget
