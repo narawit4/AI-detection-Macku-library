@@ -1755,9 +1755,14 @@ class JitterApp(tk.Tk):
         ttk.Label(self.motion_summary_card, text="LIVE SNAPSHOT",
                   style="Liquid.CardTitle.TLabel",
                   font=(FONT_FAMILY, 12, "bold")).grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            self.motion_summary_card,
+            text="The immutable profile currently shared with the mover.",
+            style="Liquid.CardBody.TLabel", wraplength=200, justify="left",
+        ).grid(row=1, column=0, sticky="ew", pady=(5, 12))
         self.motion_summary_frame = ttk.Frame(self.motion_summary_card,
                                               style="Liquid.Surface.TFrame")
-        self.motion_summary_frame.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        self.motion_summary_frame.grid(row=2, column=0, sticky="ew")
         for row, (label, variable, attribute) in enumerate((
             ("PULSE SIZE", self.motion_snapshot_size_var, "motion_size_readout"),
             ("PULSE RATE", self.motion_snapshot_rate_var, "motion_rate_readout"),
@@ -1770,10 +1775,17 @@ class JitterApp(tk.Tk):
                               font=(FONT_FAMILY, 13 if row == 2 else 22, "bold"))
             value.pack(anchor="w", pady=(3, 0))
             setattr(self, attribute, value)
+            if row == 0:
+                ttk.Label(metric, text=" px", style="Liquid.MetricUnit.TLabel").pack(anchor="w")
+            elif row == 1:
+                ttk.Label(metric, text=" Hz", style="Liquid.MetricUnit.TLabel").pack(anchor="w")
+        ttk.Label(self.motion_summary_frame, text="ACTIVE PROFILE",
+                  style="Liquid.CardBody.TLabel").grid(
+                      row=3, column=0, sticky="w", pady=(4, 0))
         self.motion_summary_label = ttk.Label(
             self.motion_summary_frame, textvariable=self.motion_summary_var,
             style="Liquid.CardText.TLabel", wraplength=200, justify="left")
-        self.motion_summary_label.grid(row=3, column=0, sticky="ew", pady=(4, 0))
+        self.motion_summary_label.grid(row=4, column=0, sticky="ew", pady=(3, 0))
 
     def _build_ai_section(self, parent: ttk.Frame) -> None:
         self.ai_settings_card = ttk.Frame(

@@ -1088,6 +1088,78 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertFalse(hasattr(self.app, "motion_scroll_canvas"))
         self.assertFalse(hasattr(self.app, "motion_scrollbar"))
 
+    def test_single_page_shell_keeps_semantic_layers_in_both_themes(self):
+        shell = self.app.shell
+        self.app.deiconify()
+        self.app.update()
+        required_tags = (
+            "workspace-band", "rounded-surface", "floating-panel",
+            "floating-panel-topbar", "floating-panel-dashboard",
+            "floating-panel-runtime",
+        )
+        themed_layers = {}
+        for theme in ("light", "dark"):
+            with self.subTest(theme=theme):
+                self.assertEqual(self.app.theme_var.get(), theme)
+                for tag in required_tags:
+                    self.assertTrue(shell.find_withtag(tag), tag)
+                fills = tuple(
+                    shell.itemcget(item, "fill")
+                    for item in shell.find_withtag("workspace-band")
+                )
+                themed_layers[theme] = fills
+            self.app.toggle_theme()
+            self.app.update()
+        self.assertNotEqual(themed_layers["light"], themed_layers["dark"])
+
+    def test_control_section_keeps_three_to_two_card_layout(self):
+        self.assertEqual(
+            tuple(
+                int(self.app.control_section.body.grid_columnconfigure(column)["weight"])
+                for column in (0, 1)
+            ),
+            (3, 2),
+        )
+        self.assertEqual(int(self.app.control_bindings_card.grid_info()["column"]), 0)
+        self.assertEqual(int(self.app.control_device_card.grid_info()["column"]), 1)
+
+    def test_settings_section_keeps_three_to_two_card_layout(self):
+        self.assertIs(self.app.settings_content, self.app.settings_section.body)
+        self.assertEqual(
+            tuple(
+                int(self.app.settings_content.grid_columnconfigure(column)["weight"])
+                for column in (0, 1)
+            ),
+            (3, 2),
+        )
+        self.assertIs(self.app.theme_button.master, self.app.test_on_button.master)
+
+    def test_jitter_snapshot_keeps_readout_bindings_and_presentation(self):
+        for readout, variable in (
+            (self.app.motion_size_readout, self.app.motion_snapshot_size_var),
+            (self.app.motion_rate_readout, self.app.motion_snapshot_rate_var),
+            (self.app.motion_ramp_readout, self.app.motion_snapshot_ramp_var),
+        ):
+            self.assertEqual(readout.cget("textvariable"), str(variable))
+            self.assertTrue(self._is_descendant(readout, self.app.motion_summary_card))
+        texts = widget_texts(self.app.motion_summary_card)
+        for expected in (" px", " Hz", "ACTIVE PROFILE"):
+            self.assertIn(expected, texts)
+        self.assertTrue(any(text.startswith("The immutable profile") for text in texts))
+
+    def test_jitter_snapshot_is_not_clipped_at_fixed_window_size(self):
+        self.app.jitter_section.set_expanded(True)
+        self.app.deiconify()
+        self.app.update()
+        self.assertLessEqual(
+            int(self.app.motion_summary_label.cget("wraplength")),
+            self.app.motion_summary_frame.winfo_width(),
+        )
+        self.assertLessEqual(
+            self.app.motion_summary_frame.winfo_reqheight(),
+            self.app.motion_summary_frame.winfo_height(),
+        )
+
     def test_fixed_runtime_dock_keeps_stop_visible_at_bottom_of_dashboard(self):
         self.app.deiconify()
         for section in self.app.sections:
