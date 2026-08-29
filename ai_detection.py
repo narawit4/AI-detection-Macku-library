@@ -11,6 +11,7 @@ import onnxruntime as ort
 from ai_targeting import Detection
 from ai_yolo import RAW_CANDIDATE_COUNTS, decode_single_class_yolo
 from image_resize import resize_rgb_bilinear
+from jitter_app.resources import bundled_model_path
 
 
 LOGICAL_FRAME_SIZE = 320
@@ -63,7 +64,7 @@ def _validate_raw_metadata(session: object) -> None:
 
 
 def model_resource_path() -> Path:
-    return Path(__file__).resolve().parent / "models" / "all_games_320.onnx"
+    return bundled_model_path()
 
 
 def _validated_input_size(raw: object) -> int:

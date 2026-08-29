@@ -274,6 +274,11 @@ class BuildPlanTests(unittest.TestCase):
                 "display_timing.py", "overlay.py", "makcu_service.py",
                 "hotkeys.py", "settings.py", "liquid_widgets.py",
                 "distribution_metadata.py",
+                "jitter_app/__init__.py", "jitter_app/resources.py",
+                "jitter_app/ai/__init__.py", "jitter_app/motion/__init__.py",
+                "jitter_app/device/__init__.py",
+                "jitter_app/presentation/__init__.py",
+                "jitter_app/config/__init__.py",
                 *({"sound_service.py"} if (ROOT / "sound_service.py").is_file() else set()),
             },
         )

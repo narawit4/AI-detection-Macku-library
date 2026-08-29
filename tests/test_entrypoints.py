@@ -322,6 +322,11 @@ class EntryPointTests(unittest.TestCase):
             "ai_model_selection.py", "ai_capture.py",
             "ai_zoom.py", "image_resize.py", "ai_service.py", "overlay.py", "makcu_service.py", "hotkeys.py",
             "settings.py", "liquid_widgets.py", "distribution_metadata.py", "display_timing.py",
+            "jitter_app/__init__.py", "jitter_app/resources.py",
+            "jitter_app/ai/__init__.py", "jitter_app/motion/__init__.py",
+            "jitter_app/device/__init__.py",
+            "jitter_app/presentation/__init__.py",
+            "jitter_app/config/__init__.py",
         }
         expected_runtime_imports = {
             "makcu", "serial", "onnxruntime", "dxcam", "comtypes", "numpy",

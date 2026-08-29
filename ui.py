@@ -7,7 +7,6 @@ from dataclasses import dataclass, replace
 import io
 import logging
 import math
-from pathlib import Path
 import queue
 import re
 import threading
@@ -53,6 +52,7 @@ from settings import AppConfig, ConfigStore, normalize_overlay_color
 from liquid_widgets import LiquidIconButton, LiquidNavigation, LiquidSlider
 from sound_service import ToggleSoundPlayer
 from overlay import DetectionOverlay, OverlaySetupError
+from jitter_app.resources import sound_directory
 
 
 _UI_QUEUE_MAX_BATCH = 50
@@ -361,7 +361,7 @@ class JitterApp(tk.Tk):
             sound_player
             if sound_player is not None
             else ToggleSoundPlayer(
-                Path(__file__).resolve().parent / "sound",
+                sound_directory(),
                 enabled=self.config.sound_enabled,
                 volume=self.config.sound_volume,
             )

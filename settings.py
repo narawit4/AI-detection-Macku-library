@@ -22,6 +22,7 @@ from motion import (
     motion_settings_from_mapping,
     motion_settings_to_mapping,
 )
+from jitter_app.resources import bundle_root
 
 
 SCHEMA_VERSION = 5
@@ -72,7 +73,7 @@ def runtime_base_dir() -> Path:
     the directory containing this module.  No EverFall paths are consulted.
     """
 
-    source_dir = Path(__file__).resolve().parent
+    source_dir = bundle_root()
     try:
         compiled = __compiled__
     except NameError:
