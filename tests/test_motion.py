@@ -2,7 +2,7 @@ from dataclasses import FrozenInstanceError
 import math
 import unittest
 
-from motion import (
+from jitter_app.motion.engine import (
     MOTION_PRESETS,
     MotionSettings,
     PairedPulseEngine,

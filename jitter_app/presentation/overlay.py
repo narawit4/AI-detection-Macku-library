@@ -10,7 +10,7 @@ import threading
 import tkinter as tk
 from typing import Any, Callable
 
-from ai_targeting import DetectionFrameSnapshot
+from jitter_app.ai.targeting import DetectionFrameSnapshot
 
 
 LOGGER = logging.getLogger(__name__)

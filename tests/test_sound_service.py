@@ -8,16 +8,16 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-from sound_service import ToggleSoundPlayer, _PygameBackend
+from jitter_app.presentation.sound import ToggleSoundPlayer, _PygameBackend
 
 
 class ToggleSoundPlayerTests(unittest.TestCase):
     def test_sound_service_module_is_available(self):
         """Fails if hotkey audio support is absent from the application."""
-        self.assertIsNotNone(importlib.util.find_spec("sound_service"))
+        self.assertIsNotNone(importlib.util.find_spec("jitter_app.presentation.sound"))
 
     def test_toggle_sound_player_is_available(self):
-        module = importlib.import_module("sound_service")
+        module = importlib.import_module("jitter_app.presentation.sound")
         self.assertIsNotNone(getattr(module, "ToggleSoundPlayer", None))
 
     def test_play_queues_ogg_cues_without_waiting_for_audio(self):
@@ -297,7 +297,7 @@ class ToggleSoundPlayerTests(unittest.TestCase):
             if message == "Could not close hotkey sound player":
                 close_logged.set()
 
-        with mock.patch("sound_service.logging.exception", side_effect=record_log):
+        with mock.patch("jitter_app.presentation.sound.logging.exception", side_effect=record_log):
             player.play(True)
             self.assertTrue(close_logged.wait(1))
         player.play(False)

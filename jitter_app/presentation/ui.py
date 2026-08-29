@@ -7,7 +7,6 @@ from dataclasses import dataclass, replace
 import io
 import logging
 import math
-from pathlib import Path
 import queue
 import re
 import threading
@@ -18,8 +17,8 @@ from tkinter import colorchooser, filedialog, ttk
 import tokenize
 from typing import Any, Callable, Mapping
 
-from ai_service import AiEvent, AiService
-from ai_model_selection import (
+from jitter_app.ai.service import AiEvent, AiService
+from jitter_app.ai.model_selection import (
     ModelChoice,
     ModelSelectionError,
     ModelValidationEvent,
@@ -27,7 +26,7 @@ from ai_model_selection import (
     bundled_model_choice,
     external_model_choice,
 )
-from ai_targeting import (
+from jitter_app.ai.targeting import (
     AIM_LIMITS,
     AimSettings,
     DEFAULT_RESPONSE_CURVE,
@@ -36,11 +35,11 @@ from ai_targeting import (
     response_curve_value,
     validated_response_curve,
 )
-from combined_motion import MotionSources
-from display_timing import RuntimeCadence, detect_runtime_cadence
-from hotkeys import HotkeyWatcher
-from makcu_service import MakcuService, ServiceEvent
-from motion import (
+from jitter_app.motion.combined import MotionSources
+from jitter_app.device.display_timing import RuntimeCadence, detect_runtime_cadence
+from jitter_app.device.hotkeys import HotkeyWatcher
+from jitter_app.device.makcu import MakcuService, ServiceEvent
+from jitter_app.motion.engine import (
     MOTION_LIMITS,
     MOTION_PRESETS,
     RAMP_MODES,
@@ -49,10 +48,11 @@ from motion import (
     motion_settings_from_mapping,
     motion_settings_to_mapping,
 )
-from settings import AppConfig, ConfigStore, normalize_overlay_color
-from liquid_widgets import LiquidIconButton, LiquidNavigation, LiquidSlider
-from sound_service import ToggleSoundPlayer
-from overlay import DetectionOverlay, OverlaySetupError
+from jitter_app.config.store import AppConfig, ConfigStore, normalize_overlay_color
+from .widgets import LiquidIconButton, LiquidNavigation, LiquidSlider
+from .sound import ToggleSoundPlayer
+from .overlay import DetectionOverlay, OverlaySetupError
+from jitter_app.resources import sound_directory
 
 
 _UI_QUEUE_MAX_BATCH = 50
@@ -109,6 +109,7 @@ class _ModelSwitch:
     candidate: ModelChoice
     previous: ModelChoice
     phase: str
+    failure: str | None = None
 
 DARK_PALETTE = {
     "window": "#0D1420", "surface": "#172232", "raised": "#202F43",
@@ -360,7 +361,7 @@ class JitterApp(tk.Tk):
             sound_player
             if sound_player is not None
             else ToggleSoundPlayer(
-                Path(__file__).resolve().parent / "sound",
+                sound_directory(),
                 enabled=self.config.sound_enabled,
                 volume=self.config.sound_volume,
             )
@@ -2941,7 +2942,10 @@ class JitterApp(tk.Tk):
     @staticmethod
     def _model_label(choice: ModelChoice) -> str:
         prefix = "Default" if choice.is_default else "Custom"
-        return f"{prefix} · {choice.display_name}"
+        label = f"{prefix} · {choice.display_name}"
+        if choice.input_size is not None:
+            label += f" · {choice.input_size}×{choice.input_size}"
+        return label
 
     def _model_changes_unavailable(self) -> bool:
         return (
@@ -3094,23 +3098,25 @@ class JitterApp(tk.Tk):
         if (
             switch is None
             or event.token != switch.token
-            or event.choice != switch.candidate
+            or event.choice.path != switch.candidate.path
         ):
             return
         if event.kind == "error":
             self._start_model_rollback(
-                switch, event.error_type or "validation failed"
+                switch, event.safe_message or "AI model validation failed"
             )
             return
-        if event.kind != "ready":
+        if event.kind != "ready" or event.choice.input_size is None:
             return
+        validated_switch = replace(switch, candidate=event.choice)
+        self._model_switch = validated_switch
         if not self._ai_runtime_required():
             self._finish_model_switch(
-                switch.candidate,
-                f"Using model: {switch.candidate.display_name}",
+                event.choice,
+                f"Using model: {event.choice.display_name}",
             )
             return
-        self._start_validated_model_generation(switch)
+        self._start_validated_model_generation(validated_switch)
 
     def _start_validated_model_generation(self, switch: _ModelSwitch) -> None:
         if self._model_switch != switch or switch.phase != "validating":
@@ -3148,10 +3154,15 @@ class JitterApp(tk.Tk):
         if not self._ai_runtime_required():
             self._finish_model_switch(
                 switch.previous,
-                f"Model rejected; restored {switch.previous.display_name}",
+                f"Model rejected: {failure}; "
+                f"restored {switch.previous.display_name}",
             )
             return
-        rollback = replace(switch, phase="starting_rollback")
+        rollback = replace(
+            switch,
+            phase="starting_rollback",
+            failure=failure,
+        )
         self._model_switch = rollback
         self.ai_model_var.set(f"Loading · {rollback.previous.display_name}")
         self._render_model_controls()
@@ -3947,9 +3958,11 @@ class JitterApp(tk.Tk):
                     f"Using model: {switch.candidate.display_name}",
                 )
             elif switch is not None and switch.phase == "starting_rollback":
+                failure = switch.failure or "AI model validation failed"
                 self._finish_model_switch(
                     switch.previous,
-                    f"Model rejected; restored {switch.previous.display_name}",
+                    f"Model rejected: {failure}; "
+                    f"restored {switch.previous.display_name}",
                 )
             raw_provider = str(event.payload or "Unknown")
             provider = {

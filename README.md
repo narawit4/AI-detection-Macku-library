@@ -36,6 +36,7 @@ Jitter เป็นโปรแกรมเดสก์ท็อปสำหร�
 - [ปุ่มควบคุมและความปลอดภัย](#ปุ่มควบคุมและความปลอดภัย)
 - [ไฟล์ตั้งค่าและข้อมูลผู้ใช้](#ไฟล์ตั้งค่าและข้อมูลผู้ใช้)
 - [การแก้ปัญหาเบื้องต้น](#การแก้ปัญหาเบื้องต้น)
+- [โครงสร้าง repository ที่รองรับ](#โครงสร้าง-repository-ที่รองรับ)
 - [การตรวจสอบสำหรับนักพัฒนา](#การตรวจสอบสำหรับนักพัฒนา)
 - [การสร้างไฟล์ EXE](#การสร้างไฟล์-exe)
 - [สัญญาอนุญาตและไฟล์ประกอบการเผยแพร่](#สัญญาอนุญาตและไฟล์ประกอบการเผยแพร่)
@@ -236,21 +237,33 @@ Adaptive Zoom ไม่ได้ขยายภาพที่ผู้ใช้
 models/all_games_320.onnx
 ```
 
-แถว `MODEL` จะแสดง `Default · all_games_320.onnx` ปุ่ม `Browse...` ใช้เลือก
+
+พื้นที่ capture ยังคง 320×320 สำหรับทุกโมเดล เช่นเดียวกับ Overlay, FOV, targeting และ movement
+`jitter_app/ai/resize.py` เป็น shared primitive สำหรับ resize ภาพ RGB เท่านั้น ส่วน detector จะ scale
+ผลลัพธ์กลับมาเป็นพิกัด 320×320 ก่อนเผยแพร่ โมเดล 640 จึงเป็นการ upscale
+พื้นที่จริง 320×320 เดิม ไม่ใช่การขยายพื้นที่ที่จับภาพ โมเดล 160 อาจใช้ inference น้อยลง,
+320 เป็นจุดสมดุลเริ่มต้น และ 640 อาจใช้เวลามากขึ้น ทั้งหมดนี้ไม่รับประกัน FPS หรือความแม่นยำ
+
+โมเดลเริ่มต้นเมื่อเปิดโปรแกรมยังคงเป็น bundled `models/all_games_320.onnx` เสมอ path และขนาดของ
+โมเดลภายนอกเป็น runtime-only: ไม่ถูกบันทึกลง config, copy, หรือ package ไปกับ release
+
+แถว `MODEL` จะแสดง `Default · all_games_320.onnx · 320×320` ปุ่ม `Browse...` ใช้เลือก
 ไฟล์ `.onnx` ภายนอกสำหรับ process ปัจจุบัน และ `Use Default` ใช้กลับไปโมเดลหลัก
 
-โมเดลภายนอกต้องตรง contract นี้ทุกข้อ:
 
-| รายการ | Contract |
-|---|---|
-| Input name | `images` |
-| Input shape | `[1, 3, 320, 320]` |
-| Input type | float |
-| Output name | `output0` |
-| Output shape | `[1, 300, 6]` |
-| Output type | float |
-| Player class | `0` |
-| Head class | `7` |
+รองรับ output ภายนอก 2 แบบ โดยระบบตรวจจาก contract ของโมเดลอัตโนมัติ:
+
+1. แบบ post-NMS เดิม: `output0` ชนิด float รูปร่าง `[1,300,6]` (`x1,y1,x2,y2,confidence,class_id`) โดย class 0 คือ player และ class 7 คือ head
+2. แบบ raw Ultralytics หนึ่งคลาส: `output0` ชนิด float รูปร่าง `[1,5,K]` (`center_x,center_y,width,height,confidence`) โดยขนาดต้องจับคู่กับจำนวน candidate ดังนี้: `160 → K=525`, `320 → K=2100`, `640 → K=8400`
+
+แบบ raw ต้องมี metadata `task=detect` และ `names` ที่ระบุ class 0 เพียงคลาสเดียว ชื่อคลาส เช่น `Enemy` ใช้เพื่ออธิบายเท่านั้น ระบบจะ map เป็น player class 0 และจะไม่สร้าง head class 7 เพิ่มเอง
+ใน metadata map: custom metadata-map keys/values are strings และ additional all-string fields are allowed
+ค่า `names` string-valued field ต้องถูก parse อย่างปลอดภัยด้วย `ast.literal_eval` และต้องได้ผล exactly `{0: "<non-empty label>"}` เท่านั้น (key เป็น integer 0 และ label เป็น string ที่ไม่ว่าง)
+การคำนวณ NMS ใช้ NumPy ภายในโปรแกรม ด้วย confidence ขั้นต่ำ `0.05`, IoU `0.45` และส่งออกไม่เกิน `300` กล่องต่อเฟรม
+
+ระบบ reject `[1,K,5]`, raw แบบหลายคลาส, tensor แบบ dynamic/rectangular, จำนวน candidate ที่ไม่ใช่จำนวนที่ระบุ และ metadata ที่ขาดหรือ malformed
+`jitter_app/ai/yolo.py` เป็น pure NumPy decoder สำหรับ raw และ downstream ยังใช้ Detection แบบเดิมและพิกัด canonical 320×320
+โมเดลภายนอกเป็น runtime-only และจะไม่ถูกบันทึก, copy, download หรือ package; มีเฉพาะ `models/all_games_320.onnx` ที่ถูก bundle
 
 โปรแกรมตรวจ contract นอก Tk UI thread และพัก AI ระหว่างสลับโมเดล เมื่อโมเดลใหม่
 พร้อมจึงเริ่ม runtime/motion ที่มีสิทธิ์ใหม่ หาก startup ของโมเดล candidate ล้มเหลว
@@ -269,6 +282,13 @@ SHA-256 ของโมเดลหลักที่อนุมัติคื
 ```text
 6B9157D6419F9DBC40D2DCECCC33A3387078C86F1C5872EDA544B174FF48499C
 ```
+
+Self-check ยังคงตรวจเฉพาะ bundled 320 model ตาม SHA-256 ข้างต้น และตรวจว่า
+ONNX Runtime ใช้ `DmlExecutionProvider` ได้จริง ไม่มีการเปลี่ยนไปตรวจโมเดลภายนอก
+หรือเพิ่มโมเดลอื่นเข้า package
+
+สำหรับทุก contract input `images` ต้องเป็น float รูปร่าง `[1,3,N,N]` โดย `N` เป็น `160`, `320` หรือ `640` เท่านั้น จึงรองรับ input ที่ตรวจสอบแล้ว `[1,3,160,160]`, `[1,3,320,320]` และ `[1,3,640,640]`; โมเดลขนาด `128/256` หรือขนาดอื่นนอกเหนือจากนี้ถูก reject
+path ของโมเดลภายนอกและไฟล์โมเดลจะไม่ถูกบันทึก, copy, download หรือ package และใช้ได้เฉพาะ process ปัจจุบัน
 
 ## Overlay
 
@@ -378,17 +398,53 @@ python .\main.py --ai-runtime-self-check
 Overlay ถูกออกแบบให้ click-through และ capture-excluded บน Windows หากพฤติกรรม
 ไม่ตรง ให้ดู `app.log`, ตรวจว่าใช้ Windows รุ่นที่รองรับ และ restart โปรแกรม
 
+## โครงสร้าง repository ที่รองรับ
+
+ไฟล์ source ที่ใช้งานจริงอยู่ตามโครงสร้าง package นี้:
+
+- `main.py`
+- `distribution_metadata.py`
+- `jitter_app/__init__.py`
+- `jitter_app/resources.py`
+- `jitter_app/ai/__init__.py`
+- `jitter_app/ai/capture.py`
+- `jitter_app/ai/detection.py`
+- `jitter_app/ai/model_selection.py`
+- `jitter_app/ai/service.py`
+- `jitter_app/ai/targeting.py`
+- `jitter_app/ai/tracking.py`
+- `jitter_app/ai/resize.py`
+- `jitter_app/ai/yolo.py`
+- `jitter_app/ai/zoom.py`
+- `jitter_app/motion/__init__.py`
+- `jitter_app/motion/engine.py`
+- `jitter_app/motion/combined.py`
+- `jitter_app/device/__init__.py`
+- `jitter_app/device/makcu.py`
+- `jitter_app/device/hotkeys.py`
+- `jitter_app/device/display_timing.py`
+- `jitter_app/presentation/__init__.py`
+- `jitter_app/presentation/ui.py`
+- `jitter_app/presentation/widgets.py`
+- `jitter_app/presentation/overlay.py`
+- `jitter_app/presentation/sound.py`
+- `jitter_app/config/__init__.py`
+- `jitter_app/config/store.py`
+
+โมเดลที่ bundle มีเพียง `models/all_games_320.onnx` เท่านั้น; โมเดลภายนอกเป็น
+runtime-only และไม่ถูก copy, package หรือบันทึก path ลง config
+
 ## การตรวจสอบสำหรับนักพัฒนา
 
 รันจาก root ของ repository:
 
 ```powershell
-python -m py_compile main.py ui.py motion.py combined_motion.py ai_targeting.py ai_tracking.py ai_detection.py ai_capture.py ai_zoom.py ai_service.py ai_model_selection.py display_timing.py overlay.py makcu_service.py hotkeys.py settings.py sound_service.py liquid_widgets.py distribution_metadata.py
+$jitterSources = @('main.py', 'distribution_metadata.py') + @(Get-ChildItem -LiteralPath 'jitter_app' -Recurse -Filter '*.py' | Sort-Object FullName | ForEach-Object { $_.FullName })
+python -m py_compile @jitterSources
 python -m unittest discover -s tests -v
 python -c "import makcu, serial, pygame, onnxruntime, dxcam, comtypes, numpy"
 python .\main.py --ai-runtime-self-check
 python .\distribution_metadata.py --review-json
-git diff --check
 ```
 
 การเปลี่ยนแปลงที่เกี่ยวกับ hardware ต้องตรวจด้วย Makcu จริงเพิ่มเติม:

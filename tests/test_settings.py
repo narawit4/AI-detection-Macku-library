@@ -6,14 +6,15 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from ai_targeting import AimSettings, DEFAULT_RESPONSE_CURVE
-from motion import MotionSettings
-import settings as settings_module
-from settings import AppConfig, ConfigStore, SCHEMA_VERSION, runtime_base_dir
+from jitter_app.ai.targeting import AimSettings, DEFAULT_RESPONSE_CURVE
+from jitter_app.motion.engine import MotionSettings
+import jitter_app.config.store as settings_module
+from jitter_app.config.store import AppConfig, ConfigStore, SCHEMA_VERSION, runtime_base_dir
+from jitter_app.resources import bundle_root
 
 
 class RuntimeBaseDirTests(unittest.TestCase):
-    def test_source_mode_uses_module_directory_despite_packaging_inputs(self):
+    def test_source_mode_uses_bundle_root_despite_packaging_inputs(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(
             settings_module.os.environ,
             {"NUITKA_ONEFILE_DIRECTORY": directory},
@@ -24,7 +25,7 @@ class RuntimeBaseDirTests(unittest.TestCase):
         ):
             self.assertEqual(
                 runtime_base_dir(),
-                Path(settings_module.__file__).resolve().parent,
+                bundle_root(),
             )
 
     def test_nuitka_standalone_and_onefile_use_containing_directory(self):
@@ -66,7 +67,7 @@ class RuntimeBaseDirTests(unittest.TestCase):
                 ):
                     self.assertEqual(runtime_base_dir(), executable.resolve().parent)
 
-    def test_malformed_compiled_paths_fall_back_safely_to_source_directory(self):
+    def test_malformed_compiled_paths_fall_back_safely_to_bundle_root(self):
         marker = SimpleNamespace(containing_dir=object())
         with patch.object(
             settings_module,
@@ -76,7 +77,7 @@ class RuntimeBaseDirTests(unittest.TestCase):
         ), patch.object(settings_module.sys, "argv", [None]):
             self.assertEqual(
                 runtime_base_dir(),
-                Path(settings_module.__file__).resolve().parent,
+                bundle_root(),
             )
 
 

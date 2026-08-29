@@ -5,10 +5,10 @@ from unittest import mock
 
 from makcu import MouseButton
 
-from ai_targeting import AimSettings, TargetSnapshot
-from combined_motion import MotionSources
-from makcu_service import BUTTON_NAMES, MakcuService, ServiceEvent
-from motion import MotionSettings
+from jitter_app.ai.targeting import AimSettings, TargetSnapshot
+from jitter_app.motion.combined import MotionSources
+from jitter_app.device.makcu import BUTTON_NAMES, MakcuService, ServiceEvent
+from jitter_app.motion.engine import MotionSettings
 
 
 class FakeController:
@@ -149,7 +149,7 @@ class MakcuConnectionTests(unittest.TestCase):
         )
         self.addCleanup(service.close)
 
-        with self.assertLogs("makcu_service", level="ERROR") as captured:
+        with self.assertLogs("jitter_app.device.makcu", level="ERROR") as captured:
             service._connect_worker(service._begin_connection())
             self.assertTrue(wait_until(
                 lambda: any(event.kind == "disconnected" for event in events)
@@ -188,7 +188,7 @@ class MakcuConnectionTests(unittest.TestCase):
             controller_factory=lambda **_kwargs: controller,
         )
 
-        with self.assertLogs("makcu_service", level="ERROR"):
+        with self.assertLogs("jitter_app.device.makcu", level="ERROR"):
             service._connect_worker(service._begin_connection())
 
         loss_events = [event for event in events if event.kind == "disconnected"]
@@ -284,7 +284,7 @@ class MakcuConnectionTests(unittest.TestCase):
 
         service = MakcuService(events.append, controller_factory=failing_factory)
         generation = service._begin_connection()
-        with self.assertLogs("makcu_service", level="ERROR") as captured:
+        with self.assertLogs("jitter_app.device.makcu", level="ERROR") as captured:
             service._connect_worker(generation)
 
         self.assertFalse(service.connected)
@@ -315,7 +315,7 @@ class MakcuConnectionTests(unittest.TestCase):
         )
         generation = service._begin_connection()
 
-        with self.assertLogs("makcu_service", level="ERROR") as captured:
+        with self.assertLogs("jitter_app.device.makcu", level="ERROR") as captured:
             service._connect_worker(generation)
 
         self.assertTrue(controller.disconnected)
@@ -908,7 +908,7 @@ class MakcuMovementTests(unittest.TestCase):
         def clock():
             return 1.0 if deadline_crossed.is_set() else 0.0
 
-        with mock.patch("makcu_service.time.perf_counter", side_effect=clock):
+        with mock.patch("jitter_app.device.makcu.time.perf_counter", side_effect=clock):
             self.assertTrue(
                 service.start_ai_motion(
                     lambda: target, AimSettings, duration_s=0.5
@@ -1543,7 +1543,7 @@ class MakcuMovementTests(unittest.TestCase):
             service._motion_thread = threading.current_thread()
         snapshot = TargetSnapshot(1, 100.0, "head", 170, 160)
 
-        with mock.patch("makcu_service.time.perf_counter", return_value=100.0):
+        with mock.patch("jitter_app.device.makcu.time.perf_counter", return_value=100.0):
             service._motion_worker(
                 motion_generation,
                 connection_generation,
@@ -1631,7 +1631,7 @@ class MakcuMovementTests(unittest.TestCase):
             service._motion_stop_reasons[motion_generation] = None
             service._motion_active = True
             service._motion_thread = threading.current_thread()
-        with mock.patch("makcu_service.time.perf_counter", return_value=100.0):
+        with mock.patch("jitter_app.device.makcu.time.perf_counter", return_value=100.0):
             service._motion_worker(
                 motion_generation,
                 connection_generation,
@@ -1813,9 +1813,9 @@ class MakcuConnectionLifecycleTests(unittest.TestCase):
         generation = service._begin_connection()
 
         with mock.patch(
-            "makcu_service.threading.Thread",
+            "jitter_app.device.makcu.threading.Thread",
             return_value=FailingThread(),
-        ), self.assertLogs("makcu_service", level="ERROR"):
+        ), self.assertLogs("jitter_app.device.makcu", level="ERROR"):
             service._connect_worker(generation)
 
         self.assertIsNone(service._health_thread)
@@ -1834,7 +1834,7 @@ class MakcuConnectionLifecycleTests(unittest.TestCase):
             service,
             "_start_health_worker",
             side_effect=RuntimeError("health thread could not start"),
-        ), self.assertLogs("makcu_service", level="ERROR"):
+        ), self.assertLogs("jitter_app.device.makcu", level="ERROR"):
             service.connect()
             service.join_connection(1.0)
 
@@ -1884,7 +1884,7 @@ class MakcuConnectionLifecycleTests(unittest.TestCase):
             service,
             "_start_health_worker",
             side_effect=fail_first_health_start,
-        ), self.assertLogs("makcu_service", level="ERROR"):
+        ), self.assertLogs("jitter_app.device.makcu", level="ERROR"):
             service.connect()
             self.assertTrue(health_start_entered.wait(1.0))
             service.reconnect()
@@ -2116,7 +2116,7 @@ class MakcuConnectionLifecycleTests(unittest.TestCase):
         self.addCleanup(service.close)
         service._connect_worker(service._begin_connection())
 
-        with self.assertLogs("makcu_service", level="ERROR") as captured:
+        with self.assertLogs("jitter_app.device.makcu", level="ERROR") as captured:
             service.reconnect()
             self.assertTrue(old.disconnect_entered.wait(1.0))
             failed_generation = service.reconnect()

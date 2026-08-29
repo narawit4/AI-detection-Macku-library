@@ -6,10 +6,10 @@ from pathlib import Path
 
 import numpy as np
 
-from ai_service import AiEvent, AiService
-from ai_targeting import AimSettings, Detection
-from combined_motion import CombinedMotionEngine, MotionSources
-from motion import MotionSettings
+from jitter_app.ai.service import AiEvent, AiService
+from jitter_app.ai.targeting import AimSettings, Detection
+from jitter_app.motion.combined import CombinedMotionEngine, MotionSources
+from jitter_app.motion.engine import MotionSettings
 
 
 def wait_until(predicate, timeout=1.0):
@@ -266,7 +266,7 @@ class AiServiceTests(unittest.TestCase):
             def __init__(self, *, target_fps):
                 target_fps_values.append(target_fps)
 
-        with mock.patch("ai_service.DxcamCapture", RecordingCapture):
+        with mock.patch("jitter_app.ai.service.DxcamCapture", RecordingCapture):
             service = AiService(lambda _event: None, capture_fps=165)
             self.addCleanup(service.close)
             capture = service._capture_factory()
@@ -284,7 +284,7 @@ class AiServiceTests(unittest.TestCase):
                     def __init__(self, *, target_fps):
                         target_fps_values.append(target_fps)
 
-                with mock.patch("ai_service.DxcamCapture", RecordingCapture):
+                with mock.patch("jitter_app.ai.service.DxcamCapture", RecordingCapture):
                     service = AiService(lambda _event: None, capture_fps=invalid)
                     try:
                         service._capture_factory()
@@ -1220,7 +1220,7 @@ class AiServiceTests(unittest.TestCase):
         frames = [np.zeros((320, 320, 3), dtype=np.uint8) for _ in range(3)]
         service, events = self.make_zoom_service(detector, frames=frames)
 
-        with self.assertLogs("ai_service", level="ERROR") as logs:
+        with self.assertLogs("jitter_app.ai.service", level="ERROR") as logs:
             service.start(AimSettings, lambda: True)
             self.assertTrue(wait_until(
                 lambda: len(detector.frames) == 5
@@ -1268,7 +1268,7 @@ class AiServiceTests(unittest.TestCase):
             clock=clock,
         )
 
-        with self.assertLogs("ai_service", level="ERROR") as logs:
+        with self.assertLogs("jitter_app.ai.service", level="ERROR") as logs:
             service.start(AimSettings, lambda: gate["active"])
             self.release_and_wait(capture, service, 1)
             self.assertIsNotNone(service.latest_snapshot())
@@ -1324,7 +1324,7 @@ class AiServiceTests(unittest.TestCase):
                     detector_factory=lambda _path: detector_calls.append(True),
                     capture_factory=FakeCapture,
                 )
-                with mock.patch("ai_service.threading.Thread", InlineThread):
+                with mock.patch("jitter_app.ai.service.threading.Thread", InlineThread):
                     service.start(AimSettings)
 
                 self.assertEqual(thread_instances, [])
@@ -1359,10 +1359,10 @@ class AiServiceTests(unittest.TestCase):
         )
         self.addCleanup(service.close)
         with mock.patch(
-            "ai_service.model_resource_path",
+            "jitter_app.ai.service.model_resource_path",
             side_effect=lambda: model_calls.append(True),
         ):
-            with mock.patch("ai_service.threading.Thread", CapturedThread):
+            with mock.patch("jitter_app.ai.service.threading.Thread", CapturedThread):
                 service.start(AimSettings)
 
             worker = CapturedThread.instance
@@ -1409,8 +1409,8 @@ class AiServiceTests(unittest.TestCase):
         )
         self.addCleanup(service.close)
         with (
-            mock.patch("ai_service.threading.Thread", FailingStartThread),
-            self.assertLogs("ai_service", level="ERROR") as logs,
+            mock.patch("jitter_app.ai.service.threading.Thread", FailingStartThread),
+            self.assertLogs("jitter_app.ai.service", level="ERROR") as logs,
         ):
             generation = service.start(AimSettings)
 
@@ -1750,7 +1750,7 @@ class AiServiceTests(unittest.TestCase):
         )
         self.addCleanup(service.close)
 
-        with self.assertLogs("ai_service", level="ERROR") as logs:
+        with self.assertLogs("jitter_app.ai.service", level="ERROR") as logs:
             service.start(AimSettings)
             self.assertTrue(wait_until(lambda: service.status == "error"))
             self.assertTrue(wait_until(lambda: not service.running))
@@ -1772,7 +1772,7 @@ class AiServiceTests(unittest.TestCase):
         )
         self.addCleanup(service.close)
 
-        with self.assertLogs("ai_service", level="ERROR"):
+        with self.assertLogs("jitter_app.ai.service", level="ERROR"):
             service.start(AimSettings)
             self.assertTrue(capture.closed.wait(1.0))
 
@@ -1806,7 +1806,7 @@ class AiServiceTests(unittest.TestCase):
         )
         self.addCleanup(service.close)
 
-        with self.assertLogs("ai_service", level="ERROR"):
+        with self.assertLogs("jitter_app.ai.service", level="ERROR"):
             service.start(AimSettings)
             self.assertTrue(capture.closed.wait(1.0))
 
@@ -1883,7 +1883,7 @@ class AiServiceTests(unittest.TestCase):
         )
         self.addCleanup(service.close)
 
-        with self.assertLogs("ai_service", level="ERROR") as logs:
+        with self.assertLogs("jitter_app.ai.service", level="ERROR") as logs:
             service.start(AimSettings)
             self.assertTrue(wait_until(lambda: service.latest_snapshot() is not None))
 

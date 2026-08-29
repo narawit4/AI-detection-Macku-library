@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from ai_capture import DxcamCapture, centered_region
+from jitter_app.ai.capture import DxcamCapture, centered_region
 
 
 class FakeCamera:

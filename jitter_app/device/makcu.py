@@ -14,9 +14,9 @@ import time
 from typing import Any, Callable
 
 from makcu import MouseButton, create_controller
-from ai_targeting import AimMovementEngine, AimSettings, TargetSnapshot
-from combined_motion import CombinedMotionEngine, MotionSources
-from motion import MotionSettings, PairedPulseEngine
+from jitter_app.ai.targeting import AimMovementEngine, AimSettings, TargetSnapshot
+from jitter_app.motion.combined import CombinedMotionEngine, MotionSources
+from jitter_app.motion.engine import MotionSettings, PairedPulseEngine
 
 
 _MISSING = object()

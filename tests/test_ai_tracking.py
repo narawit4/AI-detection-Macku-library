@@ -2,8 +2,8 @@ import math
 import unittest
 from dataclasses import FrozenInstanceError
 
-from ai_targeting import AimSettings, Detection, TargetSnapshot
-from ai_tracking import TrackerState, observe_detections
+from jitter_app.ai.targeting import AimSettings, Detection, TargetSnapshot
+from jitter_app.ai.tracking import TrackerState, observe_detections
 
 
 def head_box(center_x, center_y=100, size=10, confidence=0.9):

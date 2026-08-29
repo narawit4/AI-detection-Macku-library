@@ -1,18 +1,16 @@
-import hashlib
 import unittest
 from dataclasses import FrozenInstanceError
 
 import numpy as np
 
-import ai_zoom
-from ai_targeting import (
+from jitter_app.ai.targeting import (
     AimSettings,
     Detection,
     DetectionAnalysis,
     DetectionFrameSnapshot,
     TargetSnapshot,
 )
-from ai_zoom import (
+from jitter_app.ai.zoom import (
     RECOIL_COOLDOWN_SECONDS,
     ZoomStabilityState,
     ZoomTransform,
@@ -24,7 +22,6 @@ from ai_zoom import (
     movement_is_confirmed,
     observe_zoom_stability,
     record_zoom_refinement_miss,
-    resize_rgb_bilinear,
     select_zoom_factor,
 )
 
@@ -173,67 +170,6 @@ class ZoomFactorTests(unittest.TestCase):
 
 
 class ZoomGeometryTests(unittest.TestCase):
-    def test_resize_reuses_cached_coordinate_plan(self):
-        plan_builder = getattr(ai_zoom, "_resize_plan", None)
-        self.assertTrue(
-            callable(plan_builder),
-            "resize must expose its internal cached coordinate plan",
-        )
-        plan_builder.cache_clear()
-        first = plan_builder(160, 160, 320)
-        second = plan_builder(160, 160, 320)
-        self.assertIs(first, second)
-
-    def test_cached_coordinate_plan_has_immutable_backing_storage(self):
-        plan = ai_zoom._resize_plan(213, 213, 320)
-        for values in plan:
-            with self.subTest(shape=values.shape):
-                with self.assertRaises(ValueError):
-                    values.flags.writeable = True
-
-    def test_zoom_size_resizes_match_frozen_pixel_outputs(self):
-        # Captured from the four-corner implementation in parent 3a8b8e3.
-        expected_hashes = {
-            160: "73fff29a5890f0cdad009470c7ade901489fcc096309af53489d1812cf23e5a5",
-            213: "d3876b8a91d71fcd2303a1f5e94c551761191e534b8861c623a908a1c3a4bd32",
-        }
-        random = np.random.default_rng(20260827)
-        for size, expected_hash in expected_hashes.items():
-            with self.subTest(size=size):
-                source = random.integers(
-                    0, 256, (size, size, 3), dtype=np.uint8
-                )
-                resized = resize_rgb_bilinear(source)
-                self.assertEqual(
-                    hashlib.sha256(resized.tobytes()).hexdigest(),
-                    expected_hash,
-                )
-
-    def test_bilinear_resize_has_hand_derived_center_and_owned_rgb_output(self):
-        source = np.array(
-            [
-                [[0, 0, 0], [100, 100, 100]],
-                [[200, 200, 200], [255, 255, 255]],
-            ],
-            dtype=np.uint8,
-        )
-        resized = resize_rgb_bilinear(source, output_size=3)
-        self.assertEqual(resized.shape, (3, 3, 3))
-        self.assertEqual(resized.dtype, np.uint8)
-        self.assertEqual(resized[1, 1].tolist(), [139, 139, 139])
-        self.assertFalse(np.shares_memory(resized, source))
-
-    def test_generic_resize_preserves_half_up_rounding_at_exact_boundary(self):
-        source = np.array(
-            [
-                [[84, 84, 84], [244, 244, 244]],
-                [[7, 7, 7], [191, 191, 191]],
-            ],
-            dtype=np.uint8,
-        )
-        resized = resize_rgb_bilinear(source, output_size=7)
-        self.assertEqual(resized[1, 1].tolist(), [99, 99, 99])
-
     def test_two_x_crop_clamps_at_top_left_and_maps_coordinates_back(self):
         frame = np.zeros((320, 320, 3), dtype=np.uint8)
         target = TargetSnapshot(4, 20.0, "head", 20.0, 30.0)

@@ -4,8 +4,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 import math
 
-from ai_targeting import AimMovementEngine, AimSettings, TargetSnapshot
-from motion import MotionSettings, PairedPulseEngine
+from jitter_app.ai.targeting import AimMovementEngine, AimSettings, TargetSnapshot
+from .engine import MotionSettings, PairedPulseEngine
 
 
 @dataclass(frozen=True)

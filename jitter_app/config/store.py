@@ -11,17 +11,18 @@ import shutil
 import sys
 from typing import Any, Mapping
 
-from ai_targeting import (
+from jitter_app.ai.targeting import (
     AimSettings,
     aim_settings_from_mapping,
     aim_settings_to_mapping,
 )
-from motion import (
+from jitter_app.motion.engine import (
     MOTION_PRESETS,
     MotionSettings,
     motion_settings_from_mapping,
     motion_settings_to_mapping,
 )
+from jitter_app.resources import bundle_root
 
 
 SCHEMA_VERSION = 5
@@ -69,10 +70,10 @@ def runtime_base_dir() -> Path:
     Nuitka exposes the directory of its containing binary through the
     ``__compiled__`` marker.  If that marker is incomplete, the original
     executable argument is the compiled-mode fallback.  Source runs always use
-    the directory containing this module.  No EverFall paths are consulted.
+    the application bundle or repository root.  No EverFall paths are consulted.
     """
 
-    source_dir = Path(__file__).resolve().parent
+    source_dir = bundle_root()
     try:
         compiled = __compiled__
     except NameError:

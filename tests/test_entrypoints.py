@@ -13,10 +13,23 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import main
-from ai_detection import model_resource_path
+from jitter_app.ai.detection import model_resource_path
 
 
 ROOT = Path(__file__).parents[1]
+
+
+def write_isolated_detection(isolated: Path, contents: str) -> None:
+    package = isolated / "jitter_app"
+    ai_package = package / "ai"
+    ai_package.mkdir(parents=True)
+    (package / "__init__.py").write_text(
+        '\"\"\"Test package.\"\"\"\n', encoding="utf-8"
+    )
+    (ai_package / "__init__.py").write_text(
+        '\"\"\"Test AI package.\"\"\"\n', encoding="utf-8"
+    )
+    (ai_package / "detection.py").write_text(contents, encoding="utf-8")
 
 
 class FakeKernel32:
@@ -36,6 +49,19 @@ class FakeKernel32:
 
 
 class EntryPointTests(unittest.TestCase):
+    def test_documentation_describes_the_supported_package_layout(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+
+        for text in (readme, agents):
+            self.assertIn("jitter_app/ai/detection.py", text)
+            self.assertIn("jitter_app/presentation/ui.py", text)
+            self.assertIn("jitter_app/config/store.py", text)
+            self.assertIn("Get-ChildItem", text)
+
+        self.assertNotIn("python -m py_compile main.py ui.py", readme)
+        self.assertNotIn("python -m py_compile main.py ui.py", agents)
+
     def test_ai_runtime_self_check_reports_verified_directml_json(self):
         output = io.StringIO()
         model = ROOT / "models" / "all_games_320.onnx"
@@ -119,10 +145,7 @@ class EntryPointTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             isolated = Path(temporary)
             shutil.copy2(ROOT / "main.py", isolated / "main.py")
-            (isolated / "ai_detection.py").write_text(
-                f"raise ImportError({secret!r})\n",
-                encoding="utf-8",
-            )
+            write_isolated_detection(isolated, f"raise ImportError({secret!r})\n")
 
             completed = subprocess.run(
                 [
@@ -152,14 +175,14 @@ class EntryPointTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             isolated = Path(temporary)
             shutil.copy2(ROOT / "main.py", isolated / "main.py")
-            (isolated / "ai_detection.py").write_text(
+            write_isolated_detection(
+                isolated,
                 "from pathlib import Path\n"
                 "class OnnxDetector:\n"
                 "    def __init__(self, _path):\n"
                 "        self.provider = 'DmlExecutionProvider'\n"
                 "def model_resource_path():\n"
                 f"    return Path({str(model)!r})\n",
-                encoding="utf-8",
             )
 
             completed = subprocess.run(
@@ -317,24 +340,35 @@ class EntryPointTests(unittest.TestCase):
         self.assertEqual(reviewed.returncode, 0, reviewed.stdout + reviewed.stderr)
         payload = json.loads(reviewed.stdout)
         expected_compile_targets = {
-            "main.py", "ui.py", "motion.py", "combined_motion.py",
-            "ai_targeting.py", "ai_tracking.py", "ai_detection.py",
-            "ai_model_selection.py", "ai_capture.py",
-            "ai_zoom.py", "ai_service.py", "overlay.py", "makcu_service.py", "hotkeys.py",
-            "settings.py", "liquid_widgets.py", "distribution_metadata.py", "display_timing.py",
+            "main.py", "distribution_metadata.py",
+            "jitter_app/__init__.py", "jitter_app/resources.py",
+            "jitter_app/ai/__init__.py", "jitter_app/ai/capture.py",
+            "jitter_app/ai/detection.py", "jitter_app/ai/model_selection.py",
+            "jitter_app/ai/service.py", "jitter_app/ai/targeting.py",
+            "jitter_app/ai/tracking.py", "jitter_app/ai/resize.py",
+            "jitter_app/ai/yolo.py", "jitter_app/ai/zoom.py",
+            "jitter_app/motion/__init__.py", "jitter_app/motion/engine.py",
+            "jitter_app/motion/combined.py", "jitter_app/device/__init__.py",
+            "jitter_app/device/makcu.py", "jitter_app/device/hotkeys.py",
+            "jitter_app/device/display_timing.py",
+            "jitter_app/presentation/__init__.py",
+            "jitter_app/presentation/ui.py", "jitter_app/presentation/widgets.py",
+            "jitter_app/presentation/overlay.py", "jitter_app/presentation/sound.py",
+            "jitter_app/config/__init__.py", "jitter_app/config/store.py",
         }
         expected_runtime_imports = {
             "makcu", "serial", "onnxruntime", "dxcam", "comtypes", "numpy",
         }
         expected_data_options = {
-            "--include-data-dir=models=models",
+            "--include-data-files="
+            "models/all_games_320.onnx=models/all_games_320.onnx",
             "--include-data-dir=licenses=licenses",
         }
         sound_is_present = (
-            (ROOT / "sound_service.py").is_file() and (ROOT / "sound").is_dir()
+            (ROOT / "jitter_app" / "presentation" / "sound.py").is_file()
+            and (ROOT / "sound").is_dir()
         )
         if sound_is_present:
-            expected_compile_targets.add("sound_service.py")
             expected_runtime_imports.add("pygame")
             expected_data_options.add("--include-data-dir=sound=sound")
         self.assertEqual(set(payload["compile_targets"]), expected_compile_targets)
@@ -542,5 +576,37 @@ class EntryPointTests(unittest.TestCase):
         self.assertIn(
             'python -c "import makcu, serial, pygame, onnxruntime, dxcam, '
             'comtypes, numpy"',
+            readme,
+        )
+
+    def test_readme_documents_supported_external_sizes_and_fixed_capture(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        for contract in (
+            "[1,3,160,160]",
+            "[1,3,320,320]",
+            "[1,3,640,640]",
+            "พื้นที่ capture ยังคง 320×320",
+            "128/256",
+        ):
+            with self.subTest(contract=contract):
+                self.assertIn(contract, readme)
+
+    def test_readme_documents_exact_raw_single_class_contract_without_packaging_it(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("[1,5,K]", readme)
+        self.assertIn("160 → K=525", readme)
+        self.assertIn("320 → K=2100", readme)
+        self.assertIn("640 → K=8400", readme)
+        self.assertIn("task=detect", readme)
+        self.assertIn("class 0", readme)
+        self.assertIn("jitter_app/ai/yolo.py", readme)
+        self.assertIn("metadata-map keys/values are strings", readme)
+        self.assertIn("additional all-string fields are allowed", readme)
+        self.assertIn("names` string-valued field", readme)
+        self.assertIn("ast.literal_eval", readme)
+        self.assertIn('{0: "<non-empty label>"}', readme)
+        self.assertNotIn("names mapping entries are strings", readme)
+        self.assertNotIn(
+            "models/Apex_20k_pictures_640.onnx=models/Apex_20k_pictures_640.onnx",
             readme,
         )

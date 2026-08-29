@@ -1,8 +1,8 @@
 import unittest
 
-from ai_targeting import AimSettings, TargetSnapshot
-from combined_motion import CombinedMotionEngine, MotionSources
-from motion import MotionSettings
+from jitter_app.ai.targeting import AimSettings, TargetSnapshot
+from jitter_app.motion.combined import CombinedMotionEngine, MotionSources
+from jitter_app.motion.engine import MotionSettings
 
 
 class FixedJitter:
