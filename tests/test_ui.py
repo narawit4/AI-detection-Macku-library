@@ -558,6 +558,11 @@ class JitterLayoutTests(unittest.TestCase):
         self.app._cancel_after("_ui_pump_after_id")
         self.app._drain_ui_queue()
 
+    def handle_current_ai_event(self, event):
+        generation = self.ai.active_generation
+        self.assertIsNotNone(generation)
+        self.app.handle_ai_event(replace(event, generation=generation))
+
     def begin_custom_model_switch(self, filename):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -908,7 +913,7 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertEqual(len(self.ai.start_calls), starts)
         self.assertEqual(self.ai.stop_calls, [])
 
-        self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        self.handle_current_ai_event(AiEvent("ready", "DmlExecutionProvider"))
         self.assertEqual(
             str(self.app.capture_mode_combo.cget("state")), "readonly"
         )
@@ -937,7 +942,7 @@ class JitterLayoutTests(unittest.TestCase):
         app.capture_mode_var.set("Full Display")
         app._capture_mode_changed()
         app.toggle_overlay()
-        app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        self.handle_current_ai_event(AiEvent("ready", "DmlExecutionProvider"))
         choice, token = self.begin_custom_model_switch("candidate.onnx")
         validated = self.validated_model_choice(choice)
         self.model_validator.emit(
@@ -947,7 +952,7 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertEqual(self.ai.start_calls[-1][2], validated.path)
         self.assertEqual(self.ai.start_calls[-1][3], FULL_DISPLAY)
 
-        app.handle_ai_event(AiEvent("error", "candidate failed"))
+        self.handle_current_ai_event(AiEvent("error", "candidate failed"))
         self.assertEqual(
             self.ai.start_calls[-1][2], app._model_switch.previous.path
         )
@@ -1048,7 +1053,7 @@ class JitterLayoutTests(unittest.TestCase):
         self.app._capture_mode_changed()
 
         with self.assertLogs(level="ERROR"):
-            self.app.handle_ai_event(AiEvent("error", "capture failed"))
+            self.handle_current_ai_event(AiEvent("error", "capture failed"))
 
         self.assertFalse(self.app._capture_mode_switching)
         self.assertEqual(self.app._capture_mode, FULL_DISPLAY)
@@ -1063,7 +1068,9 @@ class JitterLayoutTests(unittest.TestCase):
                 self.app.close_app()
                 app = self.make_app()
                 app.toggle_overlay()
-                app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+                self.handle_current_ai_event(
+                    AiEvent("ready", "DmlExecutionProvider")
+                )
                 app.capture_mode_var.set("Full Display")
                 app._capture_mode_changed()
                 self.assertTrue(app._capture_mode_switching)
@@ -1082,7 +1089,7 @@ class JitterLayoutTests(unittest.TestCase):
                         "readonly",
                     )
                 elif action == "disconnect":
-                    app.handle_ai_event(
+                    self.handle_current_ai_event(
                         AiEvent("ready", "DmlExecutionProvider")
                     )
                     self.assertEqual(
@@ -1099,8 +1106,12 @@ class JitterLayoutTests(unittest.TestCase):
                 self.app.close_app()
                 app = self.make_app()
                 app.toggle_overlay()
-                app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
-                app.queue_ai_event(stale_event)
+                self.handle_current_ai_event(
+                    AiEvent("ready", "DmlExecutionProvider")
+                )
+                app.queue_ai_event(
+                    replace(stale_event, generation=self.ai.active_generation)
+                )
 
                 app.capture_mode_var.set("Full Display")
                 app._capture_mode_changed()
@@ -1114,7 +1125,7 @@ class JitterLayoutTests(unittest.TestCase):
 
     def test_each_capture_direction_makes_exactly_one_stop_and_start(self):
         self.app.toggle_overlay()
-        self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        self.handle_current_ai_event(AiEvent("ready", "DmlExecutionProvider"))
         for label, mode in (
             ("Full Display", FULL_DISPLAY),
             ("Center 320", CENTER_320),
@@ -3400,7 +3411,7 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertEqual(self.app._model_switch.phase, "starting_candidate")
         self.assertFalse(self.app._normal_motion_started)
 
-        self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        self.handle_current_ai_event(AiEvent("ready", "DmlExecutionProvider"))
         self.assertEqual(
             self.app.ai_model_var.get(),
             "Custom · custom.onnx · 640×640",
@@ -3442,7 +3453,7 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertEqual(self.ai.start_calls[-1][3], CENTER_320)
         self.assertEqual(self.app._model_switch.phase, "starting_candidate")
 
-        self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        self.handle_current_ai_event(AiEvent("ready", "DmlExecutionProvider"))
         self.assertIsNone(self.app._model_switch)
         self.assertEqual(self.app._model_choice, validated)
 
@@ -3529,6 +3540,139 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertIsNone(self.app._model_switch)
         self.assertEqual(self.app._model_choice, validated)
 
+    def test_generationless_ready_cannot_commit_active_model_candidate(self):
+        self.prepare_armed_sources(MotionSources(False, True))
+        choice, token = self.begin_custom_model_switch(
+            "generationless-ready.onnx"
+        )
+        validated = self.validated_model_choice(choice)
+        self.model_validator.emit(
+            ModelValidationEvent("ready", token, validated)
+        )
+        self.drain_ui_queue()
+        candidate_generation = self.ai.active_generation
+        switch = self.app._model_switch
+        previous = switch.previous
+        state_before = (
+            self.app._ai_ready,
+            self.app._ai_provider,
+            self.app.ai_status_var.get(),
+            self.app.ai_fps_var.get(),
+            self.app.ai_provider_var.get(),
+            self.app.footer_var.get(),
+            self.app.master_armed,
+            self.app.jitter_selected,
+            self.app.ai_selected,
+            self.app.overlay_visible,
+            self.app._normal_motion_started,
+        )
+
+        self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+
+        self.assertIs(self.app._model_switch, switch)
+        self.assertEqual(self.app._model_switch.phase, "starting_candidate")
+        self.assertEqual(self.app._model_choice, previous)
+        self.assertEqual(
+            (
+                self.app._ai_ready,
+                self.app._ai_provider,
+                self.app.ai_status_var.get(),
+                self.app.ai_fps_var.get(),
+                self.app.ai_provider_var.get(),
+                self.app.footer_var.get(),
+                self.app.master_armed,
+                self.app.jitter_selected,
+                self.app.ai_selected,
+                self.app.overlay_visible,
+                self.app._normal_motion_started,
+            ),
+            state_before,
+        )
+
+        self.app.handle_ai_event(
+            AiEvent(
+                "ready",
+                "DmlExecutionProvider",
+                generation=candidate_generation,
+            )
+        )
+        self.assertIsNone(self.app._model_switch)
+        self.assertEqual(self.app._model_choice, validated)
+        self.assertTrue(self.app._ai_ready)
+
+    def test_generationless_error_cannot_roll_back_active_model_candidate(self):
+        self.prepare_armed_sources(MotionSources(False, True))
+        choice, token = self.begin_custom_model_switch(
+            "generationless-error.onnx"
+        )
+        self.model_validator.emit(
+            ModelValidationEvent(
+                "ready", token, self.validated_model_choice(choice)
+            )
+        )
+        self.drain_ui_queue()
+        candidate_generation = self.ai.active_generation
+        switch = self.app._model_switch
+        starts_before = len(self.ai.start_calls)
+        state_before = (
+            self.app._capture_restart_pending,
+            self.app._capture_mode_switching,
+            self.app._ai_ready,
+            self.app._ai_provider,
+            self.app._ai_runtime_active,
+            self.app.ai_status_var.get(),
+            self.app.footer_var.get(),
+            self.app.master_armed,
+            self.app.jitter_selected,
+            self.app.ai_selected,
+            self.app.overlay_visible,
+        )
+
+        self.app.handle_ai_event(AiEvent("error", "candidate failed"))
+
+        self.assertIs(self.app._model_switch, switch)
+        self.assertEqual(self.app._model_switch.phase, "starting_candidate")
+        self.assertIsNone(self.app._model_switch.failure)
+        self.assertEqual(len(self.ai.start_calls), starts_before)
+        self.assertEqual(
+            (
+                self.app._capture_restart_pending,
+                self.app._capture_mode_switching,
+                self.app._ai_ready,
+                self.app._ai_provider,
+                self.app._ai_runtime_active,
+                self.app.ai_status_var.get(),
+                self.app.footer_var.get(),
+                self.app.master_armed,
+                self.app.jitter_selected,
+                self.app.ai_selected,
+                self.app.overlay_visible,
+            ),
+            state_before,
+        )
+
+        with self.assertLogs(level="ERROR"):
+            self.app.handle_ai_event(
+                AiEvent(
+                    "error",
+                    "candidate failed",
+                    generation=candidate_generation,
+                )
+            )
+        self.assertEqual(self.app._model_switch.phase, "starting_rollback")
+        self.assertEqual(self.app._model_switch.failure, "candidate failed")
+        self.assertEqual(len(self.ai.start_calls), starts_before + 1)
+
+    def test_generationless_ready_remains_valid_without_active_lifecycle(self):
+        self.app._ai_runtime_active = True
+        self.assertIsNone(self.app._active_ai_lifecycle)
+
+        self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+
+        self.assertTrue(self.app._ai_ready)
+        self.assertEqual(self.app._ai_provider, "DmlExecutionProvider")
+        self.assertEqual(self.app.ai_status_var.get(), "Ready (DirectML)")
+
     def test_model_controls_remain_available_for_each_active_demand(self):
         for sources, overlay in (
             (MotionSources(False, True), False),
@@ -3557,7 +3701,7 @@ class JitterLayoutTests(unittest.TestCase):
         self.drain_ui_queue()
         self.assertEqual(self.ai.start_calls[-1][2], self.app._model_choice.path)
         self.assertEqual(self.app._model_switch.phase, "starting_rollback")
-        self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        self.handle_current_ai_event(AiEvent("ready", "DmlExecutionProvider"))
         self.assertIsNone(self.app._model_switch)
         self.assertEqual(
             self.app.footer_var.get(),
@@ -3575,7 +3719,9 @@ class JitterLayoutTests(unittest.TestCase):
             "ready", token, self.validated_model_choice(choice)
         ))
         self.drain_ui_queue()
-        self.app.handle_ai_event(AiEvent("error", "RuntimeError: AI service failed"))
+        self.handle_current_ai_event(
+            AiEvent("error", "RuntimeError: AI service failed")
+        )
         self.assertEqual(self.app._model_switch.phase, "starting_rollback")
         self.assertEqual(self.ai.start_calls[-1][2], self.app._model_switch.previous.path)
 
@@ -3596,7 +3742,9 @@ class JitterLayoutTests(unittest.TestCase):
         self.ai.retire_immediately = False
 
         with self.assertLogs(level="ERROR"):
-            self.app.handle_ai_event(AiEvent("error", "candidate failed"))
+            self.handle_current_ai_event(
+                AiEvent("error", "candidate failed")
+            )
 
         self.assertEqual(len(self.ai.start_calls), starts)
         self.assertIsNotNone(self.app._model_switch)
@@ -3619,7 +3767,7 @@ class JitterLayoutTests(unittest.TestCase):
         ]
         self.assertEqual(len(rollback_starts), 1)
 
-        self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        self.handle_current_ai_event(AiEvent("ready", "DmlExecutionProvider"))
         self.assertIsNone(self.app._model_switch)
         self.assertEqual(self.app._model_choice, previous)
 
@@ -3638,7 +3786,7 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertIsNotNone(self.app._model_switch)
         self.assertEqual(self.app._model_switch.phase, "starting_candidate")
         self.assertEqual(self.app._model_choice, previous)
-        self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        self.handle_current_ai_event(AiEvent("ready", "DmlExecutionProvider"))
         self.assertIsNone(self.app._model_switch)
         self.assertEqual(self.app._model_choice, validated)
 
@@ -3674,7 +3822,7 @@ class JitterLayoutTests(unittest.TestCase):
             "ready", token, self.validated_model_choice(choice)
         ))
         self.drain_ui_queue()
-        self.app.handle_ai_event(AiEvent("error", "candidate failed"))
+        self.handle_current_ai_event(AiEvent("error", "candidate failed"))
         previous = self.app._model_switch.previous
         self.app.queue_ai_event(AiEvent("ready", "DmlExecutionProvider"))
 
@@ -3706,7 +3854,9 @@ class JitterLayoutTests(unittest.TestCase):
                 )
                 self.drain_ui_queue()
                 if phase == "rollback":
-                    self.app.handle_ai_event(AiEvent("error", "candidate failed"))
+                    self.handle_current_ai_event(
+                        AiEvent("error", "candidate failed")
+                    )
                 previous = self.app._model_switch.previous
                 starts_before_stop = len(self.ai.start_calls)
                 self.ai.stop_exception = RuntimeError("stop failed")
@@ -3744,10 +3894,10 @@ class JitterLayoutTests(unittest.TestCase):
             "ready", token, self.validated_model_choice(choice)
         ))
         self.drain_ui_queue()
-        self.app.handle_ai_event(AiEvent("error", "candidate failed"))
+        self.handle_current_ai_event(AiEvent("error", "candidate failed"))
         starts_before_failure = len(self.ai.start_calls)
         with self.assertLogs(level="ERROR"):
-            self.app.handle_ai_event(AiEvent("error", "rollback failed"))
+            self.handle_current_ai_event(AiEvent("error", "rollback failed"))
         self.assertEqual(len(self.ai.start_calls), starts_before_failure)
         self.assertIsNone(self.app._model_switch)
         self.assertFalse(self.app.ai_selected)
@@ -4013,13 +4163,13 @@ class JitterLayoutTests(unittest.TestCase):
             str(self.app.model_browse_button.cget("state")), "disabled"
         )
 
-        self.app.handle_ai_event(AiEvent("error", "candidate failed"))
+        self.handle_current_ai_event(AiEvent("error", "candidate failed"))
         self.assertEqual(self.app._model_switch.phase, "starting_rollback")
         self.assertEqual(
             str(self.app.use_default_model_button.cget("state")), "disabled"
         )
 
-        self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        self.handle_current_ai_event(AiEvent("ready", "DmlExecutionProvider"))
         self.assertIsNone(self.app._model_switch)
         self.assertEqual(
             str(self.app.model_browse_button.cget("state")), "normal"
@@ -4070,10 +4220,10 @@ class JitterLayoutTests(unittest.TestCase):
             "ready", token, self.validated_model_choice(choice)
         ))
         self.drain_ui_queue()
-        self.app.handle_ai_event(AiEvent("error", "candidate failed"))
+        self.handle_current_ai_event(AiEvent("error", "candidate failed"))
 
         with self.assertLogs(level="ERROR"):
-            self.app.handle_ai_event(AiEvent("error", "rollback failed"))
+            self.handle_current_ai_event(AiEvent("error", "rollback failed"))
 
         self.assertIsNone(self.app._model_switch)
         self.assertGreater(self.app._model_switch_token, token)
@@ -4096,7 +4246,9 @@ class JitterLayoutTests(unittest.TestCase):
         self.ai.start_result = False
 
         with self.assertLogs(level="ERROR"):
-            self.app.handle_ai_event(AiEvent("error", "candidate failed"))
+            self.handle_current_ai_event(
+                AiEvent("error", "candidate failed")
+            )
 
         self.assertIsNone(self.app._model_switch)
         self.assertGreater(self.app._model_switch_token, token)
@@ -4122,7 +4274,7 @@ class JitterLayoutTests(unittest.TestCase):
 
         failure = None
         try:
-            self.app.handle_ai_event(AiEvent("error", "candidate failed"))
+            self.handle_current_ai_event(AiEvent("error", "candidate failed"))
         except RuntimeError as error:
             failure = error
 
@@ -4161,7 +4313,9 @@ class JitterLayoutTests(unittest.TestCase):
                 )
                 self.drain_ui_queue()
                 if overlay:
-                    self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+                    self.handle_current_ai_event(
+                        AiEvent("ready", "DmlExecutionProvider")
+                    )
 
                 self.app.use_default_ai_model()
                 default, default_token = self.model_validator.start_calls[-1]
@@ -4170,7 +4324,9 @@ class JitterLayoutTests(unittest.TestCase):
                 )
                 self.drain_ui_queue()
                 if overlay:
-                    self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+                    self.handle_current_ai_event(
+                        AiEvent("ready", "DmlExecutionProvider")
+                    )
 
                 self.assertTrue(self.app._normal_motion_started)
                 self.assertEqual(self.service.active_motion_generation, motion_generation)
@@ -4249,7 +4405,11 @@ class JitterLayoutTests(unittest.TestCase):
         self.app.set_master(True)
         if sources.ai:
             self.app.handle_ai_event(
-                AiEvent("ready", "DmlExecutionProvider")
+                AiEvent(
+                    "ready",
+                    "DmlExecutionProvider",
+                    generation=self.ai.active_generation,
+                )
             )
         if gate_active:
             self.app.handle_service_event(
@@ -4275,7 +4435,7 @@ class JitterLayoutTests(unittest.TestCase):
         )
         self.assertFalse(zoom_provider())
 
-        self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        self.handle_current_ai_event(AiEvent("ready", "DmlExecutionProvider"))
         self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
         self.assertTrue(self.app.get_adaptive_zoom_gate())
 
@@ -4329,7 +4489,7 @@ class JitterLayoutTests(unittest.TestCase):
     def test_ai_error_clears_zoom_gate(self):
         self.prepare_armed_sources(MotionSources(False, True), gate_active=True)
         with self.assertLogs(level="ERROR"):
-            self.app.handle_ai_event(AiEvent("error", "failed"))
+            self.handle_current_ai_event(AiEvent("error", "failed"))
         self.assertFalse(self.app.get_adaptive_zoom_gate())
 
     def test_stop_clears_zoom_gate(self):
@@ -4347,11 +4507,11 @@ class JitterLayoutTests(unittest.TestCase):
         self.app.handle_ai_event(AiEvent("zoom", 2.0))
         self.assertEqual(self.app.ai_zoom_var.get(), "1.0×")
         self.prepare_armed_sources(MotionSources(False, True), gate_active=True)
-        self.app.handle_ai_event(AiEvent("zoom", 1.5))
+        self.handle_current_ai_event(AiEvent("zoom", 1.5))
         self.assertEqual(self.app.ai_zoom_var.get(), "1.5×")
-        self.app.handle_ai_event(AiEvent("zoom", 2.0))
+        self.handle_current_ai_event(AiEvent("zoom", 2.0))
         self.assertEqual(self.app.ai_zoom_var.get(), "2.0×")
-        self.app.handle_ai_event(AiEvent("zoom", "invalid"))
+        self.handle_current_ai_event(AiEvent("zoom", "invalid"))
         self.assertEqual(self.app.ai_zoom_var.get(), "1.0×")
 
     def test_stop_disconnect_and_ai_stop_reset_zoom_metric(self):
@@ -4368,7 +4528,7 @@ class JitterLayoutTests(unittest.TestCase):
 
     def test_trigger_release_resets_zoom_metric_without_waiting_for_ai_frame(self):
         self.prepare_armed_sources(MotionSources(False, True), gate_active=True)
-        self.app.handle_ai_event(AiEvent("zoom", 1.5))
+        self.handle_current_ai_event(AiEvent("zoom", 1.5))
         self.assertEqual(self.app.ai_zoom_var.get(), "1.5×")
         self.app.handle_service_event(ServiceEvent("button", ("Left", False)))
         self.assertFalse(self.app.get_adaptive_zoom_gate())
@@ -4413,7 +4573,7 @@ class JitterLayoutTests(unittest.TestCase):
         self.overlay.hide_error = RuntimeError("clear failed")
 
         with self.assertLogs(level="ERROR"):
-            self.app.handle_ai_event(
+            self.handle_current_ai_event(
                 AiEvent("error", "RuntimeError: AI service failed")
             )
 
@@ -4443,7 +4603,7 @@ class JitterLayoutTests(unittest.TestCase):
         self.prepare_armed_sources(MotionSources(False, True))
 
         with self.assertLogs(level="ERROR"):
-            self.app.handle_ai_event(
+            self.handle_current_ai_event(
                 AiEvent("error", "RuntimeError: AI service failed")
             )
 
@@ -4460,7 +4620,7 @@ class JitterLayoutTests(unittest.TestCase):
         self.overlay.hide_error = RuntimeError("clear failed")
 
         with self.assertLogs(level="ERROR"):
-            self.app.handle_ai_event(
+            self.handle_current_ai_event(
                 AiEvent("error", "RuntimeError: overlay detector failed")
             )
 
@@ -4484,7 +4644,7 @@ class JitterLayoutTests(unittest.TestCase):
         self.app.toggle_overlay()
 
         with self.assertLogs(level="ERROR"):
-            self.app.handle_ai_event(
+            self.handle_current_ai_event(
                 AiEvent("error", "RuntimeError: overlay detector failed")
             )
 
@@ -4665,7 +4825,7 @@ class JitterLayoutTests(unittest.TestCase):
 
                 if sources.ai:
                     self.assertEqual(self.service.composite_motion_calls, [])
-                    app.handle_ai_event(
+                    self.handle_current_ai_event(
                         AiEvent("ready", "DmlExecutionProvider")
                     )
                 self.assertEqual(
@@ -4736,7 +4896,7 @@ class JitterLayoutTests(unittest.TestCase):
         self.app.ai_selected = True
 
         self.app.start_test_run()
-        self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        self.handle_current_ai_event(AiEvent("ready", "DmlExecutionProvider"))
         call = self.service.composite_motion_calls[-1]
 
         self.assertFalse(self.app.get_adaptive_zoom_gate())
@@ -4766,7 +4926,7 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertTrue(self.app._test_waiting_for_motion_stop)
         self.assertFalse(self.app.master_armed)
 
-        self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        self.handle_current_ai_event(AiEvent("ready", "DmlExecutionProvider"))
         self.assertEqual(len(self.service.composite_motion_calls), 1)
         self.app.handle_service_event(ServiceEvent(
             "motion_stopped", "test_run", retiring + 100
@@ -4805,7 +4965,7 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertFalse(self.app._test_waiting_for_motion_stop)
         self.assertEqual(self.app._motion_mode, "test_combined_loading")
 
-        self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        self.handle_current_ai_event(AiEvent("ready", "DmlExecutionProvider"))
 
         self.assertEqual(len(self.service.composite_motion_calls), 2)
         self.assertEqual(
@@ -4850,7 +5010,7 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertFalse(self.app.master_armed)
         self.assertEqual(self.app.runtime_state_var.get(), "TESTING")
 
-        self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        self.handle_current_ai_event(AiEvent("ready", "DmlExecutionProvider"))
 
         self.assertEqual(self.app._motion_mode, "test_ai")
         self.assertFalse(self.app.master_armed)
@@ -5001,7 +5161,7 @@ class JitterLayoutTests(unittest.TestCase):
         self.app.toggle_jitter_source()
         self.app.toggle_ai_source()
         self.app.toggle_master()
-        self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        self.handle_current_ai_event(AiEvent("ready", "DmlExecutionProvider"))
         self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
 
         self.assertEqual(
@@ -5025,7 +5185,7 @@ class JitterLayoutTests(unittest.TestCase):
         ))
         self.assertEqual(len(self.service.composite_motion_calls), 1)
 
-        self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        self.handle_current_ai_event(AiEvent("ready", "DmlExecutionProvider"))
         self.service.motion_active = False
         self.service.active_motion_generation = None
         self.app.handle_service_event(ServiceEvent(
@@ -5341,7 +5501,7 @@ class JitterLayoutTests(unittest.TestCase):
         self.app.start_test_run()
 
         with self.assertLogs(level="ERROR"):
-            self.app.handle_ai_event(AiEvent("error", "capture failed"))
+            self.handle_current_ai_event(AiEvent("error", "capture failed"))
 
         self.assertIsNone(self.app._motion_mode)
         self.assertFalse(self.app.master_armed)
@@ -5427,7 +5587,7 @@ class JitterLayoutTests(unittest.TestCase):
     def test_runtime_status_and_ai_metrics_use_concise_vocabulary(self):
         self.prepare_armed_sources(MotionSources(False, True))
         self.assertEqual(self.app.runtime_state_var.get(), "ARMED")
-        self.app.handle_ai_event(AiEvent("fps", 37.25))
+        self.handle_current_ai_event(AiEvent("fps", 37.25))
         self.assertEqual(self.app.ai_fps_var.get(), "37.2 FPS")
         self.assertEqual(self.app.ai_provider_var.get(), "DirectML")
         self.app.handle_service_event(ServiceEvent("button", ("Left", True)))

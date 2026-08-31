@@ -4505,11 +4505,18 @@ class JitterApp(tk.Tk):
             return
         if (
             kind in {"loading", "ready", "fps", "zoom", "error"}
-            and event.generation is not None
             and (
-                active_lifecycle is None
-                or event.generation != active_lifecycle.generation
-                or active_lifecycle.event_epoch != self._ai_event_epoch
+                (
+                    active_lifecycle is None
+                    and event.generation is not None
+                )
+                or (
+                    active_lifecycle is not None
+                    and (
+                        event.generation != active_lifecycle.generation
+                        or active_lifecycle.event_epoch != self._ai_event_epoch
+                    )
+                )
             )
         ):
             return
