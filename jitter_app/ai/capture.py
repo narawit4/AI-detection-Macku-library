@@ -2,6 +2,7 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass
+import math
 from typing import Any
 
 import numpy as np
@@ -28,6 +29,7 @@ class CapturedFrame:
     capture_width: int
     capture_height: int
     mode: str
+    captured_at: float | None = None
 
 
 def full_output_region(width: int, height: int) -> tuple[int, int, int, int]:
@@ -131,9 +133,19 @@ class DxcamCapture:
             or self._active_geometry is None
         ):
             return None
-        frame = self._camera.get_latest_frame(copy=True)
-        if frame is None:
+        result = self._camera.get_latest_frame(copy=True, with_timestamp=True)
+        if result is None:
             return None
+        if type(result) is not tuple or len(result) != 2:
+            raise ValueError("AI capture result must contain frame and timestamp")
+        frame, captured_at = result
+        if (
+            isinstance(captured_at, bool)
+            or not isinstance(captured_at, (int, float))
+            or not math.isfinite(captured_at)
+            or captured_at < 0.0
+        ):
+            raise ValueError("AI capture timestamp must be finite and non-negative")
         if (
             not isinstance(frame, np.ndarray)
             or frame.ndim != 3
@@ -153,7 +165,9 @@ class DxcamCapture:
         ) = self._active_geometry
         if frame.shape[:2] != (capture_height, capture_width):
             raise ValueError("AI capture frame must match capture region")
-        pixels = np.ascontiguousarray(frame.copy())
+        pixels = frame
+        if not frame.flags.owndata or not frame.flags.c_contiguous:
+            pixels = np.array(frame, copy=True, order="C")
         return CapturedFrame(
             pixels,
             output_width,
@@ -163,6 +177,7 @@ class DxcamCapture:
             capture_width,
             capture_height,
             self._mode,
+            float(captured_at),
         )
 
     def close(self) -> None:

@@ -56,7 +56,12 @@ from jitter_app.motion.engine import (
 from jitter_app.config.store import AppConfig, ConfigStore, normalize_overlay_color
 from .widgets import CollapsibleSection, LiquidSlider
 from .sound import ToggleSoundPlayer
-from .overlay import DetectionOverlay, OverlaySetupError, OverlayStyle
+from .overlay import (
+    MAX_FRAME_AGE_S,
+    DetectionOverlay,
+    OverlaySetupError,
+    OverlayStyle,
+)
 from jitter_app.resources import sound_directory
 
 
@@ -89,6 +94,14 @@ _AI_CONTROL_SPECS = {
     "smoothing": ("Smoothing", 0.0, 0.95, 0.01),
     "max_step": ("Max Step", 1.0, 127.0, 1.0),
 }
+
+
+def _overlay_poll_interval_ms(capture_fps: int) -> int:
+    if type(capture_fps) is not int or capture_fps <= 0:
+        capture_fps = 120
+    return max(1, int(1000 / min(capture_fps, 240)))
+
+
 _TARGET_AREA_LABELS = {
     "head": "Head",
     "upper_body": "Upper Body",
@@ -292,6 +305,10 @@ class JitterApp(tk.Tk):
         self.resizable(False, False)
         self.protocol("WM_DELETE_WINDOW", self.close_app)
         self.runtime_cadence = runtime_cadence or detect_runtime_cadence()
+        self._overlay_poll_delay_ms = _overlay_poll_interval_ms(
+            self.runtime_cadence.capture_fps
+        )
+        self._last_overlay_render_key = None
 
         self.config_store = config_store or ConfigStore()
         self.load_outcome = self.config_store.load()
@@ -3889,6 +3906,7 @@ class JitterApp(tk.Tk):
         )
 
     def _hide_overlay_fail_closed(self, failure_message: str) -> None:
+        self._last_overlay_render_key = None
         try:
             self.overlay.hide()
         except Exception:
@@ -3912,6 +3930,7 @@ class JitterApp(tk.Tk):
             self.footer_var.set("Overlay disabled")
             return
 
+        self._last_overlay_render_key = None
         try:
             self.overlay.show()
         except OverlaySetupError:
@@ -3927,6 +3946,7 @@ class JitterApp(tk.Tk):
             self.footer_var.set("Overlay unavailable; check app.log")
             return
 
+        self._last_overlay_render_key = None
         self.overlay_visible = True
         self._render_runtime_controls()
         if not self._reconcile_ai_runtime("Overlay enabled"):
@@ -3941,24 +3961,51 @@ class JitterApp(tk.Tk):
         if self._closing or not self.overlay_visible:
             return
         try:
-            self.overlay.render(
-                self.ai_service.latest_detection_snapshot(),
-                now=self._clock(),
-                color=self.overlay_color,
-                show_heads=self.overlay_head_visible,
-                runtime=(
-                    self.ai_fps_var.get(),
-                    self.ai_provider_var.get(),
-                    self.ai_zoom_var.get(),
-                ),
-                style=self._overlay_style_snapshot(),
+            snapshot = self.ai_service.latest_detection_snapshot()
+            now = self._clock()
+            runtime = (
+                self.ai_fps_var.get(),
+                self.ai_provider_var.get(),
+                self.ai_zoom_var.get(),
             )
+            style = self._overlay_style_snapshot()
+            if snapshot is None:
+                snapshot_key = ("none",)
+            elif hasattr(snapshot, "sequence") and hasattr(
+                snapshot,
+                "captured_at",
+            ):
+                is_fresh = (
+                    max(0.0, now - snapshot.captured_at)
+                    <= MAX_FRAME_AGE_S
+                )
+                snapshot_key = (
+                    snapshot.sequence,
+                    snapshot.captured_at,
+                    is_fresh,
+                )
+            else:
+                snapshot_key = ("opaque", id(snapshot))
+            render_key = (snapshot_key, runtime, style)
+            if render_key != self._last_overlay_render_key:
+                self.overlay.render(
+                    snapshot,
+                    now=now,
+                    color=self.overlay_color,
+                    show_heads=self.overlay_head_visible,
+                    runtime=runtime,
+                    style=style,
+                )
+                self._last_overlay_render_key = render_key
         except Exception:
             logging.exception("Detection overlay rendering failed")
             self._disable_overlay_after_error()
             return
         try:
-            self._overlay_after_id = self.after(16, self._poll_overlay)
+            self._overlay_after_id = self.after(
+                self._overlay_poll_delay_ms,
+                self._poll_overlay,
+            )
         except (tk.TclError, RuntimeError):
             self._overlay_after_id = None
 
@@ -3998,6 +4045,7 @@ class JitterApp(tk.Tk):
 
     def _disable_overlay_after_error(self) -> None:
         self.overlay_visible = False
+        self._last_overlay_render_key = None
         self._cancel_after("_overlay_after_id")
         try:
             self.overlay.close()

@@ -41,6 +41,7 @@ def captured_frame(
     capture_left=0,
     capture_top=0,
     mode=CENTER_320,
+    captured_at=None,
 ):
     pixels = rgb_frame() if pixels is None else pixels
     height, width = pixels.shape[:2]
@@ -53,6 +54,7 @@ def captured_frame(
         width,
         height,
         mode,
+        captured_at,
     )
 
 
@@ -435,6 +437,49 @@ class AiServiceTests(unittest.TestCase):
             ),
             (320, 320, 1920, 1080, 800, 380),
         )
+
+    def test_worker_publishes_source_capture_time_in_both_snapshots(self):
+        source_time = 9.75
+        capture = FakeCapture([captured_frame(captured_at=source_time)])
+        detection = Detection(150, 150, 170, 170, 0.9, 7)
+        service = AiService(
+            lambda _event: None,
+            detector_factory=lambda _path: SequenceDetector([(detection,)]),
+            capture_factory=lambda _mode: capture,
+            clock=MutableClock(10.0),
+        )
+        self.addCleanup(service.close)
+
+        service.start(AimSettings)
+
+        self.assertTrue(wait_until(lambda: service.latest_snapshot() is not None))
+        self.assertEqual(service.latest_snapshot().captured_at, source_time)
+        self.assertEqual(
+            service.latest_detection_snapshot().captured_at,
+            source_time,
+        )
+
+    def test_future_capture_timestamp_uses_runtime_error_cleanup(self):
+        capture = CountingCapture([captured_frame(captured_at=10.01)])
+        events = []
+        service = AiService(
+            events.append,
+            detector_factory=lambda _path: FakeDetector(),
+            capture_factory=lambda _mode: capture,
+            clock=MutableClock(10.0),
+        )
+        self.addCleanup(service.close)
+
+        with self.assertLogs("jitter_app.ai.service", level="ERROR"):
+            service.start(AimSettings)
+            self.assertTrue(capture.closed.wait(1.0))
+
+        self.assertIsNone(service.latest_snapshot())
+        self.assertIsNone(service.latest_detection_snapshot())
+        self.assertEqual(capture.close_calls, 1)
+        self.assertEqual(service.status, "error")
+        error = next(event for event in events if event.kind == "error")
+        self.assertEqual(error.payload, "ValueError: AI service failed")
 
     def test_inconsistent_captured_frame_geometry_uses_runtime_error_cleanup(self):
         malformed_frames = (

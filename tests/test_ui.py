@@ -18,6 +18,7 @@ from jitter_app.ai.service import AiEvent
 from jitter_app.ai.targeting import (
     AimSettings,
     DEFAULT_RESPONSE_CURVE,
+    DetectionFrameSnapshot,
     response_curve_value,
 )
 from jitter_app.motion.combined import MotionSources
@@ -5196,6 +5197,101 @@ class JitterLayoutTests(unittest.TestCase):
             ),
         )
         self.assertIsNotNone(self.app._overlay_after_id)
+
+    def test_overlay_poll_uses_display_derived_capture_cadence(self):
+        self.app.close_app()
+        app = self.make_app(
+            runtime_cadence=RuntimeCadence(240, 240, 1000),
+        )
+
+        with mock.patch.object(
+            app,
+            "after",
+            return_value="overlay-poll",
+        ) as after:
+            app.toggle_overlay()
+
+        after.assert_called_once_with(4, app._poll_overlay)
+
+    def test_overlay_poll_skips_duplicate_frame_but_renders_new_sequence(self):
+        self.app.close_app()
+        app = self.make_app(clock=lambda: 10.1)
+        first = DetectionFrameSnapshot(1, 10.0, (), None)
+        self.ai.detection_snapshot = first
+
+        with mock.patch.object(app, "after", return_value="overlay-poll"):
+            app.toggle_overlay()
+            self.assertEqual(len(self.overlay.rendered), 1)
+
+            app._cancel_after("_overlay_after_id")
+            app._poll_overlay()
+            self.assertEqual(len(self.overlay.rendered), 1)
+
+            app._cancel_after("_overlay_after_id")
+            self.ai.detection_snapshot = DetectionFrameSnapshot(
+                2,
+                10.0,
+                (),
+                None,
+            )
+            app._poll_overlay()
+
+        self.assertEqual(len(self.overlay.rendered), 2)
+
+    def test_overlay_poll_renders_once_when_frame_becomes_stale(self):
+        self.app.close_app()
+        now = [10.10]
+        app = self.make_app(clock=lambda: now[0])
+        self.ai.detection_snapshot = DetectionFrameSnapshot(
+            1,
+            10.0,
+            (),
+            None,
+        )
+
+        with mock.patch.object(app, "after", return_value="overlay-poll"):
+            app.toggle_overlay()
+            self.assertEqual(len(self.overlay.rendered), 1)
+
+            app._cancel_after("_overlay_after_id")
+            now[0] = 10.151
+            app._poll_overlay()
+            self.assertEqual(len(self.overlay.rendered), 2)
+
+            app._cancel_after("_overlay_after_id")
+            now[0] = 10.20
+            app._poll_overlay()
+
+        self.assertEqual(len(self.overlay.rendered), 2)
+
+    def test_overlay_poll_redraws_when_runtime_or_style_changes(self):
+        self.app.close_app()
+        app = self.make_app(clock=lambda: 10.1)
+        self.ai.detection_snapshot = DetectionFrameSnapshot(
+            1,
+            10.0,
+            (),
+            None,
+        )
+
+        with mock.patch.object(app, "after", return_value="overlay-poll"):
+            app.toggle_overlay()
+            self.assertEqual(len(self.overlay.rendered), 1)
+
+            app._cancel_after("_overlay_after_id")
+            app._poll_overlay()
+            self.assertEqual(len(self.overlay.rendered), 1)
+
+            app._cancel_after("_overlay_after_id")
+            app.ai_fps_var.set("60 FPS")
+            app._poll_overlay()
+            self.assertEqual(len(self.overlay.rendered), 2)
+
+            app._cancel_after("_overlay_after_id")
+            app.overlay_player_visible = False
+            app._poll_overlay()
+
+        self.assertEqual(len(self.overlay.rendered), 3)
 
     def test_overlay_poll_publishes_complete_default_runtime_style(self):
         self.app.toggle_overlay()

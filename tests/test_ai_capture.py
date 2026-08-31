@@ -14,10 +14,12 @@ from jitter_app.ai.capture import (
 
 
 class FakeCamera:
-    def __init__(self, width=1920, height=1080, frame=None):
+    def __init__(self, width=1920, height=1080, frame=None, timestamp=12.25):
         self.width = width
         self.height = height
         self.frame = frame
+        self.timestamp = timestamp
+        self.returned_frame = None
         self.start_kwargs = None
         self.started = False
         self.stop_calls = 0
@@ -29,7 +31,16 @@ class FakeCamera:
 
     def get_latest_frame(self, **kwargs):
         self.get_latest_frame_kwargs = kwargs
-        return self.frame
+        if self.frame is None:
+            return None
+        self.returned_frame = (
+            np.array(self.frame, copy=True, order="C")
+            if kwargs.get("copy")
+            else self.frame
+        )
+        if kwargs.get("with_timestamp"):
+            return self.returned_frame, self.timestamp
+        return self.returned_frame
 
     def stop(self):
         self.stop_calls += 1
@@ -105,8 +116,13 @@ class CaptureTests(unittest.TestCase):
         self.assertEqual(camera.start_kwargs, {
             "region": (800, 380, 1120, 700), "target_fps": 165,
         })
-        self.assertEqual(camera.get_latest_frame_kwargs, {"copy": True})
+        self.assertEqual(
+            camera.get_latest_frame_kwargs,
+            {"copy": True, "with_timestamp": True},
+        )
         self.assertIsInstance(frame, CapturedFrame)
+        self.assertIs(frame.pixels, camera.returned_frame)
+        self.assertEqual(frame.captured_at, 12.25)
         self.assertEqual(
             (
                 frame.output_width,
@@ -124,6 +140,58 @@ class CaptureTests(unittest.TestCase):
         self.assertFalse(np.shares_memory(frame.pixels, source))
         self.assertEqual(frame.pixels.shape, (320, 320, 3))
         self.assertEqual(frame.pixels.dtype, np.uint8)
+
+    def test_read_defensively_copies_borrowed_or_noncontiguous_frame(self):
+        class BorrowedFrameCamera(FakeCamera):
+            def __init__(self):
+                super().__init__()
+                self.storage = np.zeros((320, 640, 3), dtype=np.uint8)
+                self.view = self.storage[:, ::2, :]
+
+            def get_latest_frame(self, **kwargs):
+                self.get_latest_frame_kwargs = kwargs
+                return self.view, 4.5
+
+        camera = BorrowedFrameCamera()
+        capture = DxcamCapture(camera_factory=RecordingCameraFactory(camera))
+        capture.start()
+
+        frame = capture.read()
+
+        self.assertTrue(frame.pixels.flags.owndata)
+        self.assertTrue(frame.pixels.flags.c_contiguous)
+        np.testing.assert_array_equal(frame.pixels, camera.view)
+        self.assertFalse(np.shares_memory(frame.pixels, camera.view))
+        self.assertEqual(frame.captured_at, 4.5)
+
+    def test_read_rejects_malformed_timestamped_results(self):
+        valid_frame = np.zeros((320, 320, 3), dtype=np.uint8)
+        malformed_results = (
+            valid_frame,
+            (valid_frame,),
+            (valid_frame, 1.0, "extra"),
+            (valid_frame, True),
+            (valid_frame, -1.0),
+            (valid_frame, float("nan")),
+            (valid_frame, float("inf")),
+        )
+
+        class ResultCamera(FakeCamera):
+            def __init__(self, result):
+                super().__init__()
+                self.result = result
+
+            def get_latest_frame(self, **kwargs):
+                self.get_latest_frame_kwargs = kwargs
+                return self.result
+
+        for result in malformed_results:
+            with self.subTest(result_type=type(result), result=result):
+                camera = ResultCamera(result)
+                capture = DxcamCapture(camera_factory=RecordingCameraFactory(camera))
+                capture.start()
+                with self.assertRaises(ValueError):
+                    capture.read()
 
     def test_full_display_capture_requests_native_output(self):
         source = np.zeros((1080, 1920, 3), dtype=np.uint8)

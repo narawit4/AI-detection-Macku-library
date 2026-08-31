@@ -3,6 +3,7 @@
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 import logging
+import math
 from pathlib import Path
 import threading
 import time
@@ -40,6 +41,7 @@ from .zoom import (
 
 LOGGER = logging.getLogger(__name__)
 _CAPTURE_GEOMETRY_ERROR = "AI captured frame geometry is inconsistent"
+_CAPTURE_TIMESTAMP_ERROR = "AI captured frame timestamp is inconsistent"
 
 
 @dataclass(frozen=True)
@@ -129,6 +131,23 @@ def _validate_captured_frame(
         captured.capture_left,
         captured.capture_top,
     )
+
+
+def _validated_capture_timestamp(
+    captured_at: float | None,
+    observed_at: float,
+) -> float:
+    if captured_at is None:
+        return observed_at
+    if (
+        isinstance(captured_at, bool)
+        or not isinstance(captured_at, (int, float))
+        or (isinstance(captured_at, float) and not math.isfinite(captured_at))
+        or captured_at < 0.0
+        or captured_at > observed_at
+    ):
+        raise ValueError(_CAPTURE_TIMESTAMP_ERROR)
+    return float(captured_at)
 
 
 class AiService:
@@ -472,7 +491,11 @@ class AiService:
                     captured,
                     generation_capture_mode,
                 )
-                captured_at = self._clock()
+                observed_at = self._clock()
+                captured_at = _validated_capture_timestamp(
+                    captured.captured_at,
+                    observed_at,
+                )
                 sequence += 1
                 with self._lock:
                     targeting_revision = self._targeting_revision
