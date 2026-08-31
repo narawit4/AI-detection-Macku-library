@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-31
 
-**Status:** Approved design; pending specification review
+**Status:** Approved for implementation
 
 ## Summary
 
