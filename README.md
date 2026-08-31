@@ -50,7 +50,7 @@ Jitter เป็นโปรแกรมเดสก์ท็อปสำหร�
 - มี `Test 3s` สำหรับทดสอบแหล่งการเคลื่อนไหวที่เลือกเป็นเวลา 3 วินาที
 - มี global hotkey ค่าเริ่มต้น `-` สำหรับสลับ Master หนึ่งครั้งต่อการกด
 - ใช้ ONNX Runtime DirectML เป็น provider หลัก และมี CPU fallback
-- DXCam จับภาพ RGB ของจอหลักทั้งหมดที่ native resolution; แต่ละ base frame จะถูก letterbox แบบรักษาอัตราส่วนไปยัง model input สี่เหลี่ยม 160, 320 หรือ 640 ที่กำลังใช้งาน โดย unused letterbox pixels are filled with RGB value 114 และ detection จะ map กลับเป็นพิกัด source-screen
+- `Capture Mode` เป็น runtime-only: `Center 320` คือค่าเริ่มต้นและจับภาพจริงเป็นสี่เหลี่ยม 320×320 ตรงกลางจอหลัก ส่วน `Full Display` จับภาพจอหลักทั้งหมดที่ native resolution; ใช้ได้เพียงหนึ่ง mode/AI generation ต่อครั้ง แล้ว letterbox base frame แบบรักษาอัตราส่วนไปยัง model input สี่เหลี่ยม 160, 320 หรือ 640 โดย unused letterbox pixels are filled with RGB value 114 และ detection จะ map กลับเป็นพิกัด source-screen
 - เลือก detection ใกล้ crosshair ที่สุดจาก head และ player รวมกันทุกเฟรม
 - มี response curve 5 จุด, time-based smoothing และ Max Step
 - ปรับ capture cadence ตาม refresh rate ของจอหลัก (สูงสุด 240 FPS) และใช้ motion servo เป้าหมายคงที่ 1,000 Hz ซึ่งเป็นอิสระจาก capture และ inference cadence; อัตราที่ส่งถึง USB/HID จริงขึ้นกับ Makcu, USB และ scheduling ของ Windows
@@ -60,11 +60,11 @@ Jitter เป็นโปรแกรมเดสก์ท็อปสำหร�
 
 ## หลักการเลือกเป้าหมาย AI
 
-AI Aim ใช้ source frame เต็มจอหลักที่ native resolution แล้ว letterbox แบบรักษา
-อัตราส่วนเข้าสู่ model input สี่เหลี่ยม 160, 320 หรือ 640 ที่กำลังใช้งาน โดย unused letterbox pixels are filled with RGB value 114 พิกัด
-detection จะถูก map กลับเป็น source-screen ก่อนเลือกเป้าหมาย โดยใช้จุดกึ่งกลางของ
-source frame จริง; canonical/model-space 320 ใช้เฉพาะ policy การตอบสนองหลัง map
-แล้ว ไม่ใช่ capture หรือ overlay geometry ทุกเฟรมมีขั้นตอนดังนี้:
+AI Aim ใช้ source frame ของ `Capture Mode` ที่เลือก: `Center 320` ใช้สี่เหลี่ยม
+320×320 ตรงกลางจอหลัก ส่วน `Full Display` ใช้จอหลักทั้งหมดที่ native resolution
+แล้ว letterbox แบบรักษาอัตราส่วนเข้าสู่ model input สี่เหลี่ยม 160, 320 หรือ 640
+ที่กำลังใช้งาน โดย unused letterbox pixels are filled with RGB value 114 พิกัด
+detection จะถูก map กลับเป็น source-screen ก่อนเลือกเป้าหมาย; the crosshair center comes from the selected source frame. canonical/model-space 320 ใช้เฉพาะ policy การตอบสนองหลัง map แล้ว ไม่ใช่ capture หรือ overlay geometry ทุกเฟรมมีขั้นตอนดังนี้:
 
 1. รับ detection จากโมเดล ONNX
 2. เก็บเฉพาะ class ที่รองรับและมี confidence ถึงค่าที่กำหนด
@@ -143,6 +143,7 @@ python main.py
 - `Master` จะอยู่ในสถานะปิด
 - `Overlay` จะอยู่ในสถานะปิด
 - โมเดลเริ่มต้นคือ `models/all_games_320.onnx`
+- `Capture Mode` เริ่มต้นเป็น `Center 320` เสมอ
 - global hotkey เริ่มต้นคือ `-`
 
 ## ขั้นตอนใช้งานแบบย่อ
@@ -186,6 +187,7 @@ Presets:
 | `Smoothing` | 0.00–0.95 | 0.65 | ความนุ่มของการเปลี่ยนความเร็วตามเวลา |
 | `Max Step` | 1–127 | 20 | delta สูงสุดที่รายงานต่อรอบ servo |
 | `Target Area` | Head/Upper Body/Chest | Head | ระดับแนวตั้งของ aim point |
+| `Capture Mode` | Center 320/Full Display | Center 320 | ขอบเขตการจับภาพ AI แบบ runtime-only |
 
 AI Aim ใช้ time-based servo microsteps เพื่อให้การขยับระหว่างเฟรม inference
 ต่อเนื่องขึ้น เป้าหมายที่ยังใช้ไม่หมดจะหมดอายุเมื่อผ่าน 150 ms เพื่อไม่ให้ส่ง
@@ -245,21 +247,25 @@ models/all_games_320.onnx
 ```
 
 
-DXCam จับภาพจอหลักทั้งหมดที่ native resolution สำหรับทุกโมเดล แล้ว
+`Center 320` จับภาพจริงเป็นพื้นที่ตรงกลางจอหลักขนาด 320×320 และเป็นค่าเริ่มต้น
+ทุก launch; `Full Display` จับภาพจอหลักทั้งหมดที่ native resolution. ทั้งสองเป็น
+`Capture Mode` แบบ runtime-only และมีเพียงหนึ่ง mode/AI generation ต่อครั้ง
 `jitter_app/ai/detection.py` owns the integer letterbox canvas สำหรับ model input
 สี่เหลี่ยม 160×160, 320×320 หรือ 640×640 โดยใช้ `jitter_app/ai/resize.py` เฉพาะ
 deterministic rectangular bilinear RGB resizing เท่านั้น detector decode ทั้ง legacy และ raw
-ใน model space แล้ว inverse map ผลลัพธ์กลับเป็นพิกัด source-screen ก่อนเผยแพร่ FOV, targeting และ Overlay จึงใช้
-geometry ของจอหลักจริง ไม่ใช่ canonical 320×320; canonical 320 ใช้เฉพาะ threshold
-policy ที่ไม่ขึ้นกับความละเอียด โมเดล 160 อาจใช้ inference น้อยลง, 320 เป็นจุดสมดุล
-เริ่มต้น และ 640 อาจใช้เวลามากขึ้น ทั้งหมดนี้ไม่รับประกัน FPS หรือความแม่นยำ
+ใน model space แล้ว inverse map ผลลัพธ์กลับเป็นพิกัด source-screen ก่อนเผยแพร่ FOV,
+targeting และ Overlay; canonical 320 ใช้เฉพาะ threshold policy ที่ไม่ขึ้นกับความละเอียด
+โมเดล 160 อาจใช้ inference น้อยลง, 320 เป็นจุดสมดุลเริ่มต้น และ 640 อาจใช้เวลามากขึ้น
+ทั้งหมดนี้ไม่รับประกัน FPS หรือความแม่นยำ
 
-โมเดล bundled 320 อาจสูญเสียรายละเอียดของเป้าหมายขนาดเล็กเมื่อประมวลผลพื้นที่จอ
-wide-screen ทั้งหมด โมเดลภายนอก 640 ที่ compatible ช่วยเพิ่ม model-input detail ได้
-แต่เป็น runtime-only เท่านั้น และไม่มี capture geometry ใดถูกบันทึกถาวร
+โมเดล bundled 320 อาจสูญเสียรายละเอียดของเป้าหมายขนาดเล็กเมื่อ `Full Display`
+ประมวลผลพื้นที่จอ wide-screen ทั้งหมด โมเดลภายนอก 640 ที่ compatible ช่วยเพิ่ม
+model-input detail ได้ แต่เป็น runtime-only เท่านั้น และไม่มี capture geometry ใดถูก
+บันทึกถาวร
 
-โมเดลเริ่มต้นเมื่อเปิดโปรแกรมยังคงเป็น bundled `models/all_games_320.onnx` เสมอ path และขนาดของ
-โมเดลภายนอกเป็น runtime-only: ไม่ถูกบันทึกลง config, copy, หรือ package ไปกับ release
+โมเดลเริ่มต้นเมื่อเปิดโปรแกรมยังคงเป็น bundled `models/all_games_320.onnx` เสมอ และ
+`Capture Mode` กลับเป็น `Center 320`; path และขนาดของโมเดลภายนอกเป็น runtime-only:
+ไม่ถูกบันทึกลง config, copy, หรือ package ไปกับ release
 
 แถว `MODEL` จะแสดง `Default · all_games_320.onnx · 320×320` ปุ่ม `Browse...` ใช้เลือก
 ไฟล์ `.onnx` ภายนอกสำหรับ process ปัจจุบัน และ `Use Default` ใช้กลับไปโมเดลหลัก
@@ -326,6 +332,10 @@ source-screen จะถูก project ทับบน canvas ของจอห�
 - การซ่อนกล่อง head ไม่ได้ตัด head ออกจาก target selection
 - Overlay-only สามารถเรียก inference ได้โดยไม่เปิด AI Aim สำหรับ movement
 
+ใน `Center 320` Overlay แปลพิกัดผ่าน viewport 320×320 ที่จับภาพจริงตรงกลางจอ
+ส่วน `Full Display` ใช้ viewport เต็มจอ; ทั้งสองยังแสดงบน Overlay เต็มจอเดียวกัน
+และ HUD อยู่ที่มุมจอตามที่ตั้งไว้
+
 เมื่อเกิด AI runtime error โปรแกรมจะซ่อน Overlay และยกเลิกการเลือก AI Aim
 หากยังเลือก Jitter และ Master เปิดอยู่ Jitter จะทำงานต่อผ่าน gate เดิม แต่ถ้ามี
 AI Aim อย่างเดียว โปรแกรมจะปิด Master
@@ -334,7 +344,7 @@ AI Aim อย่างเดียว โปรแกรมจะปิด Maste
 
 - `Master`: arm แหล่งการเคลื่อนไหวที่เลือก
 - Global hotkey `-`: สลับ Master หนึ่งครั้งต่อการกด
-- `Test 3s`: ใช้ engine จริงของแหล่งที่เลือกตอนเริ่ม test และข้าม Trigger ชั่วคราว
+- `Test 3s`: ใช้ engine จริงของแหล่งและ `Capture Mode` ที่เลือกตอนเริ่ม test, ถือ mode ไว้ตลอด test และข้าม Trigger ชั่วคราว
 - `STOP`: ยกเลิก movement, test, Overlay และ inference demand ทันที
 
 เหตุการณ์ต่อไปนี้จะส่งสัญญาณหยุดโดยไม่รอ movement interval ปกติ:
@@ -347,6 +357,15 @@ AI Aim อย่างเดียว โปรแกรมจะปิด Maste
 - ปิดโปรแกรม
 
 การปิดหน้าต่างคือการออกจากโปรแกรม ไม่มี system tray
+
+เมื่อสลับ `Capture Mode` แบบสด ระบบจะล้าง target/detection เก่าและแทนที่เฉพาะ AI
+generation โดยคง Master, source selection, Jitter และ Overlay ที่ทำงานสำเร็จไว้
+generation ใหม่จะเริ่มหลัง capture/model resources ของ generation เก่าถูก retire จริง
+ตามเงื่อนไขแล้วเท่านั้น จึงไม่มีการ start ซ้อนทันที. Model candidate และ rollback ใช้
+`Capture Mode` ที่เลือกอยู่; `STOP` หรือ AI error ไม่เปลี่ยน runtime selection นี้
+
+การสลับ mode หรือ model จะใช้ไม่ได้ระหว่าง `Test 3s` และช่วง transition ที่ป้องกันไว้
+ไม่มี config schema field, dependency, bundled model หรือ packaging change เพิ่มขึ้น
 
 ## ไฟล์ตั้งค่าและข้อมูลผู้ใช้
 
@@ -367,8 +386,8 @@ Schema 5 บันทึกค่าที่ผ่าน validation รวม�
 - global hotkey และการตั้งค่าเสียง
 
 สิ่งที่ไม่ถูกบันทึก ได้แก่ source selection, Master, Overlay visibility,
-Target Area, model path ภายนอก, target/snapshot, FPS, provider, display cadence,
-servo cadence และ zoom status
+Target Area, `Capture Mode`, model path ภายนอก, target/snapshot, FPS, provider,
+display cadence, servo cadence และ zoom status
 
 หากพบ schema 6 หรือใหม่กว่าซึ่งโปรแกรมรุ่นนี้ไม่รองรับ โปรแกรมจะใช้ค่า default
 ในหน่วยความจำ ปิดการ save และไม่แก้ไฟล์ต้นฉบับ
@@ -431,7 +450,7 @@ Overlay ถูกออกแบบให้ click-through และ capture-exc
 - `jitter_app/__init__.py`
 - `jitter_app/resources.py`
 - `jitter_app/ai/__init__.py`
-- `jitter_app/ai/capture.py`: DXCam wrapper สำหรับ capture จอหลักทั้งหมดที่ native resolution
+- `jitter_app/ai/capture.py`: owns centered and full-primary regions สำหรับ DXCam capture (`Center 320` และ `Full Display`)
 - `jitter_app/ai/detection.py`: integer letterbox transform/canvas, legacy และ raw decoder boundaries, และ inverse mapping จาก model space กลับเป็น source-screen
 - `jitter_app/ai/model_selection.py`
 - `jitter_app/ai/service.py`

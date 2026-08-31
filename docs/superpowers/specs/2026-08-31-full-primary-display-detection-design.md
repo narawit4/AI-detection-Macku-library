@@ -1,5 +1,11 @@
 # Full Primary-Display Detection Design
 
+> Superseded in one respect by
+> `2026-08-31-dual-ai-capture-mode-design.md`: Full Display is selectable,
+> while Center 320 is restored as the runtime startup default. The geometry,
+> letterbox, targeting, zoom, and Overlay rules here remain active for Full
+> Display.
+
 **Date:** 2026-08-31
 
 **Status:** Approved for implementation
@@ -290,8 +296,8 @@ zoom factor remain runtime status only.
 
 ## UI and Configuration
 
-No dashboard or Overlay-customizer control is added. Full-primary-display
-detection is the sole capture mode.
+See `2026-08-31-dual-ai-capture-mode-design.md` for the selectable capture-mode
+UI; this historical design remains the Full Display behavior.
 
 There is no configuration-schema change. No display size, capture mode,
 letterbox state, target, box, model path, or runtime cadence is serialized.

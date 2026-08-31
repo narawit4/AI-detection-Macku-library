@@ -26,8 +26,8 @@ features.
 - `jitter_app/__init__.py`: application package marker.
 - `jitter_app/resources.py`: bundle and repository resource resolution.
 - `jitter_app/ai/__init__.py`: AI package marker.
-- `jitter_app/ai/capture.py`: complete native primary-output DXCam capture
-  wrapper.
+- `jitter_app/ai/capture.py`: DXCam boundary that owns the centered 320-by-320
+  and full-primary physical capture regions.
 - `jitter_app/ai/detection.py`: dual-contract ONNX Runtime detector boundary for
   legacy post-NMS `[1,300,6]` and raw single-class `[1,5,K]` outputs.
 - `jitter_app/ai/model_selection.py`: runtime-only external ONNX selection and
@@ -116,11 +116,14 @@ with the supported Windows Python installation.
 - Jitter and AI Aim are independent selected sources; both start unselected.
   Master and the global hotkey arm the selected sources, while actual movement
   requires Trigger plus the configured Modifier, if any.
-- AI Aim captures the complete native primary output and uses the bundled
-  startup-default model, considers accepted heads and players together, and
-  shares the same Trigger/Modifier gate. Letterbox each full base frame and
-  refinement crop into the active 160-, 320-, or 640-pixel model square while
-  preserving aspect ratio.
+- AI Aim has a runtime-only `Capture Mode`: startup-default `Center 320`
+  physically captures the centered 320-by-320 primary-display square, while
+  `Full Display` captures the native complete primary output. Exactly one mode
+  and one AI generation run at a time. Both modes use the bundled startup-default
+  model, consider accepted heads and players together, and share the same
+  Trigger/Modifier gate. Letterbox each base frame and refinement crop into the
+  active 160-, 320-, or 640-pixel model square while preserving aspect ratio;
+  unused letterbox pixels are RGB value 114.
   `Browse...` accepts only runtime external ONNX models whose `images` float input
   is exactly `[1,3,N,N]` for N in 160, 320, or 640 and whose `output0` float output
   is exactly either legacy `[1,300,6]` or raw single-class `[1,5,K]`, with
@@ -132,12 +135,16 @@ with the supported Windows Python installation.
   into the source frame, publish that source-screen geometry atomically, and
   use canonical 320 normalization only for resolution-independent movement
   policy thresholds. Validate off the UI thread, pause AI during a switch, and
-  after its exact ready event restart the eligible AI runtime and motion. A
+  after its exact ready event restart the eligible AI runtime and motion. Live
+  capture-mode switching clears old publications and replaces only the AI
+  generation, preserving successful Master, source, Jitter, and Overlay state;
+  its successor starts only after condition-based physical retirement of the
+  old capture/model resources, never as an overlapping immediate start. A
   candidate startup failure makes exactly one automatic rollback attempt to
-  restart the previous model. Legacy `[1,300,6]` behavior, downstream canonical
-  `Detection`, and the bundled startup model remain unchanged. Never download,
-  copy, package, or persist an external model or its path; every launch starts
-  with the bundled 320 model.
+  restart the previous model using the selected capture mode. Legacy `[1,300,6]`
+  behavior, downstream canonical `Detection`, and the bundled startup model
+  remain unchanged. Never download, copy, package, or persist an external model
+  or its path; every launch starts with the bundled 320 model and `Center 320`.
 - On every base frame, filter detections by confidence and supported class,
   derive the configured aim point for every accepted head and player, and
   select the point with the shortest Euclidean distance to the actual source
@@ -184,8 +191,9 @@ with the supported Windows Python installation.
   has no target.
 - The optional overlay starts off and is independent of source selection. It
   fills the primary display, must be click-through and excluded from capture,
-  and projects source-screen detection coordinates across the complete current
-  primary-display canvas. Its screen-top-left runtime HUD reports FPS,
+  and projects full-display and centered-view source coordinates through their
+  captured viewport onto the complete current primary-display canvas. Its
+  screen-top-left runtime HUD reports FPS,
   provider, zoom, and the current-frame `HEAD`, `PLAYER`, or `NONE` lock; a
   detection frame older than 150 ms reports `NONE`. Head-box visibility
   affects only the overlay; AI Aim still considers hidden head boxes for
@@ -198,14 +206,15 @@ with the supported Windows Python installation.
 - STOP immediately cancels movement, hides the overlay, and ends its inference
   demand. Disable, disconnect, and source changes immediately cancel movement;
   AI inference continues only while the visible independent overlay requires
-  it. Shutdown ends both movement and inference.
+  it. Shutdown ends both movement and inference. STOP and AI errors retain the
+  runtime capture selection, but every new launch resets it to `Center 320`.
 - An AI runtime error hides the overlay and deselects AI Aim. With Jitter still
   selected under Master, continue or restart Jitter through the same gate;
   an AI-only failure disarms Master.
-- `Test 3s` uses the production engine for the sources selected at test start,
+- `Test 3s` uses the production engine and capture mode selected at test start,
   bypasses Trigger temporarily, requires Makcu, and remains immediately
-  interruptible by STOP or disconnect. Model changes are unavailable during a
-  Test 3s run.
+  interruptible by STOP or disconnect. Capture-mode and model changes are
+  unavailable during a `Test 3s` run.
 - The configurable global hotkey defaults to `-` and toggles once per press.
 - Makcu connection uses the supported `makcu` library with automatic
   reconnection and button monitoring.
@@ -242,9 +251,9 @@ with the supported Windows Python installation.
   disable saving, and leave its source file byte-for-byte unchanged.
 - The response curve is the only new persisted setting. Do not persist
   motion-source selection, Master state, overlay visibility, target history,
-  AI targets, model selection or external model paths, snapshots, FPS, provider,
-  cadence, zoom status, or other runtime state. Adaptive Zoom and adaptive
-  cadence add no persisted control.
+  AI targets, capture mode, model selection or external model paths, snapshots,
+  FPS, provider, cadence, zoom status, or other runtime state. Adaptive Zoom
+  and adaptive cadence add no persisted control.
 - Write configuration through a temporary file, flush and `fsync`, keep a
   backup, and replace atomically.
 - Do not persist held-button or Moving state.
@@ -287,9 +296,10 @@ python .\distribution_metadata.py --review-json
 ```
 
 Hardware-dependent changes additionally require a connected Makcu device to
-verify connection, Trigger/Modifier buttons, each Jitter/AI Aim source
-combination, combined movement, reconnect, Test Run, global hotkey, STOP,
-shutdown, and the optional click-through capture-excluded overlay.
+verify connection, Trigger/Modifier buttons, both AI capture modes, each
+Jitter/AI Aim source combination, combined movement, reconnect, Test Run,
+global hotkey, STOP, shutdown, and the optional click-through capture-excluded
+overlay.
 
 For an explicitly requested confirmed packaged build, run `.\gen.bat` and
 type `BUILD`, then verify
