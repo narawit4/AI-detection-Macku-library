@@ -47,6 +47,10 @@ class DetectionFrameSnapshot:
     selected_index: int | None
     frame_width: int = 320
     frame_height: int = 320
+    output_width: int | None = None
+    output_height: int | None = None
+    capture_left: int = 0
+    capture_top: int = 0
 
 
 @dataclass(frozen=True)
@@ -263,6 +267,10 @@ def analyze_detections(
     previous: TargetSnapshot | None = None,
     frame_width: int = 320,
     frame_height: int = 320,
+    output_width: int | None = None,
+    output_height: int | None = None,
+    capture_left: int = 0,
+    capture_top: int = 0,
 ) -> DetectionAnalysis:
     """Select the nearest supported aim point from this frame only.
 
@@ -276,6 +284,22 @@ def analyze_detections(
         or frame_height <= 0
     ):
         raise ValueError("frame dimensions must be positive integers")
+    if output_width is None and output_height is None:
+        if capture_left != 0 or capture_top != 0:
+            raise ValueError("capture viewport must fit the primary output")
+    elif (
+        type(output_width) is not int
+        or output_width <= 0
+        or type(output_height) is not int
+        or output_height <= 0
+        or type(capture_left) is not int
+        or capture_left < 0
+        or type(capture_top) is not int
+        or capture_top < 0
+        or capture_left + frame_width > output_width
+        or capture_top + frame_height > output_height
+    ):
+        raise ValueError("capture viewport must fit the primary output")
     accepted = tuple(
         detection
         for detection in detections
@@ -316,6 +340,10 @@ def analyze_detections(
             selected_index,
             frame_width,
             frame_height,
+            output_width,
+            output_height,
+            capture_left,
+            capture_top,
         ),
     )
 

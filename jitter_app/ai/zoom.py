@@ -338,5 +338,9 @@ def compose_zoom_refinement(
             selected_index,
             base.frame.frame_width,
             base.frame.frame_height,
+            base.frame.output_width,
+            base.frame.output_height,
+            base.frame.capture_left,
+            base.frame.capture_top,
         ),
     )

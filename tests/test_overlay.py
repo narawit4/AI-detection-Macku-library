@@ -108,6 +108,117 @@ class OverlayProjectionTests(unittest.TestCase):
             (640.0, 360.0, 1920.0, 1080.0),
         )
 
+    def test_center_320_projection_uses_physical_capture_origin(self):
+        frame = DetectionFrameSnapshot(
+            1, 10.0,
+            (Detection(0, 0, 320, 320, 0.9, 0),),
+            0, 320, 320, 1920, 1080, 800, 380,
+        )
+        boxes = project_overlay_boxes(
+            frame, 10.0, canvas_width=1920, canvas_height=1080
+        )
+        self.assertEqual(
+            (boxes[0].x1, boxes[0].y1, boxes[0].x2, boxes[0].y2),
+            (800.0, 380.0, 1120.0, 700.0),
+        )
+
+    def test_center_320_projection_scales_output_space_to_canvas(self):
+        frame = DetectionFrameSnapshot(
+            1, 10.0,
+            (Detection(0, 0, 320, 320, 0.9, 0),),
+            0, 320, 320, 1920, 1080, 800, 380,
+        )
+        boxes = project_overlay_boxes(
+            frame, 10.0, canvas_width=960, canvas_height=540
+        )
+        self.assertEqual(
+            (boxes[0].x1, boxes[0].y1, boxes[0].x2, boxes[0].y2),
+            (400.0, 190.0, 560.0, 350.0),
+        )
+
+    def test_center_320_projection_supports_portrait_output(self):
+        frame = DetectionFrameSnapshot(
+            1,
+            10.0,
+            (Detection(0, 0, 320, 320, 0.9, 0),),
+            0,
+            320,
+            320,
+            1080,
+            1920,
+            380,
+            800,
+        )
+
+        boxes = project_overlay_boxes(
+            frame,
+            10.0,
+            canvas_width=540,
+            canvas_height=960,
+        )
+
+        self.assertEqual(
+            (boxes[0].x1, boxes[0].y1, boxes[0].x2, boxes[0].y2),
+            (190.0, 400.0, 350.0, 560.0),
+        )
+
+    def test_invalid_capture_viewport_projects_no_boxes(self):
+        detection = (Detection(0, 0, 320, 320, 0.9, 0),)
+        invalid_frames = (
+            DetectionFrameSnapshot(1, 10.0, detection, 0, 320, 320, None, 1080),
+            DetectionFrameSnapshot(1, 10.0, detection, 0, 320, 320, None, None, 1),
+            DetectionFrameSnapshot(1, 10.0, detection, 0, 320, 320, True, 1080),
+            DetectionFrameSnapshot(1, 10.0, detection, 0, 320, 320, 1920.0, 1080),
+            DetectionFrameSnapshot(1, 10.0, detection, 0, 320, 320, 1920, False),
+            DetectionFrameSnapshot(1, 10.0, detection, 0, 320, 320, 1920, 1080.0),
+            DetectionFrameSnapshot(1, 10.0, detection, 0, 320, 320, 1920, 1080, True),
+            DetectionFrameSnapshot(1, 10.0, detection, 0, 320, 320, 1920, 1080, 0, 1.0),
+            DetectionFrameSnapshot(1, 10.0, detection, 0, 320, 320, 0, 1080),
+            DetectionFrameSnapshot(1, 10.0, detection, 0, 320, 320, 1920, -1),
+            DetectionFrameSnapshot(1, 10.0, detection, 0, 320, 320, 1920, 1080, -1),
+            DetectionFrameSnapshot(1, 10.0, detection, 0, 320, 320, 1920, 1080, 0, -1),
+            DetectionFrameSnapshot(1, 10.0, detection, 0, 320, 320, 1000, 1080, 800),
+            DetectionFrameSnapshot(1, 10.0, detection, 0, 320, 320, 1920, 600, 0, 380),
+        )
+
+        for frame in invalid_frames:
+            with self.subTest(frame=frame):
+                self.assertEqual(
+                    project_overlay_boxes(
+                        frame,
+                        10.0,
+                        canvas_width=1920,
+                        canvas_height=1080,
+                    ),
+                    (),
+                )
+
+    def test_projection_clips_source_before_capture_origin_translation(self):
+        frame = DetectionFrameSnapshot(
+            1,
+            10.0,
+            (Detection(-50, -20, 100, 400, 0.9, 7),),
+            0,
+            320,
+            320,
+            1920,
+            1080,
+            800,
+            380,
+        )
+
+        boxes = project_overlay_boxes(
+            frame,
+            10.0,
+            canvas_width=1920,
+            canvas_height=1080,
+        )
+
+        self.assertEqual(
+            (boxes[0].x1, boxes[0].y1, boxes[0].x2, boxes[0].y2),
+            (800.0, 380.0, 900.0, 700.0),
+        )
+
     def test_projection_clamps_boxes_and_labels_to_canvas(self):
         frame = DetectionFrameSnapshot(
             1,

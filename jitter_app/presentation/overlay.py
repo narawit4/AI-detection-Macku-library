@@ -129,19 +129,57 @@ def project_overlay_boxes(
         or canvas_height <= 0
     ):
         return ()
+    output_width = snapshot.output_width
+    output_height = snapshot.output_height
+    capture_left = snapshot.capture_left
+    capture_top = snapshot.capture_top
+    if output_width is None and output_height is None:
+        if capture_left != 0 or capture_top != 0:
+            return ()
+        output_width = snapshot.frame_width
+        output_height = snapshot.frame_height
+    elif (
+        type(output_width) is not int
+        or output_width <= 0
+        or type(output_height) is not int
+        or output_height <= 0
+        or type(capture_left) is not int
+        or capture_left < 0
+        or type(capture_top) is not int
+        or capture_top < 0
+        or capture_left + snapshot.frame_width > output_width
+        or capture_top + snapshot.frame_height > output_height
+    ):
+        return ()
     box_width = max(1, min(8, int(box_width)))
-    x_scale = canvas_width / snapshot.frame_width
-    y_scale = canvas_height / snapshot.frame_height
+    x_scale = canvas_width / output_width
+    y_scale = canvas_height / output_height
     boxes = []
     for index, detection in enumerate(snapshot.detections):
         if not show_heads and detection.class_id == 7:
             continue
         if not show_players and detection.class_id == 0:
             continue
-        x1 = max(0.0, min(float(canvas_width), detection.x1 * x_scale))
-        y1 = max(0.0, min(float(canvas_height), detection.y1 * y_scale))
-        x2 = max(0.0, min(float(canvas_width), detection.x2 * x_scale))
-        y2 = max(0.0, min(float(canvas_height), detection.y2 * y_scale))
+        source_x1 = max(0.0, min(float(snapshot.frame_width), detection.x1))
+        source_y1 = max(0.0, min(float(snapshot.frame_height), detection.y1))
+        source_x2 = max(0.0, min(float(snapshot.frame_width), detection.x2))
+        source_y2 = max(0.0, min(float(snapshot.frame_height), detection.y2))
+        x1 = max(
+            0.0,
+            min(float(canvas_width), (capture_left + source_x1) * x_scale),
+        )
+        y1 = max(
+            0.0,
+            min(float(canvas_height), (capture_top + source_y1) * y_scale),
+        )
+        x2 = max(
+            0.0,
+            min(float(canvas_width), (capture_left + source_x2) * x_scale),
+        )
+        y2 = max(
+            0.0,
+            min(float(canvas_height), (capture_top + source_y2) * y_scale),
+        )
         if x2 <= x1 or y2 <= y1:
             continue
         boxes.append(OverlayBox(

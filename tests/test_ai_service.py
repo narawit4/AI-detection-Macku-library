@@ -7,7 +7,12 @@ from pathlib import Path
 import numpy as np
 
 from jitter_app.ai.service import AiEvent, AiService
-from jitter_app.ai.targeting import AimSettings, Detection
+from jitter_app.ai.targeting import (
+    AimSettings,
+    Detection,
+    DetectionFrameSnapshot,
+    analyze_detections as real_analyze_detections,
+)
 from jitter_app.motion.combined import CombinedMotionEngine, MotionSources
 from jitter_app.motion.engine import MotionSettings
 
@@ -607,6 +612,41 @@ class AiServiceTests(unittest.TestCase):
             (640, 360),
         )
 
+    def test_reset_targeting_preserves_explicit_capture_viewport(self):
+        service = AiService(lambda _event: None)
+        self.addCleanup(service.close)
+        detection = Detection(150, 150, 170, 170, 0.9, 7)
+        service._latest_detection = DetectionFrameSnapshot(
+            4,
+            2.0,
+            (detection,),
+            0,
+            320,
+            320,
+            1920,
+            1080,
+            800,
+            380,
+        )
+
+        service.reset_targeting()
+
+        self.assertEqual(
+            service.latest_detection_snapshot(),
+            DetectionFrameSnapshot(
+                4,
+                2.0,
+                (detection,),
+                None,
+                320,
+                320,
+                1920,
+                1080,
+                800,
+                380,
+            ),
+        )
+
     def test_reset_targeting_rejects_an_in_flight_old_setting_publication(self):
         player = Detection(140.0, 40.0, 180.0, 180.0, 0.9, 0)
         detector = SequentialDetector(((player,), (player,)))
@@ -626,25 +666,49 @@ class AiServiceTests(unittest.TestCase):
                 release_provider.wait(1.0)
             return AimSettings(target_area="head")
 
+        def analyze_with_viewport(detections, settings, **kwargs):
+            return real_analyze_detections(
+                detections,
+                settings,
+                **kwargs,
+                output_width=1920,
+                output_height=1080,
+                capture_left=800,
+                capture_top=380,
+            )
+
         service, _events = self.make_zoom_service(detector, capture=capture)
-        service.start(settings_provider, lambda: False)
-        self.release_and_wait(capture, service, 1)
-        capture.release_frame()
-        self.assertTrue(provider_entered.wait(1.0))
+        with mock.patch(
+            "jitter_app.ai.service.analyze_detections",
+            side_effect=analyze_with_viewport,
+        ):
+            service.start(settings_provider, lambda: False)
+            self.release_and_wait(capture, service, 1)
+            capture.release_frame()
+            self.assertTrue(provider_entered.wait(1.0))
 
-        service.reset_targeting()
-        release_provider.set()
+            service.reset_targeting()
+            release_provider.set()
 
-        self.assertTrue(wait_until(
-            lambda: service.latest_detection_snapshot() is not None
-            and service.latest_detection_snapshot().sequence == 2
-        ))
+            self.assertTrue(wait_until(
+                lambda: service.latest_detection_snapshot() is not None
+                and service.latest_detection_snapshot().sequence == 2
+            ))
         self.assertIsNone(service.latest_snapshot())
         latest = service.latest_detection_snapshot()
         self.assertIsNone(latest.selected_index)
         self.assertEqual(
             (latest.frame_width, latest.frame_height),
             (800, 600),
+        )
+        self.assertEqual(
+            (
+                latest.output_width,
+                latest.output_height,
+                latest.capture_left,
+                latest.capture_top,
+            ),
+            (1920, 1080, 800, 380),
         )
 
     def test_crossing_targets_select_nearest_current_box(self):

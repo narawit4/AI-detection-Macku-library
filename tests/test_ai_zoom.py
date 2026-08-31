@@ -404,6 +404,42 @@ class ZoomCompositionTests(unittest.TestCase):
         )
         self.assertEqual(result.frame.detections[2], self.base_player().frame.detections[2])
 
+    def test_refinement_preserves_capture_viewport(self):
+        original = self.base_player()
+        base = DetectionAnalysis(
+            original.target,
+            DetectionFrameSnapshot(
+                original.frame.sequence,
+                original.frame.captured_at,
+                original.frame.detections,
+                original.frame.selected_index,
+                original.frame.frame_width,
+                original.frame.frame_height,
+                1920,
+                1080,
+                800,
+                380,
+            ),
+        )
+
+        result = compose_zoom_refinement(
+            base,
+            (Detection(70, 35, 90, 55, 0.92, 7),),
+            ZoomTransform(80, 40, 160, 160, 320, 320, 2.0),
+            AimSettings(confidence=0.35),
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(
+            (
+                result.frame.output_width,
+                result.frame.output_height,
+                result.frame.capture_left,
+                result.frame.capture_top,
+            ),
+            (1920, 1080, 800, 380),
+        )
+
     def test_refinement_stays_with_selected_base_target_in_crowded_crop(self):
         base = DetectionAnalysis(
             TargetSnapshot(8, 31.0, "head", 100.0, 100.0),

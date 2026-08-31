@@ -111,6 +111,10 @@ class AiService:
                     None,
                     frame.frame_width,
                     frame.frame_height,
+                    frame.output_width,
+                    frame.output_height,
+                    frame.capture_left,
+                    frame.capture_top,
                 )
             return self._targeting_revision
 
@@ -447,6 +451,10 @@ class AiService:
                             None,
                             published.frame.frame_width,
                             published.frame.frame_height,
+                            published.frame.output_width,
+                            published.frame.output_height,
+                            published.frame.capture_left,
+                            published.frame.capture_top,
                         )
                     else:
                         self._latest = published.target

@@ -198,6 +198,76 @@ class TargetSelectionTests(unittest.TestCase):
                         frame_height=height,
                     )
 
+    def test_analysis_publishes_capture_viewport_without_changing_target_center(self):
+        result = analyze_detections(
+            (Detection(150, 150, 170, 170, 0.9, 7),),
+            AimSettings(),
+            sequence=4,
+            captured_at=2.0,
+            frame_width=320,
+            frame_height=320,
+            output_width=1920,
+            output_height=1080,
+            capture_left=800,
+            capture_top=380,
+        )
+        self.assertEqual((result.target.aim_x, result.target.aim_y), (160.0, 160.0))
+        self.assertEqual(
+            (
+                result.frame.output_width,
+                result.frame.output_height,
+                result.frame.capture_left,
+                result.frame.capture_top,
+            ),
+            (1920, 1080, 800, 380),
+        )
+
+    def test_omitted_viewport_retains_legacy_frame_relative_contract(self):
+        result = analyze_detections(
+            (), AimSettings(), sequence=1, captured_at=1.0,
+            frame_width=640, frame_height=360,
+        )
+        self.assertIsNone(result.frame.output_width)
+        self.assertIsNone(result.frame.output_height)
+        self.assertEqual((result.frame.capture_left, result.frame.capture_top),
+                         (0, 0))
+
+    def test_analysis_rejects_invalid_capture_viewport(self):
+        invalid_viewports = (
+            {"output_width": 1920},
+            {"output_height": 1080},
+            {"capture_left": 1},
+            {"output_width": True, "output_height": 1080},
+            {"output_width": 1920.0, "output_height": 1080},
+            {"output_width": 1920, "output_height": False},
+            {"output_width": 1920, "output_height": 1080.0},
+            {"output_width": 1920, "output_height": 1080, "capture_left": True},
+            {"output_width": 1920, "output_height": 1080, "capture_left": 1.0},
+            {"output_width": 1920, "output_height": 1080, "capture_top": False},
+            {"output_width": 1920, "output_height": 1080, "capture_top": 1.0},
+            {"output_width": 0, "output_height": 1080},
+            {"output_width": 1920, "output_height": -1},
+            {"output_width": 1920, "output_height": 1080, "capture_left": -1},
+            {"output_width": 1920, "output_height": 1080, "capture_top": -1},
+            {"output_width": 1000, "output_height": 1080, "capture_left": 800},
+            {"output_width": 1920, "output_height": 600, "capture_top": 380},
+        )
+        for viewport in invalid_viewports:
+            with self.subTest(viewport=viewport):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "^capture viewport must fit the primary output$",
+                ):
+                    analyze_detections(
+                        (),
+                        AimSettings(),
+                        sequence=1,
+                        captured_at=1.0,
+                        frame_width=320,
+                        frame_height=320,
+                        **viewport,
+                    )
+
     def test_analysis_filters_confidence_and_preserves_selected_box_index(self):
         low = Detection(1, 2, 10, 20, 0.20, 7)
         player = Detection(20, 30, 60, 130, 0.80, 0)
