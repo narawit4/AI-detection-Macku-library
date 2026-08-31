@@ -826,7 +826,7 @@ class AiServiceTests(unittest.TestCase):
     def test_refinement_replaces_only_confirmed_base_box_and_stays_out_of_tracker(self):
         selected = self.small_head(160.0)
         unrelated = Detection(20.0, 40.0, 40.0, 140.0, 0.9, 0)
-        refined = Detection(168.0, 150.0, 186.0, 168.0, 0.95, 7)
+        refined = Detection(112.0, 100.0, 124.0, 112.0, 0.95, 7)
         next_base = self.small_head(115.0)
         detector = SequentialDetector((
             (selected, unrelated),
@@ -852,6 +852,10 @@ class AiServiceTests(unittest.TestCase):
         self.assertNotEqual(published.detections[0], selected)
         self.assertEqual(published.detections[1], unrelated)
         self.assertEqual(published.selected_index, 0)
+        self.assertEqual(
+            [frame.shape for frame in detector.frames],
+            [(320, 320, 3), (213, 213, 3)],
+        )
 
         gate["active"] = False
         clock.set(10.01)
@@ -927,7 +931,7 @@ class AiServiceTests(unittest.TestCase):
 
     def test_first_small_target_uses_one_half_x_and_publishes_movement(self):
         base = (self.small_head(),)
-        refined = (Detection(142, 142, 178, 178, 0.93, 7),)
+        refined = (Detection(97, 97, 115, 115, 0.93, 7),)
         detector = SequentialDetector((base, refined))
         capture = ControlledCapture(
             [np.zeros((320, 320, 3), dtype=np.uint8)]
@@ -947,16 +951,21 @@ class AiServiceTests(unittest.TestCase):
             [1.5],
         )
         self.assertEqual(len(detector.frames), 2)
+        self.assertEqual(
+            [frame.shape for frame in detector.frames],
+            [(320, 320, 3), (213, 213, 3)],
+        )
 
     def test_stable_target_enters_two_x_then_recoil_downgrades(self):
         base = (self.small_head(),)
         jumped = (self.small_head(178.01),)
-        refined = (Detection(142, 142, 178, 178, 0.93, 7),)
+        one_half_refined = (Detection(97, 97, 115, 115, 0.93, 7),)
+        two_x_refined = (Detection(71, 71, 89, 89, 0.93, 7),)
         detector = SequentialDetector((
-            base, refined,
-            base, refined,
-            base, refined,
-            jumped, refined,
+            base, one_half_refined,
+            base, one_half_refined,
+            base, two_x_refined,
+            jumped, one_half_refined,
         ))
         capture = ControlledCapture([
             np.zeros((320, 320, 3), dtype=np.uint8)
@@ -990,10 +999,23 @@ class AiServiceTests(unittest.TestCase):
             [event.payload for event in events if event.kind == "zoom"],
             [1.5, 2.0, 1.5],
         )
+        self.assertEqual(
+            [frame.shape for frame in detector.frames],
+            [
+                (320, 320, 3),
+                (213, 213, 3),
+                (320, 320, 3),
+                (213, 213, 3),
+                (320, 320, 3),
+                (160, 160, 3),
+                (320, 320, 3),
+                (213, 213, 3),
+            ],
+        )
 
     def test_refinement_miss_resets_confirmation_without_holding_old_target(self):
         base = (self.small_head(),)
-        refined = (Detection(142, 142, 178, 178, 0.93, 7),)
+        refined = (Detection(97, 97, 115, 115, 0.93, 7),)
         detector = SequentialDetector((
             base, refined,
             base, refined,
@@ -1032,6 +1054,21 @@ class AiServiceTests(unittest.TestCase):
         self.assertEqual(
             [event.payload for event in events if event.kind == "zoom"],
             [1.5, 1.0, 1.5],
+        )
+        self.assertEqual(
+            [frame.shape for frame in detector.frames],
+            [
+                (320, 320, 3),
+                (213, 213, 3),
+                (320, 320, 3),
+                (213, 213, 3),
+                (320, 320, 3),
+                (160, 160, 3),
+                (320, 320, 3),
+                (213, 213, 3),
+                (320, 320, 3),
+                (213, 213, 3),
+            ],
         )
 
     def test_false_gate_resets_zoom_stability_and_uses_nearest_base_selection(self):
@@ -1169,7 +1206,7 @@ class AiServiceTests(unittest.TestCase):
 
     def test_zoom_events_emit_only_on_success_and_factor_transition(self):
         base = (Detection(140, 80, 180, 160, 0.9, 0),)
-        refined = (Detection(144, 135, 174, 165, 0.92, 7),)
+        refined = (Detection(96, 90, 116, 110, 0.92, 7),)
         detector = SequentialDetector((base, refined, base, refined, base, ()))
         frames = [np.zeros((320, 320, 3), dtype=np.uint8) for _ in range(3)]
         service, events = self.make_zoom_service(detector, frames=frames)
@@ -1192,6 +1229,17 @@ class AiServiceTests(unittest.TestCase):
             [0, 0],
         )
         self.assertIsNotNone(service.latest_snapshot())
+        self.assertEqual(
+            [frame.shape for frame in detector.frames],
+            [
+                (320, 320, 3),
+                (213, 213, 3),
+                (320, 320, 3),
+                (213, 213, 3),
+                (320, 320, 3),
+                (213, 213, 3),
+            ],
+        )
 
     def test_fps_counts_published_frames_not_detector_calls(self):
         base = (Detection(140, 80, 180, 160, 0.9, 0),)
@@ -1213,7 +1261,7 @@ class AiServiceTests(unittest.TestCase):
 
     def test_first_refinement_error_disables_zoom_once_for_generation(self):
         base = (Detection(140, 80, 180, 160, 0.9, 0),)
-        refined = (Detection(144, 135, 174, 165, 0.92, 7),)
+        refined = (Detection(96, 90, 116, 110, 0.92, 7),)
         detector = SequentialDetector(
             (base, refined, base, RuntimeError("refine failed"), base)
         )
@@ -1244,6 +1292,16 @@ class AiServiceTests(unittest.TestCase):
             [1.5, 1.0],
         )
         self.assertEqual(len(detector.frames), 5)
+        self.assertEqual(
+            [frame.shape for frame in detector.frames],
+            [
+                (320, 320, 3),
+                (213, 213, 3),
+                (320, 320, 3),
+                (213, 213, 3),
+                (320, 320, 3),
+            ],
+        )
 
     def test_refinement_error_keeps_stability_gate_active_after_rearm(self):
         base = (self.small_head(),)

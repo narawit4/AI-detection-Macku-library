@@ -594,7 +594,7 @@ class OnnxDetectorTests(unittest.TestCase):
             2,
         )
 
-    def test_raw_player_refinement_stays_in_canonical_zoom_geometry(self):
+    def test_raw_player_refinement_preserves_source_geometry(self):
         base_output = np.zeros((1, 5, 2100), dtype=np.float32)
         base_output[0, :, 0] = (160, 170, 40, 100, 0.90)
         refined_output = np.zeros((1, 5, 2100), dtype=np.float32)
@@ -614,10 +614,11 @@ class OnnxDetectorTests(unittest.TestCase):
             sequence=4, captured_at=20.0,
         )
         session.result = refined_output
+        crop = np.zeros((160, 160, 3), dtype=np.uint8)
         refined = compose_zoom_refinement(
             base,
-            detector.detect(frame),
-            ZoomTransform(80, 80, 160, 2.0),
+            detector.detect(crop),
+            ZoomTransform(80, 80, 160, 160, 320, 320, 2.0),
             AimSettings(target_area="head"),
         )
         self.assertIsNotNone(refined)
@@ -628,6 +629,14 @@ class OnnxDetectorTests(unittest.TestCase):
              refined.frame.detections[0].y2,
              refined.frame.detections[0].class_id),
             (150.0, 120.0, 170.0, 200.0, 0),
+        )
+        self.assertEqual(
+            (refined.target.frame_width, refined.target.frame_height),
+            (320, 320),
+        )
+        self.assertEqual(
+            (refined.frame.frame_width, refined.frame.frame_height),
+            (320, 320),
         )
 
     def test_accepts_only_exact_supported_static_square_input_sizes(self):
