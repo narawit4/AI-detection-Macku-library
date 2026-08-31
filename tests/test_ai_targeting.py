@@ -148,6 +148,56 @@ class AimSettingsTests(unittest.TestCase):
 
 
 class TargetSelectionTests(unittest.TestCase):
+    def test_full_hd_analysis_selects_nearest_to_actual_frame_center(self):
+        result = analyze_detections(
+            (
+                Detection(930, 500, 990, 580, 0.9, 7),
+                Detection(930, 920, 990, 980, 0.9, 7),
+            ),
+            AimSettings(),
+            sequence=8,
+            captured_at=10.0,
+            frame_width=1920,
+            frame_height=1080,
+        )
+        self.assertEqual((result.target.aim_x, result.target.aim_y), (960.0, 540.0))
+        self.assertEqual(
+            (result.target.frame_width, result.target.frame_height),
+            (1920, 1080),
+        )
+        self.assertEqual(
+            (result.frame.frame_width, result.frame.frame_height),
+            (1920, 1080),
+        )
+        self.assertEqual(result.frame.selected_index, 0)
+
+    def test_native_exact_distance_tie_preserves_detector_order(self):
+        result = analyze_detections(
+            (
+                Detection(900, 510, 940, 570, 0.9, 7),
+                Detection(980, 510, 1020, 570, 0.9, 7),
+            ),
+            AimSettings(),
+            sequence=9,
+            captured_at=11.0,
+            frame_width=1920,
+            frame_height=1080,
+        )
+        self.assertEqual(result.frame.selected_index, 0)
+
+    def test_analysis_rejects_invalid_frame_dimensions(self):
+        for width, height in ((0, 1080), (1920, 0), (True, 1080), (1920, 1.5)):
+            with self.subTest(width=width, height=height):
+                with self.assertRaisesRegex(ValueError, "positive integers"):
+                    analyze_detections(
+                        (),
+                        AimSettings(),
+                        sequence=1,
+                        captured_at=1.0,
+                        frame_width=width,
+                        frame_height=height,
+                    )
+
     def test_analysis_filters_confidence_and_preserves_selected_box_index(self):
         low = Detection(1, 2, 10, 20, 0.20, 7)
         player = Detection(20, 30, 60, 130, 0.80, 0)
@@ -319,6 +369,102 @@ class DetectionAimPointTests(unittest.TestCase):
 
 class AimMovementEngineTests(unittest.TestCase):
     LINEAR_CURVE = (0.0, 0.25, 0.5, 0.75, 1.0)
+
+    def test_geometry_change_resets_old_velocity_fraction_and_error(self):
+        engine = AimMovementEngine(nominal_hz=1000.0)
+        settings = AimSettings(smoothing=0.0, aim_strength=0.35, max_step=20)
+        old = TargetSnapshot(1, 10.0, "head", 320.0, 320.0, 320, 320)
+        for tick in range(20):
+            engine.step(old, settings, 10.0 + tick / 1000.0)
+
+        replacement = TargetSnapshot(
+            2, 10.020, "head", 960.0, 440.0, 1920, 1080
+        )
+        actual = [
+            engine.step(replacement, settings, 10.020 + tick / 1000.0)
+            for tick in range(10)
+        ]
+        clean = AimMovementEngine(nominal_hz=1000.0)
+        expected = [
+            clean.step(replacement, settings, 10.020 + tick / 1000.0)
+            for tick in range(10)
+        ]
+        self.assertEqual(actual, expected)
+
+    def test_invalid_target_geometry_resets_and_emits_zero(self):
+        engine = AimMovementEngine(nominal_hz=1000.0)
+        settings = AimSettings(smoothing=0.0)
+        engine.step(TargetSnapshot(1, 10.0, "head", 200, 160), settings, 10.0)
+
+        self.assertEqual(
+            engine.step(
+                TargetSnapshot(2, 10.001, "head", 10, 10, 0, 1080),
+                settings,
+                10.001,
+            ),
+            (0, 0),
+        )
+        self.assertLessEqual(
+            engine.step(
+                TargetSnapshot(3, 10.002, "head", 154, 160),
+                settings,
+                10.002,
+            )[0],
+            0,
+        )
+
+    def test_response_curve_uses_native_half_radius_and_corner(self):
+        engine = AimMovementEngine(nominal_hz=60.0)
+        settings = AimSettings(
+            smoothing=0.0,
+            aim_strength=0.05,
+            max_step=127,
+            response_curve=(0.0, 0.0, 0.0, 0.0, 1.0),
+        )
+        radius = math.hypot(960.0, 540.0)
+        half_radius = TargetSnapshot(
+            1, 10.0, "head", 960.0 + radius / 2.0, 540.0, 1920, 1080
+        )
+        self.assertEqual(engine.step(half_radius, settings, 10.0), (0, 0))
+
+        engine.reset()
+        corner = TargetSnapshot(
+            2, 10.1, "head", 1920.0, 1080.0, 1920, 1080
+        )
+        dx, dy = engine.step(corner, settings, 10.1)
+        self.assertGreater(dx, 0)
+        self.assertGreater(dy, 0)
+
+    def test_same_normalized_distance_scales_output_by_each_frame_radius(self):
+        settings = AimSettings(
+            smoothing=0.0,
+            aim_strength=0.01,
+            max_step=127,
+            response_curve=(0.0, 0.25, 0.50, 0.75, 1.0),
+        )
+        cases = (
+            (320, 320, 10.0, 1),
+            (1920, 1080, 20.0, 5),
+        )
+        for width, height, now, expected_dx in cases:
+            with self.subTest(size=(width, height)):
+                center_x = width / 2.0
+                center_y = height / 2.0
+                radius = math.hypot(center_x, center_y)
+                target = TargetSnapshot(
+                    1,
+                    now,
+                    "head",
+                    center_x + radius / 2.0,
+                    center_y,
+                    width,
+                    height,
+                )
+                engine = AimMovementEngine(nominal_hz=60.0)
+                self.assertEqual(
+                    engine.step(target, settings, now),
+                    (expected_dx, 0),
+                )
 
     def test_one_fresh_snapshot_produces_multiple_microsteps(self):
         engine = AimMovementEngine(nominal_hz=240)

@@ -35,6 +35,8 @@ class TargetSnapshot:
     target_class: str
     aim_x: float
     aim_y: float
+    frame_width: int = 320
+    frame_height: int = 320
 
 
 @dataclass(frozen=True)
@@ -43,6 +45,8 @@ class DetectionFrameSnapshot:
     captured_at: float
     detections: tuple[Detection, ...]
     selected_index: int | None
+    frame_width: int = 320
+    frame_height: int = 320
 
 
 @dataclass(frozen=True)
@@ -257,12 +261,21 @@ def analyze_detections(
     sequence: int,
     captured_at: float,
     previous: TargetSnapshot | None = None,
+    frame_width: int = 320,
+    frame_height: int = 320,
 ) -> DetectionAnalysis:
     """Select the nearest supported aim point from this frame only.
 
     ``previous`` remains accepted for API compatibility but intentionally has
     no influence on current-frame selection.
     """
+    if (
+        type(frame_width) is not int
+        or frame_width <= 0
+        or type(frame_height) is not int
+        or frame_height <= 0
+    ):
+        raise ValueError("frame dimensions must be positive integers")
     accepted = tuple(
         detection
         for detection in detections
@@ -279,17 +292,30 @@ def analyze_detections(
     selected_index = None
     target = None
     if candidates:
+        center_x = frame_width / 2.0
+        center_y = frame_height / 2.0
         selected_index, selected = min(
             candidates,
             key=lambda item: math.hypot(
-                item[1][1] - 160.0, item[1][2] - 160.0
+                item[1][1] - center_x, item[1][2] - center_y
             ),
         )
-        target = TargetSnapshot(sequence, captured_at, *selected)
+        target = TargetSnapshot(
+            sequence,
+            captured_at,
+            *selected,
+            frame_width,
+            frame_height,
+        )
     return DetectionAnalysis(
         target=target,
         frame=DetectionFrameSnapshot(
-            sequence, captured_at, accepted, selected_index
+            sequence,
+            captured_at,
+            accepted,
+            selected_index,
+            frame_width,
+            frame_height,
         ),
     )
 
@@ -301,6 +327,8 @@ def select_target(
     sequence: int,
     captured_at: float,
     previous: TargetSnapshot | None = None,
+    frame_width: int = 320,
+    frame_height: int = 320,
 ) -> TargetSnapshot | None:
     return analyze_detections(
         detections,
@@ -308,6 +336,8 @@ def select_target(
         sequence=sequence,
         captured_at=captured_at,
         previous=previous,
+        frame_width=frame_width,
+        frame_height=frame_height,
     ).target
 
 
@@ -327,6 +357,7 @@ class AimMovementEngine:
         self.reset()
 
     def reset(self) -> None:
+        self._frame_geometry = None
         self._settled_sequence = None
         self._last_sequence = None
         self._remaining_x = self._remaining_y = 0.0
@@ -344,6 +375,18 @@ class AimMovementEngine:
         if snapshot is None:
             self.reset()
             return 0, 0
+        if (
+            type(snapshot.frame_width) is not int
+            or snapshot.frame_width <= 0
+            or type(snapshot.frame_height) is not int
+            or snapshot.frame_height <= 0
+        ):
+            self.reset()
+            return 0, 0
+        geometry = (snapshot.frame_width, snapshot.frame_height)
+        if geometry != self._frame_geometry:
+            self.reset()
+            self._frame_geometry = geometry
         if snapshot.sequence == self._settled_sequence:
             return 0, 0
         fresh_sequence = snapshot.sequence != self._last_sequence
@@ -357,8 +400,10 @@ class AimMovementEngine:
         if fresh_sequence:
             self._settled_sequence = None
             self._last_sequence = snapshot.sequence
-            next_remaining_x = snapshot.aim_x - self.CENTER
-            next_remaining_y = snapshot.aim_y - self.CENTER
+            center_x = snapshot.frame_width / 2.0
+            center_y = snapshot.frame_height / 2.0
+            next_remaining_x = snapshot.aim_x - center_x
+            next_remaining_y = snapshot.aim_y - center_y
             if self._fraction_x * next_remaining_x <= 0.0:
                 self._fraction_x = 0.0
             if self._fraction_y * next_remaining_y <= 0.0:
@@ -382,10 +427,13 @@ class AimMovementEngine:
             dt = max(0.0, min(self.MAX_DT_S, now - self._previous_tick))
         self._previous_tick = now
 
-        normalized = min(1.0, radius / self.REFERENCE_RADIUS)
+        center_x = snapshot.frame_width / 2.0
+        center_y = snapshot.frame_height / 2.0
+        reference_radius = math.hypot(center_x, center_y)
+        normalized = min(1.0, radius / reference_radius)
         curve_distance = (
             response_curve_value(settings.response_curve, normalized)
-            * self.REFERENCE_RADIUS
+            * reference_radius
         )
         reference_step = min(
             float(settings.max_step), curve_distance * settings.aim_strength
@@ -434,7 +482,9 @@ class AimMovementEngine:
         )
         if math.hypot(self._remaining_x, self._remaining_y) <= self.DEAD_ZONE:
             settled_sequence = self._last_sequence
+            settled_geometry = self._frame_geometry
             self.reset()
+            self._frame_geometry = settled_geometry
             self._settled_sequence = settled_sequence
         return report_x, report_y
 
