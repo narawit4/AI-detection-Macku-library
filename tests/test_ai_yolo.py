@@ -40,8 +40,13 @@ class RawYoloDecoderTests(unittest.TestCase):
             RAW_CANDIDATE_COUNTS, {160: 525, 320: 2100, 640: 8400}
         )
 
-    def test_center_boxes_scale_to_canonical_space_for_every_input_size(self):
-        for input_size in (160, 320, 640):
+    def test_center_boxes_remain_in_model_space_for_every_input_size(self):
+        cases = (
+            (160, (60.0, 40.0, 100.0, 120.0)),
+            (320, (120.0, 80.0, 200.0, 240.0)),
+            (640, (240.0, 160.0, 400.0, 480.0)),
+        )
+        for input_size, expected in cases:
             with self.subTest(input_size=input_size):
                 output = raw_output(input_size)
                 put_candidate(output, 0, input_size / 2, input_size / 2,
@@ -50,12 +55,17 @@ class RawYoloDecoderTests(unittest.TestCase):
                 self.assertEqual(
                     (detection.x1, detection.y1, detection.x2, detection.y2,
                      detection.class_id),
-                    (120.0, 80.0, 200.0, 240.0, 0),
+                    (*expected, 0),
                 )
                 self.assertAlmostEqual(detection.confidence, 0.8, places=6)
 
-    def test_coordinates_clip_after_scaling_and_collapsed_boxes_are_removed(self):
-        for input_size in (160, 320, 640):
+    def test_coordinates_clip_to_model_space_and_collapsed_boxes_are_removed(self):
+        cases = (
+            (160, (24.0, 24.0)),
+            (320, (48.0, 48.0)),
+            (640, (96.0, 96.0)),
+        )
+        for input_size, expected_right_bottom in cases:
             with self.subTest(input_size=input_size):
                 output = raw_output(input_size)
                 put_candidate(
@@ -73,8 +83,24 @@ class RawYoloDecoderTests(unittest.TestCase):
                 np.testing.assert_allclose(
                     (detections[0].x1, detections[0].y1,
                      detections[0].x2, detections[0].y2),
-                    (0.0, 0.0, 48.0, 48.0),
+                    (0.0, 0.0, *expected_right_bottom),
                     atol=1e-5,
+                )
+
+    def test_coordinates_clip_at_the_far_model_boundary(self):
+        for input_size in (160, 320, 640):
+            with self.subTest(input_size=input_size):
+                output = raw_output(input_size)
+                put_candidate(
+                    output, 0,
+                    input_size * 0.95, input_size * 0.95,
+                    input_size * 0.20, input_size * 0.20, 0.90,
+                )
+                detection = decode_single_class_yolo(output, input_size)[0]
+                self.assertEqual(
+                    (detection.x1, detection.y1, detection.x2, detection.y2),
+                    (input_size * 0.85, input_size * 0.85,
+                     float(input_size), float(input_size)),
                 )
 
     def test_invalid_rows_are_skipped_without_mutating_output(self):
@@ -154,8 +180,8 @@ class RawYoloDecoderTests(unittest.TestCase):
             )
         detections = decode_single_class_yolo(output, 160)
         self.assertEqual(len(detections), MAX_DETECTIONS)
-        self.assertAlmostEqual(detections[0].x1, 0.1, places=6)
-        self.assertLess(detections[-1].x1, 240.0)
+        self.assertAlmostEqual(detections[0].x1, 0.05, places=6)
+        self.assertLess(detections[-1].x1, 120.0)
 
     def test_private_nms_interface_uses_one_to_many_inputs_not_pairwise_iou(self):
         boxes = np.asarray([[0, 0, 1, 1], [2, 2, 3, 3]], dtype=np.float64)

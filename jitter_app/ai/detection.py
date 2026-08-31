@@ -1,6 +1,8 @@
 """Exact dual-contract ONNX detection for AI aim models."""
 
 import ast
+from dataclasses import dataclass
+import math
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Callable
@@ -10,7 +12,7 @@ import onnxruntime as ort
 
 from .targeting import Detection
 from .yolo import RAW_CANDIDATE_COUNTS, decode_single_class_yolo
-from .resize import resize_rgb_bilinear
+from .resize import resize_rgb_bilinear_to
 from jitter_app.resources import bundled_model_path
 
 
@@ -33,6 +35,19 @@ _RAW_METADATA_MESSAGE = (
 
 class ModelContractError(RuntimeError):
     """Raised when a model or inference result differs from the fixed contract."""
+
+
+@dataclass(frozen=True)
+class LetterboxTransform:
+    source_width: int
+    source_height: int
+    input_size: int
+    resized_width: int
+    resized_height: int
+    pad_left: int
+    pad_top: int
+    pad_right: int
+    pad_bottom: int
 
 
 def _validate_raw_metadata(session: object) -> None:
@@ -76,25 +91,109 @@ def _validated_input_size(raw: object) -> int:
     return raw
 
 
+def build_letterbox_transform(
+    source_width: int,
+    source_height: int,
+    input_size: int = LOGICAL_FRAME_SIZE,
+) -> LetterboxTransform:
+    input_size = _validated_input_size(input_size)
+    if (
+        type(source_width) is not int
+        or type(source_height) is not int
+        or source_width <= 0
+        or source_height <= 0
+    ):
+        raise ValueError("AI frame dimensions must be positive integers")
+    gain = min(input_size / source_width, input_size / source_height)
+    resized_width = min(
+        input_size, max(1, math.floor(source_width * gain + 0.5))
+    )
+    resized_height = min(
+        input_size, max(1, math.floor(source_height * gain + 0.5))
+    )
+    horizontal = input_size - resized_width
+    vertical = input_size - resized_height
+    left = horizontal // 2
+    top = vertical // 2
+    return LetterboxTransform(
+        source_width,
+        source_height,
+        input_size,
+        resized_width,
+        resized_height,
+        left,
+        top,
+        horizontal - left,
+        vertical - top,
+    )
+
+
+def _prepare_frame(
+    frame: np.ndarray,
+    input_size: int = LOGICAL_FRAME_SIZE,
+) -> tuple[np.ndarray, LetterboxTransform]:
+    if (
+        not isinstance(frame, np.ndarray)
+        or frame.ndim != 3
+        or frame.shape[2] != 3
+    ):
+        raise ValueError("AI frame must be RGB with three channels")
+    if frame.shape[0] <= 0 or frame.shape[1] <= 0:
+        raise ValueError("AI frame dimensions must be positive")
+    if frame.dtype != np.uint8:
+        raise ValueError("AI frame must use uint8 pixels")
+    transform = build_letterbox_transform(
+        frame.shape[1], frame.shape[0], input_size
+    )
+    content = resize_rgb_bilinear_to(
+        frame, transform.resized_width, transform.resized_height
+    )
+    prepared = np.full(
+        (transform.input_size, transform.input_size, 3), 114, dtype=np.uint8
+    )
+    prepared[
+        transform.pad_top:transform.pad_top + transform.resized_height,
+        transform.pad_left:transform.pad_left + transform.resized_width,
+    ] = content
+    tensor = np.ascontiguousarray(
+        prepared.transpose(2, 0, 1)[None].astype(np.float32) / 255.0
+    )
+    return tensor, transform
+
+
 def preprocess_frame(
     frame: np.ndarray,
     input_size: int = LOGICAL_FRAME_SIZE,
 ) -> np.ndarray:
-    if (
-        not isinstance(frame, np.ndarray)
-        or frame.shape != (LOGICAL_FRAME_SIZE, LOGICAL_FRAME_SIZE, 3)
-    ):
-        raise ValueError("AI frame must be RGB 320x320x3")
-    if frame.dtype != np.uint8:
-        raise ValueError("AI frame must use uint8 pixels")
-    input_size = _validated_input_size(input_size)
-    prepared = (
-        frame
-        if input_size == LOGICAL_FRAME_SIZE
-        else resize_rgb_bilinear(frame, input_size)
-    )
-    return np.ascontiguousarray(
-        prepared.transpose(2, 0, 1)[None].astype(np.float32) / 255.0
+    tensor, _ = _prepare_frame(frame, input_size)
+    return tensor
+
+
+def map_detection_to_source(
+    detection: Detection,
+    transform: LetterboxTransform,
+) -> Detection | None:
+    content_right = transform.pad_left + transform.resized_width
+    content_bottom = transform.pad_top + transform.resized_height
+    x1 = max(float(transform.pad_left), detection.x1)
+    y1 = max(float(transform.pad_top), detection.y1)
+    x2 = min(float(content_right), detection.x2)
+    y2 = min(float(content_bottom), detection.y2)
+    if x2 <= x1 or y2 <= y1:
+        return None
+    x_scale = transform.source_width / transform.resized_width
+    y_scale = transform.source_height / transform.resized_height
+    return Detection(
+        max(0.0, min(transform.source_width,
+                     (x1 - transform.pad_left) * x_scale)),
+        max(0.0, min(transform.source_height,
+                     (y1 - transform.pad_top) * y_scale)),
+        max(0.0, min(transform.source_width,
+                     (x2 - transform.pad_left) * x_scale)),
+        max(0.0, min(transform.source_height,
+                     (y2 - transform.pad_top) * y_scale)),
+        detection.confidence,
+        detection.class_id,
     )
 
 
@@ -115,7 +214,6 @@ def parse_output(
     except TypeError as error:
         raise ModelContractError("AI model output must contain numeric values") from error
 
-    scale = LOGICAL_FRAME_SIZE / input_size
     detections = []
     for row in output[0, finite_rows]:
         x1, y1, x2, y2, confidence, class_id = (float(value) for value in row)
@@ -123,10 +221,10 @@ def parse_output(
             continue
         if class_id < 0.0 or not class_id.is_integer():
             continue
-        x1 = min(LOGICAL_FRAME_SIZE, max(0.0, x1 * scale))
-        y1 = min(LOGICAL_FRAME_SIZE, max(0.0, y1 * scale))
-        x2 = min(LOGICAL_FRAME_SIZE, max(0.0, x2 * scale))
-        y2 = min(LOGICAL_FRAME_SIZE, max(0.0, y2 * scale))
+        x1 = min(input_size, max(0.0, x1))
+        y1 = min(input_size, max(0.0, y1))
+        x2 = min(input_size, max(0.0, x2))
+        y2 = min(input_size, max(0.0, y2))
         if x2 <= x1 or y2 <= y1:
             continue
         detections.append(Detection(x1, y1, x2, y2, confidence, int(class_id)))
@@ -208,11 +306,18 @@ class OnnxDetector:
         raise ModelContractError(_OUTPUT_CONTRACT_MESSAGE)
 
     def detect(self, frame: np.ndarray) -> tuple[Detection, ...]:
-        tensor = preprocess_frame(frame, self._input_size)
+        tensor, transform = _prepare_frame(frame, self._input_size)
         output = self._session.run([_OUTPUT_NAME], {_INPUT_NAME: tensor})[0]
         try:
             if self._output_format == _POST_NMS_FORMAT:
-                return parse_output(output, self._input_size)
-            return decode_single_class_yolo(output, self._input_size)
+                detections = parse_output(output, self._input_size)
+            else:
+                detections = decode_single_class_yolo(output, self._input_size)
+            return tuple(
+                mapped
+                for detection in detections
+                if (mapped := map_detection_to_source(detection, transform))
+                is not None
+            )
         except (ModelContractError, TypeError, ValueError) as error:
             raise ModelContractError(_OUTPUT_CONTRACT_MESSAGE) from error
