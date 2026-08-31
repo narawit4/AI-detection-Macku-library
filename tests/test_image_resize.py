@@ -37,10 +37,16 @@ class RgbResizeTests(unittest.TestCase):
 
     def test_rectangular_resize_rejects_each_invalid_dimension(self):
         source = np.zeros((2, 2, 3), dtype=np.uint8)
-        for width, height in ((True, 2), (2, False), (0, 2), (2, 0),
-                              (-1, 2), (2, -1), (1.5, 2), (2, 1.5)):
+        for width, height in (
+            (True, 2), (2, False), (0, 2), (2, 0),
+            (-1, 2), (2, -1), (1.5, 2), (2, 1.5),
+            (None, 2), (2, None), ("320", 2), (2, "320"),
+        ):
             with self.subTest(width=width, height=height):
-                with self.assertRaisesRegex(ValueError, "positive integer"):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "^Output size must be a positive integer$",
+                ):
                     resize_rgb_bilinear_to(source, width, height)
 
     def test_rectangular_plan_cache_keys_both_output_dimensions(self):

@@ -2597,11 +2597,15 @@ class JitterLayoutTests(unittest.TestCase):
 
     def test_combobox_popups_use_liquid_colors_in_both_themes(self):
         """Fails if classic Tk popup Listboxes ignore the active theme."""
+        self.app.open_overlay_customizer()
         combos = (
             self.app.trigger_combo,
             self.app.modifier_combo,
             self.app.preset_combo,
             self.app.ramp_mode_combo,
+            self.app.target_area_combo,
+            self.app.overlay_label_mode_combo,
+            self.app.overlay_hud_corner_combo,
         )
         for expected in (
             ("#FFFFFF", "#263640", "#55DDF6", "#07252C"),
@@ -2647,6 +2651,9 @@ class JitterLayoutTests(unittest.TestCase):
                         "none",
                     )
             self.app.toggle_theme()
+
+        self.app.close_overlay_customizer()
+        self.app._apply_combobox_popup_palette()
 
     def test_light_disabled_secondary_button_remains_readable(self):
         """Fails if disabled secondary text drops below readable contrast."""

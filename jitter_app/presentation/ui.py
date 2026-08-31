@@ -1180,13 +1180,21 @@ class JitterApp(tk.Tk):
 
     def _apply_combobox_popup_palette(self) -> None:
         p = self._palette
-        for combo in (
-            self.trigger_combo,
-            self.modifier_combo,
-            self.preset_combo,
-            self.ramp_mode_combo,
+        for name in (
+            "trigger_combo",
+            "modifier_combo",
+            "preset_combo",
+            "ramp_mode_combo",
+            "target_area_combo",
+            "overlay_label_mode_combo",
+            "overlay_hud_corner_combo",
         ):
+            combo = getattr(self, name, None)
+            if combo is None:
+                continue
             try:
+                if not combo.winfo_exists():
+                    continue
                 popdown = self.tk.call(
                     "ttk::combobox::PopdownWindow", str(combo)
                 )
@@ -1731,6 +1739,7 @@ class JitterApp(tk.Tk):
             window.configure(background=self._palette["window"])
             window.protocol("WM_DELETE_WINDOW", self.close_overlay_customizer)
             self._build_overlay_customizer_contents(window)
+            self._apply_combobox_popup_palette()
             self._render_runtime_controls()
             window.deiconify()
             window.lift()

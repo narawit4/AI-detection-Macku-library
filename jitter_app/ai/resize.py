@@ -53,9 +53,13 @@ def _validate_source(image: np.ndarray) -> None:
 
 
 def _positive_output_dimension(value: int) -> int:
-    if isinstance(value, bool) or int(value) != value or int(value) < 1:
+    try:
+        converted = int(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("Output size must be a positive integer") from exc
+    if isinstance(value, bool) or converted != value or converted < 1:
         raise ValueError("Output size must be a positive integer")
-    return int(value)
+    return converted
 
 
 def _blend_rgb(

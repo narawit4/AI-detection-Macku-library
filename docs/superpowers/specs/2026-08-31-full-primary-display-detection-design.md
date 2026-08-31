@@ -285,8 +285,8 @@ inference. A runtime-browsed compatible 640 model can retain more spatial
 detail, but Jitter will not select, copy, persist, download, or package one
 automatically.
 
-Measured inference FPS, display cadence, provider, and zoom factor remain
-runtime status only.
+Published base-frame cadence (reported as FPS), display cadence, provider, and
+zoom factor remain runtime status only.
 
 ## UI and Configuration
 
