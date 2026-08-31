@@ -588,7 +588,8 @@ class EntryPointTests(unittest.TestCase):
         next_heading = readme.index("\n## ", targeting_start + 1)
         targeting_section = readme[targeting_start:next_heading]
         layout_start = readme.index("## โครงสร้าง repository ที่รองรับ")
-        layout_section = readme[layout_start:]
+        layout_end = readme.index("\n## ", layout_start + 1)
+        layout_section = readme[layout_start:layout_end]
         for contract in (
             "[1,3,160,160]",
             "[1,3,320,320]",

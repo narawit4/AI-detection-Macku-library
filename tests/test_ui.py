@@ -161,12 +161,15 @@ class StubService:
         target_provider,
         aim_provider,
         duration_s=None,
+        *,
+        targeting_epoch_provider=None,
     ):
         self.started += 1
         call = SimpleNamespace(
             sources=sources,
             motion_provider=motion_provider,
             target_provider=target_provider,
+            targeting_epoch_provider=targeting_epoch_provider,
             aim_provider=aim_provider,
             duration_s=duration_s,
         )
@@ -280,6 +283,8 @@ class StubAiService:
             or source_generation != self.active_generation
         ):
             return False
+        if event.generation is None:
+            event = replace(event, generation=source_generation)
         self.event_sink(event)
         return True
 
@@ -299,6 +304,9 @@ class StubAiService:
         self.targeting_revision += 1
         self.snapshot = None
         self.detection_snapshot = None
+        return self.targeting_revision
+
+    def current_targeting_revision(self):
         return self.targeting_revision
 
 
@@ -752,6 +760,58 @@ class JitterLayoutTests(unittest.TestCase):
             str(self.app.capture_mode_combo.cget("state")), "disabled"
         )
 
+    def test_rapid_overlay_reenable_waits_for_physical_ai_retirement(self):
+        self.app.capture_mode_var.set("Full Display")
+        self.app._capture_mode_changed()
+        self.app.toggle_overlay()
+        self.ai.emit(AiEvent("ready", "DmlExecutionProvider"))
+        self.drain_ui_queue()
+        self.ai.retire_immediately = False
+
+        self.app.toggle_overlay()
+        starts = len(self.ai.start_calls)
+        self.app.toggle_overlay()
+
+        self.assertTrue(self.app.overlay_visible)
+        self.assertEqual(len(self.ai.start_calls), starts)
+        self.assertIsNotNone(getattr(self.app, "_deferred_ai_start", None))
+
+        self.ai.finish_retirement()
+        self.drain_ui_queue()
+
+        self.assertEqual(len(self.ai.start_calls), starts + 1)
+        self.assertEqual(self.ai.start_calls[-1][2], self.app._model_choice.path)
+        self.assertEqual(self.ai.start_calls[-1][3], FULL_DISPLAY)
+        self.assertTrue(self.app.overlay_visible)
+
+    def test_rapid_master_reenable_waits_for_physical_ai_retirement(self):
+        self.app.capture_mode_var.set("Full Display")
+        self.app._capture_mode_changed()
+        self.service.connected = True
+        self.app.ai_selected = True
+        self.app.set_master(True)
+        self.ai.emit(AiEvent("ready", "DmlExecutionProvider"))
+        self.drain_ui_queue()
+        self.ai.retire_immediately = False
+
+        self.app.set_master(False)
+        starts = len(self.ai.start_calls)
+        self.app.set_master(True)
+
+        self.assertTrue(self.app.master_armed)
+        self.assertTrue(self.app.ai_selected)
+        self.assertEqual(len(self.ai.start_calls), starts)
+        self.assertIsNotNone(getattr(self.app, "_deferred_ai_start", None))
+
+        self.ai.finish_retirement()
+        self.drain_ui_queue()
+
+        self.assertEqual(len(self.ai.start_calls), starts + 1)
+        self.assertEqual(self.ai.start_calls[-1][2], self.app._model_choice.path)
+        self.assertEqual(self.ai.start_calls[-1][3], FULL_DISPLAY)
+        self.assertTrue(self.app.master_armed)
+        self.assertTrue(self.app.ai_selected)
+
     def test_combined_motion_continues_during_capture_mode_restart(self):
         self.prepare_armed_sources(
             MotionSources(True, True), gate_active=True
@@ -1068,8 +1128,16 @@ class JitterLayoutTests(unittest.TestCase):
                 self.assertEqual(len(self.ai.start_calls), starts + 1)
                 self.assertEqual(len(self.ai.stop_calls), stops + 1)
                 self.assertEqual(self.ai.start_calls[-1][3], mode)
+                self.assertEqual(
+                    self.app.footer_var.get(),
+                    f"Switching AI capture to {label}...",
+                )
                 self.app.handle_ai_event(
-                    AiEvent("ready", "DmlExecutionProvider")
+                    AiEvent(
+                        "ready",
+                        "DmlExecutionProvider",
+                        generation=self.ai.active_generation,
+                    )
                 )
                 self.assertEqual(
                     self.app.footer_var.get(),
@@ -1100,6 +1168,22 @@ class JitterLayoutTests(unittest.TestCase):
                     len(self.service.cancel_reasons), cancellations
                 )
                 self.assertTrue(app._normal_motion_started)
+
+    def test_motion_worker_receives_live_ai_targeting_epoch_provider(self):
+        self.prepare_armed_sources(
+            MotionSources(True, True), gate_active=True
+        )
+        call = self.service.composite_motion_calls[-1]
+        provider = call.targeting_epoch_provider
+
+        self.assertTrue(callable(provider))
+        self.assertEqual(provider(), self.ai.targeting_revision)
+
+        self.app.capture_mode_var.set("Full Display")
+        self.app._capture_mode_changed()
+
+        self.assertEqual(provider(), self.ai.targeting_revision)
+        self.assertEqual(provider(), 1)
 
     def test_save_config_keeps_target_area_runtime_only(self):
         self.app.target_area_var.set("Chest")
@@ -3362,6 +3446,89 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertIsNone(self.app._model_switch)
         self.assertEqual(self.app._model_choice, validated)
 
+    def test_capture_restart_disables_and_guards_model_changes(self):
+        self.app.toggle_overlay()
+        self.ai.emit(AiEvent("ready", "DmlExecutionProvider"))
+        self.drain_ui_queue()
+        self.ai.retire_immediately = False
+
+        self.app.capture_mode_var.set("Full Display")
+        self.app._capture_mode_changed()
+        validation_calls = list(self.model_validator.start_calls)
+        self.model_dialog_result = str(Path("blocked-during-capture.onnx"))
+
+        self.assertEqual(
+            str(self.app.model_browse_button.cget("state")), "disabled"
+        )
+        self.app.browse_ai_model()
+        self.app.use_default_ai_model()
+
+        self.assertEqual(self.model_validator.start_calls, validation_calls)
+        self.assertIsNone(self.app._model_switch)
+        self.assertTrue(self.app._capture_mode_switching)
+
+    def test_conflicting_capture_and_model_pending_starts_fail_closed(self):
+        self.prepare_armed_sources(MotionSources(False, True))
+        self.app.toggle_overlay()
+        self.ai.retire_immediately = False
+        choice, token = self.begin_custom_model_switch("conflict.onnx")
+        self.model_validator.emit(
+            ModelValidationEvent(
+                "ready", token, self.validated_model_choice(choice)
+            )
+        )
+        self.drain_ui_queue()
+        starts = len(self.ai.start_calls)
+        self.assertEqual(self.app._model_switch.phase, "starting_candidate")
+
+        self.app._capture_mode_switching = True
+        self.app._capture_restart_pending = True
+        self.ai.finish_retirement()
+        with self.assertLogs(level="ERROR"):
+            self.drain_ui_queue()
+
+        self.assertEqual(len(self.ai.start_calls), starts)
+        self.assertFalse(self.app._capture_restart_pending)
+        self.assertFalse(self.app._capture_mode_switching)
+        self.assertIsNone(self.app._model_start_pending)
+        self.assertIsNone(self.app._model_switch)
+        self.assertFalse(self.app.overlay_visible)
+
+    def test_stale_ready_generation_cannot_commit_model_candidate(self):
+        self.prepare_armed_sources(MotionSources(False, True))
+        old_generation = self.ai.active_generation
+        choice, token = self.begin_custom_model_switch("generation-bound.onnx")
+        validated = self.validated_model_choice(choice)
+        self.model_validator.emit(
+            ModelValidationEvent("ready", token, validated)
+        )
+        self.drain_ui_queue()
+        candidate_generation = self.ai.active_generation
+        previous = self.app._model_switch.previous
+
+        self.app.handle_ai_event(
+            AiEvent(
+                "ready",
+                "DmlExecutionProvider",
+                generation=old_generation,
+            )
+        )
+
+        self.assertIsNotNone(self.app._model_switch)
+        self.assertEqual(self.app._model_switch.phase, "starting_candidate")
+        self.assertEqual(self.app._model_choice, previous)
+        self.assertFalse(self.app._ai_ready)
+
+        self.app.handle_ai_event(
+            AiEvent(
+                "ready",
+                "DmlExecutionProvider",
+                generation=candidate_generation,
+            )
+        )
+        self.assertIsNone(self.app._model_switch)
+        self.assertEqual(self.app._model_choice, validated)
+
     def test_model_controls_remain_available_for_each_active_demand(self):
         for sources, overlay in (
             (MotionSources(False, True), False),
@@ -3746,6 +3913,73 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertIsNone(self.app._model_switch)
         self.assertEqual(self.app._model_choice, previous)
         self.assertEqual(self.ai.start_calls[-1][2], previous.path)
+
+    def test_disconnect_with_overlay_defers_previous_model_until_retirement(self):
+        self.app.capture_mode_var.set("Full Display")
+        self.app._capture_mode_changed()
+        self.prepare_armed_sources(MotionSources(False, True))
+        self.app.toggle_overlay()
+        previous = self.app._model_choice
+        choice, token = self.begin_custom_model_switch("disconnect-retiring.onnx")
+        self.model_validator.emit(
+            ModelValidationEvent(
+                "ready", token, self.validated_model_choice(choice)
+            )
+        )
+        self.drain_ui_queue()
+        self.ai.retire_immediately = False
+        starts = len(self.ai.start_calls)
+        self.service.connected = False
+
+        self.app._handle_disconnect("Device disconnected")
+
+        self.assertTrue(self.app.overlay_visible)
+        self.assertFalse(self.app.master_armed)
+        self.assertIsNone(self.app._model_switch)
+        self.assertEqual(self.app._model_choice, previous)
+        self.assertEqual(len(self.ai.start_calls), starts)
+        self.assertIsNotNone(getattr(self.app, "_deferred_ai_start", None))
+
+        self.ai.finish_retirement()
+        self.drain_ui_queue()
+
+        self.assertEqual(len(self.ai.start_calls), starts + 1)
+        self.assertEqual(self.ai.start_calls[-1][2], previous.path)
+        self.assertEqual(self.ai.start_calls[-1][3], FULL_DISPLAY)
+        self.assertTrue(self.app.overlay_visible)
+
+    def test_cancelled_model_switch_defers_previous_model_until_retirement(self):
+        self.app.capture_mode_var.set("Full Display")
+        self.app._capture_mode_changed()
+        self.prepare_armed_sources(MotionSources(False, True))
+        self.app.toggle_overlay()
+        previous = self.app._model_choice
+        choice, token = self.begin_custom_model_switch("cancel-retiring.onnx")
+        self.model_validator.emit(
+            ModelValidationEvent(
+                "ready", token, self.validated_model_choice(choice)
+            )
+        )
+        self.drain_ui_queue()
+        self.ai.retire_immediately = False
+        starts = len(self.ai.start_calls)
+
+        self.app.toggle_ai_source()
+
+        self.assertTrue(self.app.overlay_visible)
+        self.assertFalse(self.app.ai_selected)
+        self.assertIsNone(self.app._model_switch)
+        self.assertEqual(self.app._model_choice, previous)
+        self.assertEqual(len(self.ai.start_calls), starts)
+        self.assertIsNotNone(getattr(self.app, "_deferred_ai_start", None))
+
+        self.ai.finish_retirement()
+        self.drain_ui_queue()
+
+        self.assertEqual(len(self.ai.start_calls), starts + 1)
+        self.assertEqual(self.ai.start_calls[-1][2], previous.path)
+        self.assertEqual(self.ai.start_calls[-1][3], FULL_DISPLAY)
+        self.assertTrue(self.app.overlay_visible)
 
     def test_close_invalidates_switch_token_before_validator_is_closed(self):
         choice, token = self.begin_custom_model_switch("close.onnx")
@@ -4286,6 +4520,8 @@ class JitterLayoutTests(unittest.TestCase):
     def test_disconnect_recovery_start_failure_hides_existing_overlay(self):
         self.app.toggle_overlay()
         self.app.handle_ai_event(AiEvent("stopped", "worker ended"))
+        self.ai.active_generation = None
+        self.ai.finish_retirement()
         self.ai.start_result = False
         self.overlay.hide_error = RuntimeError("clear failed")
 
@@ -4440,6 +4676,60 @@ class JitterLayoutTests(unittest.TestCase):
                     self.service.composite_motion_calls[-1].duration_s,
                     3.0,
                 )
+
+    def test_ai_test_run_waits_for_physical_ai_retirement_before_starting(self):
+        self.app.capture_mode_var.set("Full Display")
+        self.app._capture_mode_changed()
+        self.app.toggle_overlay()
+        self.ai.emit(AiEvent("ready", "DmlExecutionProvider"))
+        self.drain_ui_queue()
+        self.ai.retire_immediately = False
+        self.app.toggle_overlay()
+        self.service.connected = True
+        self.app.ai_selected = True
+        starts = len(self.ai.start_calls)
+
+        self.app.start_test_run()
+
+        self.assertEqual(self.app._motion_mode, "test_ai_loading")
+        self.assertTrue(self.app._test_start_pending)
+        self.assertEqual(self.app.footer_var.get(), "Loading AI for Test Run")
+        self.assertEqual(len(self.ai.start_calls), starts)
+        self.assertIsNotNone(getattr(self.app, "_deferred_ai_start", None))
+
+        self.ai.finish_retirement()
+        self.drain_ui_queue()
+
+        self.assertEqual(len(self.ai.start_calls), starts + 1)
+        self.assertEqual(self.ai.start_calls[-1][2], self.app._model_choice.path)
+        self.assertEqual(self.ai.start_calls[-1][3], FULL_DISPLAY)
+        self.ai.emit(AiEvent("ready", "DmlExecutionProvider"))
+        self.drain_ui_queue()
+        self.assertEqual(self.app._motion_mode, "test_ai")
+        self.assertEqual(
+            self.service.composite_motion_calls[-1].sources,
+            MotionSources(False, True),
+        )
+
+    def test_deferred_ai_test_start_failure_uses_test_abort_policy(self):
+        self.app.toggle_overlay()
+        self.ai.emit(AiEvent("ready", "DmlExecutionProvider"))
+        self.drain_ui_queue()
+        self.ai.retire_immediately = False
+        self.app.toggle_overlay()
+        self.service.connected = True
+        self.app.ai_selected = True
+
+        self.app.start_test_run()
+        self.ai.start_result = False
+        self.ai.finish_retirement()
+        with self.assertLogs(level="ERROR"):
+            self.drain_ui_queue()
+
+        self.assertIsNone(self.app._motion_mode)
+        self.assertFalse(self.app._test_start_pending)
+        self.assertEqual(self.app.footer_var.get(), "AI Test Run could not start")
+        self.assertEqual(self.service.composite_motion_calls, [])
 
     def test_ai_test_run_provider_reads_live_curve_with_zoom_disabled(self):
         self.service.connected = True

@@ -18,6 +18,17 @@ class MotionSources:
         return self.jitter or self.ai
 
 
+def compose_motion_components(
+    jitter: tuple[int, int],
+    aim: tuple[int, int],
+) -> tuple[int, int]:
+    """Compose one Jitter and AI report without retaining excess movement."""
+    return (
+        max(-127, min(127, int(jitter[0]) + int(aim[0]))),
+        max(-127, min(127, int(jitter[1]) + int(aim[1]))),
+    )
+
+
 class CombinedMotionEngine:
     def __init__(
         self,
@@ -54,6 +65,27 @@ class CombinedMotionEngine:
         elapsed: float,
         now: float,
     ) -> tuple[int, int]:
+        jitter, aim = self.step_components(
+            motion_settings,
+            target,
+            aim_settings,
+            dt=dt,
+            elapsed=elapsed,
+            now=now,
+        )
+        return compose_motion_components(jitter, aim)
+
+    def step_components(
+        self,
+        motion_settings: MotionSettings,
+        target: TargetSnapshot | None,
+        aim_settings: AimSettings,
+        *,
+        dt: float,
+        elapsed: float,
+        now: float,
+    ) -> tuple[tuple[int, int], tuple[int, int]]:
+        """Advance both sources once and retain their independent reports."""
         jitter = (
             self._jitter.step(motion_settings, dt, elapsed)
             if self._jitter is not None else (0, 0)
@@ -62,10 +94,7 @@ class CombinedMotionEngine:
             self._aim.step(target, aim_settings, now)
             if self._aim is not None else (0, 0)
         )
-        return (
-            max(-127, min(127, int(jitter[0]) + int(aim[0]))),
-            max(-127, min(127, int(jitter[1]) + int(aim[1]))),
-        )
+        return jitter, aim
 
     def poll_interval(self, _motion_settings: MotionSettings) -> float:
         return 1.0 / self._servo_hz

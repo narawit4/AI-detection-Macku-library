@@ -123,6 +123,25 @@ class _ModelSwitch:
     phase: str
     failure: str | None = None
 
+
+@dataclass(frozen=True)
+class _DeferredAiStart:
+    context: str
+    model_choice: ModelChoice
+    capture_mode: str
+    lifecycle_epoch: int
+    kind: str
+    test_generation: int | None = None
+
+
+@dataclass(frozen=True)
+class _ActiveAiLifecycle:
+    request: _DeferredAiStart
+    generation: Any
+    event_epoch: int
+    model_token: int | None = None
+
+
 DARK_PALETTE = {
     "window": "#0D1420", "surface": "#172232", "raised": "#202F43",
     "border": "#34465C", "text": "#EEF8FF", "muted": "#91A5B8",
@@ -337,6 +356,8 @@ class JitterApp(tk.Tk):
         self._capture_mode_switching = False
         self._capture_restart_pending = False
         self._model_start_pending: tuple[str, int] | None = None
+        self._deferred_ai_start: _DeferredAiStart | None = None
+        self._active_ai_lifecycle: _ActiveAiLifecycle | None = None
         self._model_choice = bundled_model_choice()
         self._model_switch_token = 0
         self._model_switch: _ModelSwitch | None = None
@@ -2959,6 +2980,10 @@ class JitterApp(tk.Tk):
     def _model_changes_unavailable(self) -> bool:
         return (
             self._model_switch is not None
+            or self._model_start_pending is not None
+            or self._capture_mode_switching
+            or self._capture_restart_pending
+            or self._deferred_ai_start is not None
             or self._motion_mode in _TEST_MOTION_MODES
             or self._closing
         )
@@ -2966,7 +2991,15 @@ class JitterApp(tk.Tk):
     def _render_model_controls(self) -> None:
         busy = self._model_switch is not None
         testing = self._motion_mode in _TEST_MOTION_MODES
-        disabled = busy or testing or self._closing
+        disabled = (
+            busy
+            or self._model_start_pending is not None
+            or self._capture_mode_switching
+            or self._capture_restart_pending
+            or self._deferred_ai_start is not None
+            or testing
+            or self._closing
+        )
         self.model_browse_button.configure(
             state="disabled" if disabled else "normal"
         )
@@ -2986,6 +3019,8 @@ class JitterApp(tk.Tk):
             or self._motion_mode in _TEST_MOTION_MODES
             or self._model_switch is not None
             or self._capture_mode_switching
+            or self._capture_restart_pending
+            or self._deferred_ai_start is not None
             or (self._ai_runtime_active and not self._ai_ready)
         )
         self.capture_mode_combo.configure(
@@ -3004,7 +3039,10 @@ class JitterApp(tk.Tk):
             self._closing
             or self._motion_mode in _TEST_MOTION_MODES
             or self._model_switch is not None
+            or self._model_start_pending is not None
             or self._capture_mode_switching
+            or self._capture_restart_pending
+            or self._deferred_ai_start is not None
             or (self._ai_runtime_active and not self._ai_ready)
         )
         if guarded:
@@ -3021,7 +3059,8 @@ class JitterApp(tk.Tk):
 
         self._capture_mode_switching = True
         self._capture_restart_pending = False
-        self._render_capture_mode_control()
+        self.footer_var.set(f"Switching AI capture to {label}...")
+        self._render_model_controls()
         self._refresh_section_summaries()
         try:
             self._ai_targeting_revision = self.ai_service.reset_targeting()
@@ -3067,13 +3106,153 @@ class JitterApp(tk.Tk):
         if worker_active:
             return
         self._capture_restart_pending = False
-        if self._start_ai_runtime("Capture mode changed"):
+        if self._start_ai_runtime(
+            "Capture mode changed",
+            capture_mode=self._capture_mode,
+            lifecycle_kind="capture",
+        ):
             return
         self._fail_capture_mode_switch()
 
     def _continue_deferred_ai_start(self) -> None:
+        capture_transition = (
+            self._capture_mode_switching or self._capture_restart_pending
+        )
+        model_transition = (
+            self._model_start_pending is not None
+            or (
+                self._model_switch is not None
+                and self._model_switch.phase
+                in {"starting_candidate", "starting_rollback"}
+            )
+        )
+        if (
+            (capture_transition and model_transition)
+            or (
+                self._deferred_ai_start is not None
+                and (capture_transition or model_transition)
+            )
+        ):
+            logging.error("Conflicting AI lifecycle starts were rejected")
+            self._capture_restart_pending = False
+            self._capture_mode_switching = False
+            self._model_start_pending = None
+            self._deferred_ai_start = None
+            self._handle_ai_runtime_error("Conflicting AI lifecycle transitions")
+            return
         self._continue_capture_mode_switch()
         self._continue_model_start()
+        self._continue_general_ai_start()
+
+    def _general_ai_start_request(self, context: str) -> _DeferredAiStart:
+        is_test = (
+            self._motion_mode in {"test_ai_loading", "test_combined_loading"}
+            and self._test_pending_generation is not None
+        )
+        return _DeferredAiStart(
+            context=context,
+            model_choice=self._model_choice,
+            capture_mode=self._capture_mode,
+            lifecycle_epoch=self._ai_event_epoch,
+            kind="test" if is_test else "normal",
+            test_generation=(
+                self._test_pending_generation if is_test else None
+            ),
+        )
+
+    def _general_ai_start_is_current(self, request: _DeferredAiStart) -> bool:
+        if (
+            self._closing
+            or request.lifecycle_epoch != self._ai_event_epoch
+            or not self._ai_runtime_required()
+            or request.model_choice != self._model_choice
+            or request.capture_mode != self._capture_mode
+            or self._capture_mode_switching
+            or self._capture_restart_pending
+            or self._model_switch is not None
+            or self._model_start_pending is not None
+        ):
+            return False
+        if request.kind == "test":
+            return (
+                request.test_generation is not None
+                and request.test_generation == self._test_pending_generation
+                and self._motion_mode
+                in {"test_ai_loading", "test_combined_loading"}
+                and self._test_start_pending
+            )
+        return request.kind == "normal" and self._motion_mode is None
+
+    def _request_general_ai_start(self, context: str) -> bool:
+        request = self._general_ai_start_request(context)
+        try:
+            worker_active = bool(self.ai_service.worker_active)
+        except Exception:
+            logging.exception("AI worker retirement probe failed")
+            return False
+        if worker_active:
+            self._deferred_ai_start = request
+            self._ai_ready = False
+            self._ai_provider = None
+            self._ai_runtime_active = False
+            self._sync_adaptive_zoom_gate()
+            self.ai_status_var.set("Loading")
+            self.ai_fps_var.set("0 FPS")
+            self.ai_provider_var.set("No provider")
+            self.ai_zoom_var.set("1.0\N{MULTIPLICATION SIGN}")
+            self._render_model_controls()
+            return True
+        return self._start_ai_runtime(
+            request.context,
+            model_choice=request.model_choice,
+            capture_mode=request.capture_mode,
+            lifecycle_kind=request.kind,
+            test_generation=request.test_generation,
+        )
+
+    def _continue_general_ai_start(self) -> None:
+        request = self._deferred_ai_start
+        if request is None:
+            return
+        if not self._general_ai_start_is_current(request):
+            self._deferred_ai_start = None
+            self._render_model_controls()
+            return
+        try:
+            worker_active = bool(self.ai_service.worker_active)
+        except Exception:
+            logging.exception("AI worker retirement probe failed")
+            self._deferred_ai_start = None
+            self._handle_deferred_ai_start_failure(request)
+            return
+        if worker_active:
+            return
+        self._deferred_ai_start = None
+        started = self._start_ai_runtime(
+            request.context,
+            model_choice=request.model_choice,
+            capture_mode=request.capture_mode,
+            lifecycle_kind=request.kind,
+            test_generation=request.test_generation,
+        )
+        if not started:
+            self._handle_deferred_ai_start_failure(request)
+
+    def _handle_deferred_ai_start_failure(
+        self, request: _DeferredAiStart
+    ) -> None:
+        if (
+            request.kind == "test"
+            and request.test_generation == self._test_pending_generation
+        ):
+            self._abort_test_run("AI Test Run could not start")
+            return
+        self._hide_overlay_after_ai_failure()
+        if self.master_armed and self.ai_selected:
+            self._handle_ai_start_failure()
+        else:
+            self._render_runtime_controls()
+            self.footer_var.set("Overlay could not start AI detection")
 
     def _continue_model_start(self) -> None:
         pending = self._model_start_pending
@@ -3115,7 +3294,13 @@ class JitterApp(tk.Tk):
         self._model_start_pending = None
         choice = switch.candidate if kind == "candidate" else switch.previous
         context = "Model switch" if kind == "candidate" else "Model rollback"
-        if self._start_ai_runtime(context, model_choice=choice):
+        if self._start_ai_runtime(
+            context,
+            model_choice=choice,
+            capture_mode=self._capture_mode,
+            lifecycle_kind=f"model_{kind}",
+            lifecycle_token=token,
+        ):
             return
         if kind == "candidate":
             self._start_model_rollback(switch, "candidate startup failed")
@@ -3124,6 +3309,7 @@ class JitterApp(tk.Tk):
 
     def _fail_capture_mode_switch(self) -> None:
         self._capture_restart_pending = False
+        self._deferred_ai_start = None
         self._capture_mode_switching = False
         self._ai_ready = False
         self._ai_provider = None
@@ -3174,6 +3360,15 @@ class JitterApp(tk.Tk):
         self._begin_model_switch(bundled_model_choice())
 
     def _begin_model_switch(self, candidate: ModelChoice) -> None:
+        if (
+            self._model_start_pending is not None
+            or self._capture_mode_switching
+            or self._capture_restart_pending
+            or self._deferred_ai_start is not None
+        ):
+            self.footer_var.set("Wait for the current AI transition to finish")
+            self._render_model_controls()
+            return
         if candidate.path == self._model_choice.path:
             self.footer_var.set(f"Using model: {candidate.display_name}")
             return
@@ -3649,7 +3844,14 @@ class JitterApp(tk.Tk):
                     or self._model_start_pending
                     or self._ai_runtime_active
                 )
-            started = self._start_ai_runtime(context)
+            if self._deferred_ai_start is not None:
+                self._deferred_ai_start = self._general_ai_start_request(context)
+                self._continue_deferred_ai_start()
+                return bool(
+                    self._deferred_ai_start is not None
+                    or self._ai_runtime_active
+                )
+            started = self._request_general_ai_start(context)
             if not started:
                 self._hide_overlay_after_ai_failure()
             return started
@@ -3666,6 +3868,7 @@ class JitterApp(tk.Tk):
             finally:
                 self._capture_restart_pending = False
                 self._model_start_pending = None
+                self._deferred_ai_start = None
                 self._capture_mode_switching = False
                 self._ai_ready = False
                 self._ai_provider = None
@@ -3809,11 +4012,28 @@ class JitterApp(tk.Tk):
         context: str,
         *,
         model_choice: ModelChoice | None = None,
+        capture_mode: str | None = None,
+        lifecycle_kind: str = "normal",
+        lifecycle_token: int | None = None,
+        test_generation: int | None = None,
     ) -> bool:
         choice = model_choice or self._model_choice
+        generation_capture_mode = (
+            self._capture_mode if capture_mode is None else capture_mode
+        )
+        request = _DeferredAiStart(
+            context=context,
+            model_choice=choice,
+            capture_mode=generation_capture_mode,
+            lifecycle_epoch=self._ai_event_epoch,
+            kind=lifecycle_kind,
+            test_generation=test_generation,
+        )
         if not self._ai_runtime_active:
             self._ai_event_epoch += 1
+        event_epoch = self._ai_event_epoch
         self._ai_runtime_active = True
+        self._active_ai_lifecycle = None
         self._sync_adaptive_zoom_gate()
         self._render_capture_mode_control()
         try:
@@ -3821,13 +4041,14 @@ class JitterApp(tk.Tk):
                 self.get_ai_settings,
                 self.get_adaptive_zoom_gate,
                 model_path=choice.path,
-                capture_mode=self._capture_mode,
+                capture_mode=generation_capture_mode,
             )
         except Exception:
             logging.exception("AI runtime could not start during %s", context)
             self._ai_ready = False
             self._ai_provider = None
             self._ai_runtime_active = False
+            self._active_ai_lifecycle = None
             self._sync_adaptive_zoom_gate()
             self._render_capture_mode_control()
             self.ai_status_var.set("Error")
@@ -3839,17 +4060,25 @@ class JitterApp(tk.Tk):
             self._ai_ready = False
             self._ai_provider = None
             self._ai_runtime_active = False
+            self._active_ai_lifecycle = None
             self._sync_adaptive_zoom_gate()
             self._render_capture_mode_control()
             self.ai_status_var.set("Error")
             self.ai_fps_var.set("0 FPS")
             self.ai_provider_var.set("No provider")
             return False
+        self._active_ai_lifecycle = _ActiveAiLifecycle(
+            request=request,
+            generation=generation,
+            event_epoch=event_epoch,
+            model_token=lifecycle_token,
+        )
         return True
 
     def _handle_ai_start_failure(self) -> None:
         """Fail closed to Jitter when normal armed AI demand cannot start."""
         self._capture_restart_pending = False
+        self._deferred_ai_start = None
         self._capture_mode_switching = False
         self.ai_selected = False
         self._ai_ready = False
@@ -3874,6 +4103,7 @@ class JitterApp(tk.Tk):
             self.ai_service.stop(reason)
         finally:
             self._ai_event_epoch += 1
+            self._active_ai_lifecycle = None
 
     def _stop_motion_runtime(
         self,
@@ -4245,6 +4475,9 @@ class JitterApp(tk.Tk):
             self.ai_service.latest_snapshot,
             self.get_ai_settings,
             duration_s=duration_s,
+            targeting_epoch_provider=(
+                self.ai_service.current_targeting_revision
+            ),
         )
         if source is None or source is False:
             return False
@@ -4264,9 +4497,20 @@ class JitterApp(tk.Tk):
         if self._closing:
             return
         kind = event.kind
+        active_lifecycle = self._active_ai_lifecycle
         if (
             kind in {"loading", "ready", "fps", "zoom", "error"}
             and not self._ai_runtime_active
+        ):
+            return
+        if (
+            kind in {"loading", "ready", "fps", "zoom", "error"}
+            and event.generation is not None
+            and (
+                active_lifecycle is None
+                or event.generation != active_lifecycle.generation
+                or active_lifecycle.event_epoch != self._ai_event_epoch
+            )
         ):
             return
         if kind == "loading":
@@ -4281,12 +4525,30 @@ class JitterApp(tk.Tk):
             self.ai_zoom_var.set("1.0×")
         elif kind == "ready":
             switch = self._model_switch
-            if switch is not None and switch.phase == "starting_candidate":
+            lifecycle_kind = (
+                active_lifecycle.request.kind
+                if active_lifecycle is not None else None
+            )
+            lifecycle_token = (
+                active_lifecycle.model_token
+                if active_lifecycle is not None else None
+            )
+            if (
+                switch is not None
+                and switch.phase == "starting_candidate"
+                and lifecycle_kind == "model_candidate"
+                and lifecycle_token == switch.token
+            ):
                 self._finish_model_switch(
                     switch.candidate,
                     f"Using model: {switch.candidate.display_name}",
                 )
-            elif switch is not None and switch.phase == "starting_rollback":
+            elif (
+                switch is not None
+                and switch.phase == "starting_rollback"
+                and lifecycle_kind == "model_rollback"
+                and lifecycle_token == switch.token
+            ):
                 failure = switch.failure or "AI model validation failed"
                 self._finish_model_switch(
                     switch.previous,
@@ -4304,10 +4566,16 @@ class JitterApp(tk.Tk):
             self._sync_adaptive_zoom_gate()
             self.ai_status_var.set(f"Ready ({provider})")
             self.ai_provider_var.set(provider)
-            capture_mode_switching = self._capture_mode_switching
-            self._capture_restart_pending = False
-            self._capture_mode_switching = False
-            self._render_capture_mode_control()
+            capture_mode_switching = bool(
+                self._capture_mode_switching
+                and lifecycle_kind == "capture"
+                and active_lifecycle is not None
+                and active_lifecycle.request.capture_mode == self._capture_mode
+            )
+            if capture_mode_switching:
+                self._capture_restart_pending = False
+                self._capture_mode_switching = False
+            self._render_model_controls()
             if capture_mode_switching:
                 self.footer_var.set(
                     f"AI capture ready: "
@@ -4375,6 +4643,7 @@ class JitterApp(tk.Tk):
             self._ai_ready = False
             self._ai_provider = None
             self._ai_runtime_active = False
+            self._active_ai_lifecycle = None
             self._sync_adaptive_zoom_gate()
             self.ai_status_var.set("Stopped")
             self.ai_fps_var.set("0 FPS")
@@ -4383,6 +4652,8 @@ class JitterApp(tk.Tk):
 
     def _handle_ai_runtime_error(self, payload: object) -> None:
         logging.error("AI runtime error: %s", payload)
+        self._deferred_ai_start = None
+        self._active_ai_lifecycle = None
         self._ai_runtime_active = False
         self._sync_adaptive_zoom_gate()
         test_sources = self._test_sources
@@ -4880,6 +5151,8 @@ class JitterApp(tk.Tk):
         self._closing = True
         self._capture_restart_pending = False
         self._model_start_pending = None
+        self._deferred_ai_start = None
+        self._active_ai_lifecycle = None
         self._capture_mode_switching = False
         self._cancel_ai_curve_callbacks()
         for widget in self.winfo_children():

@@ -1,4 +1,4 @@
-"""Full-output DXCam capture for the AI aim worker."""
+"""DXCam capture for Center 320 and Full Display AI aim modes."""
 
 from collections.abc import Callable
 from dataclasses import dataclass

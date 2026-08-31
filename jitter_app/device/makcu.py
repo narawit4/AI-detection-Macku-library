@@ -19,6 +19,7 @@ from jitter_app.motion.combined import (
     DEFAULT_SERVO_HZ,
     CombinedMotionEngine,
     MotionSources,
+    compose_motion_components,
 )
 from jitter_app.motion.engine import MotionSettings, PairedPulseEngine
 
@@ -521,6 +522,8 @@ class MakcuService:
         target_provider: Callable[[], TargetSnapshot | None],
         aim_settings_provider: Callable[[], AimSettings],
         duration_s: float | None = None,
+        *,
+        targeting_epoch_provider: Callable[[], int] | None = None,
     ) -> int | None:
         """Start selected motion sources through one controller worker."""
         if not isinstance(sources, MotionSources) or not sources.any:
@@ -531,6 +534,7 @@ class MakcuService:
             target_provider,
             aim_settings_provider,
             duration_s,
+            targeting_epoch_provider,
         )
 
     def _start_motion_job(
@@ -540,6 +544,7 @@ class MakcuService:
         target_provider: Callable[[], TargetSnapshot | None],
         aim_settings_provider: Callable[[], AimSettings],
         duration_s: float | None,
+        targeting_epoch_provider: Callable[[], int] | None,
     ) -> int | None:
         start_cancel_epoch: int | None = None
         while True:
@@ -597,6 +602,7 @@ class MakcuService:
                             aim_settings_provider,
                             duration,
                             expected_controller,
+                            targeting_epoch_provider,
                         ),
                         name=f"MakcuMotion-{motion_generation}",
                         daemon=True,
@@ -698,6 +704,7 @@ class MakcuService:
         aim_settings_provider: Callable[[], AimSettings],
         duration_s: float | None,
         expected_controller: Any | None = None,
+        targeting_epoch_provider: Callable[[], int] | None = None,
     ) -> None:
         engine: Any | None = None
         reason: str | None = None
@@ -708,6 +715,9 @@ class MakcuService:
         if expected_controller is None:
             with self._lock:
                 expected_controller = self._controller
+        track_targeting_epoch = (
+            sources.ai and targeting_epoch_provider is not None
+        )
         try:
             try:
                 engine = self._combined_engine_factory(sources)
@@ -742,19 +752,47 @@ class MakcuService:
                     tick_started = time.perf_counter()
                     dt = max(0.0, min(tick_started - previous_tick, 0.1))
                     previous_tick = tick_started
-                    report_x, report_y = engine.step(
-                        motion_settings,
-                        target_provider(),
-                        aim_settings_provider(),
-                        dt=dt,
-                        elapsed=elapsed,
-                        now=tick_started,
+                    targeting_epoch = (
+                        targeting_epoch_provider()
+                        if track_targeting_epoch else None
                     )
+                    target = target_provider()
+                    aim_settings = aim_settings_provider()
+                    jitter_report: tuple[int, int] | None = None
+                    if track_targeting_epoch:
+                        jitter_report, aim_report = engine.step_components(
+                            motion_settings,
+                            target,
+                            aim_settings,
+                            dt=dt,
+                            elapsed=elapsed,
+                            now=tick_started,
+                        )
+                        report_x, report_y = compose_motion_components(
+                            jitter_report,
+                            aim_report,
+                        )
+                    else:
+                        report_x, report_y = engine.step(
+                            motion_settings,
+                            target,
+                            aim_settings,
+                            dt=dt,
+                            elapsed=elapsed,
+                            now=tick_started,
+                        )
                     interval = engine.poll_interval(motion_settings)
                 except Exception as exc:
                     error_payload = f"{type(exc).__name__}: {exc}"
                     break
-                if report_x or report_y:
+                if (
+                    report_x
+                    or report_y
+                    or (
+                        jitter_report is not None
+                        and (jitter_report[0] or jitter_report[1])
+                    )
+                ):
                     # Serialize the stop check with the move call: once
                     # stop_motion() returns, this worker cannot send another
                     # report for this generation.
@@ -783,15 +821,33 @@ class MakcuService:
                                         or "disconnected"
                                     )
                                 break
-                        try:
-                            # Passing the guarded state check commits this one
-                            # report as in flight.  Nonblocking cancellation may
-                            # return while it finishes, but cannot commit the
-                            # worker's next report.
-                            controller.move(report_x, report_y)
-                        except Exception as exc:
-                            error_payload = f"{type(exc).__name__}: {exc}"
-                            break
+                            if track_targeting_epoch:
+                                try:
+                                    current_targeting_epoch = (
+                                        targeting_epoch_provider()
+                                    )
+                                except Exception as exc:
+                                    error_payload = (
+                                        f"{type(exc).__name__}: {exc}"
+                                    )
+                                    break
+                                if current_targeting_epoch != targeting_epoch:
+                                    report_x, report_y = (
+                                        compose_motion_components(
+                                            jitter_report,
+                                            (0, 0),
+                                        )
+                                    )
+                        if report_x or report_y:
+                            try:
+                                # Passing the guarded state check commits this
+                                # one report as in flight.  Nonblocking
+                                # cancellation may return while it finishes,
+                                # but cannot commit the worker's next report.
+                                controller.move(report_x, report_y)
+                            except Exception as exc:
+                                error_payload = f"{type(exc).__name__}: {exc}"
+                                break
                 wait_started = time.perf_counter()
                 next_tick_deadline += interval
                 if next_tick_deadline <= wait_started:

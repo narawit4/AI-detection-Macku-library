@@ -804,6 +804,16 @@ class AiServiceTests(unittest.TestCase):
             (640, 360),
         )
 
+    def test_targeting_revision_reader_tracks_resets(self):
+        service = AiService(lambda _event: None)
+        self.addCleanup(service.close)
+        reader = getattr(service, "current_targeting_revision", None)
+
+        self.assertTrue(callable(reader))
+        self.assertEqual(reader(), 0)
+        self.assertEqual(service.reset_targeting(), 1)
+        self.assertEqual(reader(), 1)
+
     def test_reset_targeting_preserves_explicit_capture_viewport(self):
         service = AiService(lambda _event: None)
         self.addCleanup(service.close)
@@ -2042,6 +2052,28 @@ class AiServiceTests(unittest.TestCase):
         self.assertFalse(service.running)
         self.assertIn(AiEvent("stopped", "disabled"), events)
         self.assertIsInstance(generation, int)
+
+    def test_ready_event_identifies_the_generation_that_became_ready(self):
+        ready = threading.Event()
+        events = []
+
+        def sink(event):
+            events.append(event)
+            if event.kind == "ready":
+                ready.set()
+
+        service = AiService(
+            sink,
+            detector_factory=lambda _path: FakeDetector(),
+            capture_factory=lambda _mode: FakeCapture(),
+        )
+        self.addCleanup(service.close)
+
+        generation = service.start(AimSettings)
+        self.assertTrue(ready.wait(1.0))
+        ready_event = next(event for event in events if event.kind == "ready")
+
+        self.assertEqual(getattr(ready_event, "generation", None), generation)
 
     def test_worker_active_tracks_physical_retirement_after_stop(self):
         detector = BlockingDetector()

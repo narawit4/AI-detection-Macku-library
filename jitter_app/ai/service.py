@@ -1,7 +1,7 @@
 """Generation-safe capture and inference worker for AI aim mode."""
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 import logging
 from pathlib import Path
 import threading
@@ -47,6 +47,7 @@ class AiEvent:
     kind: str
     payload: Any = None
     targeting_revision: int | None = None
+    generation: int | None = field(default=None, compare=False)
 
 
 def _validate_captured_frame(
@@ -200,6 +201,11 @@ class AiService:
     def latest_detection_snapshot(self) -> DetectionFrameSnapshot | None:
         with self._lock:
             return self._latest_detection
+
+    def current_targeting_revision(self) -> int:
+        """Return the epoch used to invalidate fetched movement targets."""
+        with self._lock:
+            return self._targeting_revision
 
     def reset_targeting(self) -> int:
         """Immediately invalidate movement output without stopping inference."""
@@ -373,7 +379,7 @@ class AiService:
     ) -> None:
         with self._event_lock:
             if self._is_current(generation, stop_event):
-                self._emit(event)
+                self._emit(replace(event, generation=generation))
 
     def _emit_stopped_current(self, event: AiEvent, generation: int) -> None:
         with self._event_lock:
@@ -385,7 +391,7 @@ class AiService:
                     and self._status == "stopped"
                 )
             if current:
-                self._emit(event)
+                self._emit(replace(event, generation=generation))
 
     def _emit_status_current(
         self,
@@ -402,7 +408,7 @@ class AiService:
                     and self._status == status
                 )
             if current:
-                self._emit(event)
+                self._emit(replace(event, generation=generation))
 
     def _emit(self, event: AiEvent) -> None:
         try:

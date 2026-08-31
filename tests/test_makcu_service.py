@@ -589,6 +589,50 @@ class MakcuMovementTests(unittest.TestCase):
         self.assertTrue(controller.moves)
         self.assertTrue(all(move == (3, -2) for move in controller.moves))
 
+    def test_target_reset_after_fetch_discards_only_ai_at_commit_barrier(self):
+        class NotifyingController(FakeController):
+            def __init__(self):
+                super().__init__()
+                self.moved = threading.Event()
+
+            def move(self, x, y):
+                super().move(x, y)
+                self.moved.set()
+
+        controller = NotifyingController()
+        aim = BlockingAimEngine()
+        epoch = {"value": 0}
+        target = TargetSnapshot(
+            1, time.perf_counter(), "head", 170, 160
+        )
+        service, _controller, _events = self.connected_service(
+            controller=controller,
+            aim_engine_factory=lambda: aim,
+            ai_poll_hz=1.0,
+        )
+        self.addCleanup(aim.release.set)
+
+        try:
+            source = service.start_composite_motion_source(
+                MotionSources(True, True),
+                MotionSettings,
+                lambda: target,
+                AimSettings,
+                targeting_epoch_provider=lambda: epoch["value"],
+            )
+        except TypeError as error:
+            self.fail(f"targeting epoch provider was not accepted: {error}")
+        self.assertIsInstance(source, int)
+        self.assertTrue(aim.entered.wait(1.0))
+
+        epoch["value"] += 1
+        aim.release.set()
+        self.assertTrue(controller.moved.wait(1.0))
+        service.cancel_motion("test complete")
+        service.join_motion(1.0)
+
+        self.assertEqual(controller.moves, [(0, -1)])
+
     def test_composite_rejects_empty_sources_without_reserving_generation(self):
         service, _controller, _events = self.connected_service()
         with service._lock:
