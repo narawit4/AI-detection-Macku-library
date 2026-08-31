@@ -22,9 +22,17 @@ def wait_until(predicate, timeout=1.0):
     return predicate()
 
 
+def rgb_frame(value=0, *, width=320, height=320):
+    frame = np.zeros((height, width, 3), dtype=np.uint8)
+    frame[0, 0] = value
+    return frame
+
+
 class FakeCapture:
     def __init__(self, frames=None):
-        self.frames = list(frames or [10])
+        self.frames = list(
+            frames if frames is not None else [rgb_frame(10)]
+        )
         self.closed = threading.Event()
 
     def start(self):
@@ -83,9 +91,14 @@ class CountingCapture(FakeCapture):
 class FakeDetector:
     provider = "DmlExecutionProvider"
 
+    def __init__(self):
+        self.calls = []
+
     def detect(self, frame):
+        self.calls.append(frame)
+        value = float(frame[0, 0, 0])
         return (
-            Detection(frame, frame, frame + 10, frame + 10, 0.9, 7),
+            Detection(value, value, value + 10, value + 10, 0.9, 7),
         )
 
 
@@ -575,7 +588,7 @@ class AiServiceTests(unittest.TestCase):
         player = Detection(140.0, 40.0, 180.0, 180.0, 0.9, 0)
         detector = SequentialDetector(((player,),))
         capture = ControlledCapture([
-            np.zeros((320, 320, 3), dtype=np.uint8)
+            rgb_frame(width=640, height=360)
         ])
         service, _events = self.make_zoom_service(detector, capture=capture)
         service.start(AimSettings, lambda: False)
@@ -589,13 +602,17 @@ class AiServiceTests(unittest.TestCase):
         overlay_after = service.latest_detection_snapshot()
         self.assertEqual(overlay_after.detections, overlay_before.detections)
         self.assertIsNone(overlay_after.selected_index)
+        self.assertEqual(
+            (overlay_after.frame_width, overlay_after.frame_height),
+            (640, 360),
+        )
 
     def test_reset_targeting_rejects_an_in_flight_old_setting_publication(self):
         player = Detection(140.0, 40.0, 180.0, 180.0, 0.9, 0)
         detector = SequentialDetector(((player,), (player,)))
         capture = ControlledCapture([
-            np.zeros((320, 320, 3), dtype=np.uint8)
-            for _ in range(2)
+            rgb_frame(width=640, height=360),
+            rgb_frame(width=800, height=600),
         ])
         provider_entered = threading.Event()
         release_provider = threading.Event()
@@ -623,7 +640,12 @@ class AiServiceTests(unittest.TestCase):
             and service.latest_detection_snapshot().sequence == 2
         ))
         self.assertIsNone(service.latest_snapshot())
-        self.assertIsNone(service.latest_detection_snapshot().selected_index)
+        latest = service.latest_detection_snapshot()
+        self.assertIsNone(latest.selected_index)
+        self.assertEqual(
+            (latest.frame_width, latest.frame_height),
+            (800, 600),
+        )
 
     def test_crossing_targets_select_nearest_current_box(self):
         person_a = (130.0, 140.0, 150.0, 160.0, 175.0, 190.0)
@@ -794,8 +816,8 @@ class AiServiceTests(unittest.TestCase):
         old_detector = RecoveryBlockingDetector()
         new_detector = SequentialDetector(((self.small_head(35.0),),))
         detectors = iter((old_detector, new_detector))
-        old_capture = FakeCapture([object(), object(), object(), object()])
-        new_capture = FakeCapture([object()])
+        old_capture = FakeCapture([rgb_frame() for _ in range(4)])
+        new_capture = FakeCapture([rgb_frame()])
         captures = iter((old_capture, new_capture))
         service = AiService(
             lambda _event: None,
@@ -1011,6 +1033,46 @@ class AiServiceTests(unittest.TestCase):
                 (320, 320, 3),
                 (213, 213, 3),
             ],
+        )
+
+    def test_native_zoom_uses_per_frame_geometry_for_both_refinements(self):
+        base = (Detection(302, 162, 338, 198, 0.90, 7),)
+        refined_one_half = (Detection(195, 102, 231, 138, 0.93, 7),)
+        refined_two = (Detection(142, 72, 178, 108, 0.94, 7),)
+        detector = SequentialDetector((
+            base,
+            refined_one_half,
+            base,
+            refined_two,
+        ))
+        capture = ControlledCapture([
+            rgb_frame(width=640, height=360),
+            rgb_frame(width=640, height=360),
+        ])
+        clock = MutableClock(10.0)
+        service, events = self.make_zoom_service(
+            detector,
+            capture=capture,
+            clock=clock,
+        )
+        service.start(AimSettings, lambda: True)
+
+        self.release_and_wait(capture, service, 1)
+        clock.set(10.11)
+        self.release_and_wait(capture, service, 2)
+
+        self.assertEqual(
+            [frame.shape for frame in detector.frames],
+            [
+                (360, 640, 3),
+                (240, 427, 3),
+                (360, 640, 3),
+                (180, 320, 3),
+            ],
+        )
+        self.assertEqual(
+            [event.payload for event in events if event.kind == "zoom"],
+            [1.5, 2.0],
         )
 
     def test_refinement_miss_resets_confirmation_without_holding_old_target(self):
@@ -1533,7 +1595,9 @@ class AiServiceTests(unittest.TestCase):
         service = AiService(
             events.append,
             detector_factory=lambda path: FakeDetector(),
-            capture_factory=lambda: FakeCapture(frames=[10, 20]),
+            capture_factory=lambda: FakeCapture(
+                frames=[rgb_frame(10), rgb_frame(20)]
+            ),
             clock=FakeClock([1.0, 1.01, 1.02, 1.03, 1.04]),
         )
         self.addCleanup(service.close)
@@ -1554,7 +1618,7 @@ class AiServiceTests(unittest.TestCase):
         service = AiService(
             lambda _event: None,
             detector_factory=lambda _path: SequenceDetector([(head,)]),
-            capture_factory=lambda: FakeCapture([object()]),
+            capture_factory=lambda: FakeCapture([rgb_frame()]),
         )
         self.addCleanup(service.close)
 
@@ -1569,12 +1633,79 @@ class AiServiceTests(unittest.TestCase):
         self.assertEqual(frame.detections, (head,))
         self.assertEqual(frame.selected_index, 0)
 
+    def test_native_frame_dimensions_publish_atomically_with_target_and_boxes(self):
+        frame = rgb_frame(width=640, height=360)
+        detector = SequenceDetector([
+            (Detection(300, 160, 340, 220, 0.9, 7),),
+        ])
+        service = AiService(
+            detector_factory=lambda _path: detector,
+            capture_factory=lambda: FakeCapture([frame]),
+            event_sink=lambda _event: None,
+        )
+        self.addCleanup(service.close)
+
+        service.start(lambda: AimSettings(), lambda: False)
+        self.assertTrue(wait_until(lambda: service.latest_snapshot() is not None))
+
+        target = service.latest_snapshot()
+        boxes = service.latest_detection_snapshot()
+        self.assertEqual((target.frame_width, target.frame_height), (640, 360))
+        self.assertEqual((boxes.frame_width, boxes.frame_height), (640, 360))
+        self.assertEqual((target.aim_x, target.aim_y), (320.0, 190.0))
+        self.assertEqual(detector.calls, 1)
+
+    def test_each_published_sequence_uses_its_own_native_frame_dimensions(self):
+        detector = SequentialDetector((
+            (Detection(300, 160, 340, 220, 0.9, 7),),
+            (Detection(380, 270, 420, 330, 0.9, 7),),
+        ))
+        capture = ControlledCapture([
+            rgb_frame(width=640, height=360),
+            rgb_frame(width=800, height=600),
+        ])
+        service = AiService(
+            detector_factory=lambda _path: detector,
+            capture_factory=lambda: capture,
+            event_sink=lambda _event: None,
+        )
+        self.addCleanup(service.close)
+        service.start(lambda: AimSettings(), lambda: False)
+
+        self.release_and_wait(capture, service, 1)
+        first_target = service.latest_snapshot()
+        first_boxes = service.latest_detection_snapshot()
+        self.assertEqual(
+            (first_target.frame_width, first_target.frame_height),
+            (640, 360),
+        )
+        self.assertEqual(
+            (first_boxes.frame_width, first_boxes.frame_height),
+            (640, 360),
+        )
+
+        self.release_and_wait(capture, service, 2)
+        second_target = service.latest_snapshot()
+        second_boxes = service.latest_detection_snapshot()
+        self.assertEqual(
+            (second_target.frame_width, second_target.frame_height),
+            (800, 600),
+        )
+        self.assertEqual(
+            (second_boxes.frame_width, second_boxes.frame_height),
+            (800, 600),
+        )
+        self.assertEqual(
+            [frame.shape for frame in detector.frames],
+            [(360, 640, 3), (600, 800, 3)],
+        )
+
     def test_worker_never_exposes_target_before_its_detection_frame(self):
         detector = BlockingDetector()
         service = AiService(
             lambda _event: None,
             detector_factory=lambda _path: detector,
-            capture_factory=lambda: FakeCapture([object()]),
+            capture_factory=lambda: FakeCapture([rgb_frame()]),
         )
         self.addCleanup(service.close)
         generation = service.start(AimSettings)
@@ -1783,7 +1914,7 @@ class AiServiceTests(unittest.TestCase):
         service = AiService(
             events.append,
             detector_factory=lambda _path: FakeDetector(),
-            capture_factory=lambda: FakeCapture([10, 20]),
+            capture_factory=lambda: FakeCapture([rgb_frame(10), rgb_frame(20)]),
             clock=FakeClock([0.0, 0.1, 0.2, 1.2, 1.3]),
         )
         self.addCleanup(service.close)
@@ -1842,7 +1973,7 @@ class AiServiceTests(unittest.TestCase):
         )
 
     def test_inference_error_clears_target_and_detection_frame(self):
-        capture = CountingCapture([object(), object()])
+        capture = CountingCapture([rgb_frame(), rgb_frame()])
         events = []
 
         class FailingDetector:
@@ -1882,7 +2013,7 @@ class AiServiceTests(unittest.TestCase):
         service = AiService(
             lambda _event: None,
             detector_factory=lambda _path: detector,
-            capture_factory=lambda: FakeCapture([None, None, object()]),
+            capture_factory=lambda: FakeCapture([None, None, rgb_frame()]),
         )
         self.addCleanup(service.close)
 
@@ -1914,7 +2045,7 @@ class AiServiceTests(unittest.TestCase):
         service = AiService(
             lambda _event: None,
             detector_factory=lambda _path: detector,
-            capture_factory=lambda: FakeCapture([object(), object()]),
+            capture_factory=lambda: FakeCapture([rgb_frame(), rgb_frame()]),
         )
         self.addCleanup(release_second.set)
         self.addCleanup(service.close)
@@ -2021,7 +2152,7 @@ class AiServiceTests(unittest.TestCase):
         service = AiService(
             sink,
             detector_factory=lambda _path: FakeDetector(),
-            capture_factory=lambda: FakeCapture([10, 20]),
+            capture_factory=lambda: FakeCapture([rgb_frame(10), rgb_frame(20)]),
             clock=FakeClock([0.0, 0.1, 0.2, 1.2, 1.3]),
         )
         self.addCleanup(release_fps.set)
@@ -2066,7 +2197,7 @@ class AiServiceTests(unittest.TestCase):
         service = AiService(
             sink,
             detector_factory=lambda _path: FakeDetector(),
-            capture_factory=lambda: FakeCapture([10, 20]),
+            capture_factory=lambda: FakeCapture([rgb_frame(10), rgb_frame(20)]),
             clock=FakeClock([0.0, 0.1, 0.2, 1.2, 1.3]),
         )
         observed_lock = ObservedRLock()
@@ -2129,8 +2260,8 @@ class AiServiceTests(unittest.TestCase):
         old_detector = BlockingDetector()
         new_detector = FakeDetector()
         detectors = iter([old_detector, new_detector])
-        old_capture = CountingCapture([150])
-        new_capture = CountingCapture([30])
+        old_capture = CountingCapture([rgb_frame(150)])
+        new_capture = CountingCapture([rgb_frame(30)])
         captures = iter([old_capture, new_capture])
         service = AiService(
             lambda _event: None,

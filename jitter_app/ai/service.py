@@ -109,6 +109,8 @@ class AiService:
                     frame.captured_at,
                     frame.detections,
                     None,
+                    frame.frame_width,
+                    frame.frame_height,
                 )
             return self._targeting_revision
 
@@ -331,6 +333,7 @@ class AiService:
                 if frame is None:
                     stop_event.wait(0.001)
                     continue
+                frame_height, frame_width = frame.shape[:2]
                 captured_at = self._clock()
                 sequence += 1
                 with self._lock:
@@ -354,6 +357,8 @@ class AiService:
                     settings,
                     sequence=sequence,
                     captured_at=captured_at,
+                    frame_width=frame_width,
+                    frame_height=frame_height,
                 )
                 factor = 1.0
                 published = base_analysis
@@ -440,6 +445,8 @@ class AiService:
                             published.frame.captured_at,
                             published.frame.detections,
                             None,
+                            published.frame.frame_width,
+                            published.frame.frame_height,
                         )
                     else:
                         self._latest = published.target
