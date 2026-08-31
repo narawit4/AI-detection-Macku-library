@@ -1,26 +1,24 @@
-"""Centered DXCam capture for the AI aim worker."""
+"""Full-output DXCam capture for the AI aim worker."""
 
 from collections.abc import Callable
 
 import numpy as np
 
 
-def centered_region(width: int, height: int, size: int = 320) -> tuple[int, int, int, int]:
-    """Return a square region centered on the primary output."""
-    size = int(size)
-    if size <= 0:
-        raise ValueError("Capture region size must be positive")
-    width = int(width)
-    height = int(height)
-    if width < size or height < size:
-        raise ValueError("Primary output is smaller than the AI capture region")
-    left = (width - size) // 2
-    top = (height - size) // 2
-    return left, top, left + size, top + size
+def full_output_region(width: int, height: int) -> tuple[int, int, int, int]:
+    """Return the complete native primary-output region."""
+    if (
+        type(width) is not int
+        or type(height) is not int
+        or width <= 0
+        or height <= 0
+    ):
+        raise ValueError("Primary output dimensions must be positive integers")
+    return 0, 0, width, height
 
 
 class DxcamCapture:
-    """Own one DXCam camera and expose owned RGB 320x320 frames."""
+    """Own one DXCam camera and expose owned native RGB frames."""
 
     def __init__(self, camera_factory: Callable | None = None, target_fps: int = 120):
         self._camera_factory = camera_factory
@@ -44,7 +42,7 @@ class DxcamCapture:
             max_buffer_len=2,
         )
         self._camera.start(
-            region=centered_region(self._camera.width, self._camera.height),
+            region=full_output_region(self._camera.width, self._camera.height),
             target_fps=self._target_fps,
         )
         self._capturing = True
@@ -53,9 +51,18 @@ class DxcamCapture:
         if not self._capturing or self._camera is None:
             return None
         frame = self._camera.get_latest_frame(copy=True)
-        if getattr(frame, "shape", None) != (320, 320, 3):
+        if frame is None:
             return None
-        return np.array(frame, dtype=np.uint8, copy=True)
+        if (
+            not isinstance(frame, np.ndarray)
+            or frame.ndim != 3
+            or frame.shape[0] <= 0
+            or frame.shape[1] <= 0
+            or frame.shape[2] != 3
+            or frame.dtype != np.uint8
+        ):
+            raise ValueError("AI capture frame must be nonempty RGB uint8")
+        return np.ascontiguousarray(frame.copy())
 
     def close(self) -> None:
         camera = self._camera

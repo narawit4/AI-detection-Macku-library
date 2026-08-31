@@ -15,7 +15,6 @@ from jitter_app.ai.targeting import DetectionFrameSnapshot
 
 LOGGER = logging.getLogger(__name__)
 
-CAPTURE_SIZE = 320
 OVERLAY_COLOR = "#ff2b2b"
 MAX_FRAME_AGE_S = 0.150
 _TRANSPARENT_KEY_CANDIDATES = ("#010203", "#010204", "#010205")
@@ -105,6 +104,8 @@ def project_overlay_boxes(
     snapshot: DetectionFrameSnapshot | None,
     now: float,
     *,
+    canvas_width: int | None = None,
+    canvas_height: int | None = None,
     show_heads: bool = True,
     show_players: bool = True,
     box_width: int = 2,
@@ -113,25 +114,49 @@ def project_overlay_boxes(
     """Project a fresh immutable detector frame into canvas rectangles."""
     if snapshot is None or max(0.0, now - snapshot.captured_at) > MAX_FRAME_AGE_S:
         return ()
+    if canvas_width is None:
+        canvas_width = snapshot.frame_width
+    if canvas_height is None:
+        canvas_height = snapshot.frame_height
+    if (
+        type(snapshot.frame_width) is not int
+        or snapshot.frame_width <= 0
+        or type(snapshot.frame_height) is not int
+        or snapshot.frame_height <= 0
+        or type(canvas_width) is not int
+        or canvas_width <= 0
+        or type(canvas_height) is not int
+        or canvas_height <= 0
+    ):
+        return ()
     box_width = max(1, min(8, int(box_width)))
-    return tuple(
-        OverlayBox(
-            detection.x1,
-            detection.y1,
-            detection.x2,
-            detection.y2,
-            box_width + 2 if index == snapshot.selected_index
-            else box_width,
+    x_scale = canvas_width / snapshot.frame_width
+    y_scale = canvas_height / snapshot.frame_height
+    boxes = []
+    for index, detection in enumerate(snapshot.detections):
+        if not show_heads and detection.class_id == 7:
+            continue
+        if not show_players and detection.class_id == 0:
+            continue
+        x1 = max(0.0, min(float(canvas_width), detection.x1 * x_scale))
+        y1 = max(0.0, min(float(canvas_height), detection.y1 * y_scale))
+        x2 = max(0.0, min(float(canvas_width), detection.x2 * x_scale))
+        y2 = max(0.0, min(float(canvas_height), detection.y2 * y_scale))
+        if x2 <= x1 or y2 <= y1:
+            continue
+        boxes.append(OverlayBox(
+            x1,
+            y1,
+            x2,
+            y2,
+            box_width + 2 if index == snapshot.selected_index else box_width,
             _detection_label(
                 detection.class_id,
                 detection.confidence,
                 label_mode,
             ),
-        )
-        for index, detection in enumerate(snapshot.detections)
-        if (show_heads or detection.class_id != 7)
-        and (show_players or detection.class_id != 0)
-    )
+        ))
+    return tuple(boxes)
 
 
 def _selected_lock_label(
@@ -244,8 +269,6 @@ class DetectionOverlay:
         self._transparent_key = transparent_key
         self._window = None
         self._canvas = None
-        self._capture_left = 0
-        self._capture_top = 0
         self._screen_width = 0
         self._screen_height = 0
         self._visible = False
@@ -270,8 +293,6 @@ class DetectionOverlay:
                 screen_height = window.winfo_screenheight()
                 self._screen_width = screen_width
                 self._screen_height = screen_height
-                self._capture_left = (screen_width - CAPTURE_SIZE) // 2
-                self._capture_top = (screen_height - CAPTURE_SIZE) // 2
                 window.geometry(f"{screen_width}x{screen_height}+0+0")
                 canvas = self._canvas_factory(
                     window,
@@ -294,8 +315,6 @@ class DetectionOverlay:
             screen_height = window.winfo_screenheight()
             self._screen_width = screen_width
             self._screen_height = screen_height
-            self._capture_left = (screen_width - CAPTURE_SIZE) // 2
-            self._capture_top = (screen_height - CAPTURE_SIZE) // 2
             window.geometry(f"{screen_width}x{screen_height}+0+0")
             self._canvas.configure(
                 width=screen_width,
@@ -338,6 +357,8 @@ class DetectionOverlay:
         boxes = project_overlay_boxes(
             snapshot,
             now,
+            canvas_width=self._screen_width,
+            canvas_height=self._screen_height,
             show_heads=style.show_heads,
             show_players=style.show_players,
             box_width=style.box_width,
@@ -350,24 +371,25 @@ class DetectionOverlay:
         self._keep_foregrounds_visible(*visible_colors)
         for box in boxes:
             self._canvas.create_rectangle(
-                box.x1 + self._capture_left,
-                box.y1 + self._capture_top,
-                box.x2 + self._capture_left,
-                box.y2 + self._capture_top,
+                box.x1,
+                box.y1,
+                box.x2,
+                box.y2,
                 outline=color,
                 width=box.width,
                 tags=("detection",),
             )
             if box.label is not None:
-                self._canvas.create_text(
-                    box.x1 + self._capture_left,
-                    box.y1 + self._capture_top - 2,
+                label_item = self._canvas.create_text(
+                    box.x1,
+                    box.y1 - 2,
                     anchor="sw",
                     fill=color,
                     font=("Consolas", 9, "bold"),
                     text=box.label,
                     tags=("detection",),
                 )
+                self._keep_item_on_screen(label_item)
         if runtime is not None and style.hud_visible:
             fps, provider, zoom = runtime
             hud_lines = ["AI RUNTIME"]

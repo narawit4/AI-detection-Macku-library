@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from jitter_app.ai.capture import DxcamCapture, centered_region
+from jitter_app.ai.capture import DxcamCapture, full_output_region
 
 
 class FakeCamera:
@@ -41,17 +41,21 @@ class RecordingCameraFactory:
 
 
 class CaptureTests(unittest.TestCase):
-    def test_centered_region(self):
-        self.assertEqual(centered_region(1920, 1080), (800, 380, 1120, 700))
+    def test_full_output_region_requires_positive_integer_geometry(self):
+        self.assertEqual(full_output_region(1920, 1080), (0, 0, 1920, 1080))
+        for width, height in (
+            (0, 1080),
+            (1920, 0),
+            (True, 1080),
+            (1920, 1.5),
+        ):
+            with self.subTest(width=width, height=height):
+                with self.assertRaisesRegex(ValueError, "positive integers"):
+                    full_output_region(width, height)
 
-    def test_centered_region_rejects_output_smaller_than_capture(self):
-        with self.assertRaisesRegex(ValueError, "Primary output is smaller"):
-            centered_region(319, 1080)
-        with self.assertRaisesRegex(ValueError, "Primary output is smaller"):
-            centered_region(1920, 319)
-
-    def test_capture_uses_numpy_rgb_backend_and_owned_frames(self):
-        camera = FakeCamera(frame=np.zeros((320, 320, 3), dtype=np.uint8))
+    def test_capture_requests_full_output_and_returns_owned_native_rgb(self):
+        source = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        camera = FakeCamera(width=1920, height=1080, frame=source)
         factory = RecordingCameraFactory(camera)
         capture = DxcamCapture(camera_factory=factory, target_fps=165)
 
@@ -63,21 +67,45 @@ class CaptureTests(unittest.TestCase):
             "processor_backend": "numpy", "max_buffer_len": 2,
         })
         self.assertEqual(camera.start_kwargs, {
-            "region": (800, 380, 1120, 700), "target_fps": 165,
+            "region": (0, 0, 1920, 1080), "target_fps": 165,
         })
         self.assertEqual(camera.get_latest_frame_kwargs, {"copy": True})
         self.assertTrue(frame.flags.owndata)
-        self.assertEqual(frame.shape, (320, 320, 3))
+        self.assertTrue(frame.flags.c_contiguous)
+        self.assertFalse(np.shares_memory(frame, source))
+        self.assertEqual(frame.shape, (1080, 1920, 3))
         self.assertEqual(frame.dtype, np.uint8)
 
-    def test_read_skips_empty_and_malformed_frames(self):
-        for frame in (None, np.zeros((320, 320), dtype=np.uint8),
-                      np.zeros((320, 320, 4), dtype=np.uint8)):
-            with self.subTest(shape=None if frame is None else frame.shape):
+    def test_read_preserves_none_as_no_new_frame(self):
+        camera = FakeCamera(frame=None)
+        capture = DxcamCapture(camera_factory=RecordingCameraFactory(camera))
+        capture.start()
+
+        self.assertIsNone(capture.read())
+
+    def test_read_rejects_every_non_none_malformed_frame(self):
+        malformed_frames = (
+            object(),
+            np.zeros((320, 320), dtype=np.uint8),
+            np.zeros((320, 320, 4), dtype=np.uint8),
+            np.zeros((0, 320, 3), dtype=np.uint8),
+            np.zeros((320, 0, 3), dtype=np.uint8),
+            np.zeros((320, 320, 3), dtype=np.float32),
+            np.zeros((320, 320, 3), dtype=np.bool_),
+        )
+        for frame in malformed_frames:
+            with self.subTest(
+                frame_type=type(frame),
+                shape=getattr(frame, "shape", None),
+            ):
                 camera = FakeCamera(frame=frame)
                 capture = DxcamCapture(camera_factory=RecordingCameraFactory(camera))
                 capture.start()
-                self.assertIsNone(capture.read())
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "^AI capture frame must be nonempty RGB uint8$",
+                ):
+                    capture.read()
 
     def test_close_stops_and_releases_once_when_started(self):
         camera = FakeCamera(frame=np.zeros((320, 320, 3), dtype=np.uint8))

@@ -1972,6 +1972,35 @@ class AiServiceTests(unittest.TestCase):
             ["OSError: AI service failed"],
         )
 
+    def test_malformed_capture_frame_uses_runtime_error_cleanup(self):
+        capture = CountingCapture(
+            read_error=ValueError(
+                "AI capture frame must be nonempty RGB uint8"
+            )
+        )
+        events = []
+        service = AiService(
+            events.append,
+            detector_factory=lambda _path: FakeDetector(),
+            capture_factory=lambda: capture,
+        )
+        self.addCleanup(service.close)
+
+        with self.assertLogs("jitter_app.ai.service", level="ERROR"):
+            service.start(AimSettings)
+            self.assertTrue(wait_until(
+                lambda: any(event.kind == "error" for event in events)
+            ))
+            self.assertTrue(capture.closed.wait(1.0))
+
+        self.assertEqual(capture.close_calls, 1)
+        self.assertIsNone(service.latest_snapshot())
+        self.assertIsNone(service.latest_detection_snapshot())
+        error = next(event for event in events if event.kind == "error")
+        self.assertEqual(error.payload, "ValueError: AI service failed")
+        self.assertNotIn("Traceback", error.payload)
+        self.assertNotIn("\n", error.payload)
+
     def test_inference_error_clears_target_and_detection_frame(self):
         capture = CountingCapture([rgb_frame(), rgb_frame()])
         events = []

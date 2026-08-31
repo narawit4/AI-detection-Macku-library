@@ -86,6 +86,115 @@ class OverlayProjectionTests(unittest.TestCase):
             (OverlayBox(1, 2, 30, 40, 4),),
         )
 
+    def test_projection_scales_snapshot_geometry_to_changed_canvas(self):
+        frame = DetectionFrameSnapshot(
+            1,
+            10.0,
+            (Detection(480, 270, 1440, 810, 0.8, 0),),
+            0,
+            1920,
+            1080,
+        )
+
+        boxes = project_overlay_boxes(
+            frame,
+            10.0,
+            canvas_width=2560,
+            canvas_height=1440,
+        )
+
+        self.assertEqual(
+            (boxes[0].x1, boxes[0].y1, boxes[0].x2, boxes[0].y2),
+            (640.0, 360.0, 1920.0, 1080.0),
+        )
+
+    def test_projection_clamps_boxes_and_labels_to_canvas(self):
+        frame = DetectionFrameSnapshot(
+            1,
+            10.0,
+            (Detection(-20, -10, 1940, 1090, 0.8, 7),),
+            0,
+            1920,
+            1080,
+        )
+
+        boxes = project_overlay_boxes(
+            frame,
+            10.0,
+            canvas_width=1920,
+            canvas_height=1080,
+            label_mode="class",
+        )
+
+        self.assertEqual(
+            (
+                boxes[0].x1,
+                boxes[0].y1,
+                boxes[0].x2,
+                boxes[0].y2,
+                boxes[0].label,
+            ),
+            (0.0, 0.0, 1920.0, 1080.0, "HEAD"),
+        )
+
+    def test_invalid_canvas_and_empty_projection_preserve_original_selection(
+        self,
+    ):
+        frame = DetectionFrameSnapshot(
+            1,
+            10.0,
+            (
+                Detection(-20, 10, -1, 40, 0.8, 0),
+                Detection(100, 100, 200, 200, 0.9, 7),
+            ),
+            1,
+            1920,
+            1080,
+        )
+        for width, height in (
+            (0, 1080),
+            (-1, 1080),
+            (True, 1080),
+            (1920, 0),
+            (1920, False),
+        ):
+            with self.subTest(canvas=(width, height)):
+                self.assertEqual(
+                    project_overlay_boxes(
+                        frame,
+                        10.0,
+                        canvas_width=width,
+                        canvas_height=height,
+                    ),
+                    (),
+                )
+
+        boxes = project_overlay_boxes(
+            frame,
+            10.0,
+            canvas_width=1920,
+            canvas_height=1080,
+        )
+        self.assertEqual(len(boxes), 1)
+        self.assertEqual(boxes[0].width, 4)
+
+        selected_was_omitted = DetectionFrameSnapshot(
+            1,
+            10.0,
+            frame.detections,
+            0,
+            1920,
+            1080,
+        )
+        boxes = project_overlay_boxes(
+            selected_was_omitted,
+            10.0,
+            canvas_width=1920,
+            canvas_height=1080,
+        )
+        self.assertEqual(len(boxes), 1)
+        self.assertEqual(boxes[0].width, 2)
+
 
 class FakeNativeApi:
     def __init__(self, *, style=0x1000, root_hwnd=1234):
@@ -463,6 +572,8 @@ class DetectionOverlayTests(unittest.TestCase):
             10.0,
             (Detection(1, 2, 30, 40, 0.8, 0),),
             None,
+            1920,
+            1080,
         )
         second = DetectionFrameSnapshot(
             2,
@@ -472,6 +583,8 @@ class DetectionOverlayTests(unittest.TestCase):
                 Detection(100, 110, 130, 150, 0.9, 7),
             ),
             1,
+            1920,
+            1080,
         )
 
         overlay.render(first, now=10.0)
@@ -481,11 +594,11 @@ class DetectionOverlayTests(unittest.TestCase):
             canvases[0].items,
             [
                 (
-                    (805, 386, 825, 406),
+                    (5.0, 6.0, 25.0, 26.0),
                     {"outline": "#ff2b2b", "width": 2, "tags": ("detection",)},
                 ),
                 (
-                    (900, 490, 930, 530),
+                    (100.0, 110.0, 130.0, 150.0),
                     {"outline": "#ff2b2b", "width": 4, "tags": ("detection",)},
                 ),
             ],
@@ -506,13 +619,18 @@ class DetectionOverlayTests(unittest.TestCase):
                 Detection(100, 110, 130, 150, 0.9, 7),
             ),
             1,
+            1920,
+            1080,
         )
         style = overlay_module.OverlayStyle(show_players=False)
 
         overlay.render(frame, now=10.0, style=style)
 
         self.assertEqual(len(canvases[0].items), 1)
-        self.assertEqual(canvases[0].items[0][0], (900, 490, 930, 530))
+        self.assertEqual(
+            canvases[0].items[0][0],
+            (100.0, 110.0, 130.0, 150.0),
+        )
 
     def test_overlay_style_controls_normal_and_selected_box_width(self):
         overlay, _window, canvases, _adapter, _calls = self.make_overlay()
@@ -525,6 +643,8 @@ class DetectionOverlayTests(unittest.TestCase):
                 Detection(100, 110, 130, 150, 0.9, 7),
             ),
             1,
+            1920,
+            1080,
         )
         try:
             style = overlay_module.OverlayStyle(box_width=6)
@@ -549,6 +669,8 @@ class DetectionOverlayTests(unittest.TestCase):
                 Detection(100, 110, 130, 150, 0.9, 7),
             ),
             1,
+            1920,
+            1080,
         )
 
         overlay.render(
@@ -573,6 +695,8 @@ class DetectionOverlayTests(unittest.TestCase):
                 Detection(100, 110, 130, 150, 0.934, 7),
             ),
             None,
+            1920,
+            1080,
         )
         try:
             style = overlay_module.OverlayStyle(
@@ -602,6 +726,8 @@ class DetectionOverlayTests(unittest.TestCase):
             10.0,
             (Detection(1, 2, 30, 40, 0.806, 0),),
             None,
+            1920,
+            1080,
         )
 
         overlay.render(
@@ -617,6 +743,43 @@ class DetectionOverlayTests(unittest.TestCase):
         ]
         self.assertEqual(labels, ["PLAYER"])
 
+    def test_detection_labels_move_minimally_to_stay_on_screen(self):
+        cases = (
+            ((-10, 10, 30, 30), (10, 0)),
+            ((80, 10, 110, 30), (-10, 0)),
+            ((10, -5, 30, 15), (0, 5)),
+            ((10, 85, 30, 105), (0, -5)),
+        )
+        for bounds, expected_move in cases:
+            with self.subTest(bounds=bounds):
+                overlay, _window, canvases, _adapter, _calls = self.make_overlay(
+                    screen_size=(100, 100)
+                )
+                overlay.show()
+                canvases[0].bbox_value = bounds
+                frame = DetectionFrameSnapshot(
+                    1,
+                    10.0,
+                    (Detection(10, 10, 30, 30, 0.8, 0),),
+                    None,
+                    100,
+                    100,
+                )
+
+                overlay.render(
+                    frame,
+                    now=10.0,
+                    style=overlay_module.OverlayStyle(
+                        label_mode="class",
+                        hud_visible=False,
+                    ),
+                )
+
+                self.assertEqual(
+                    canvases[0].moves,
+                    [(1, expected_move[0], expected_move[1])],
+                )
+
     def test_detection_label_never_maps_an_unsupported_class_to_player(self):
         overlay, _window, canvases, _adapter, _calls = self.make_overlay()
         overlay.show()
@@ -625,6 +788,8 @@ class DetectionOverlayTests(unittest.TestCase):
             10.0,
             (Detection(1, 2, 30, 40, 0.806, 99),),
             None,
+            1920,
+            1080,
         )
 
         overlay.render(
@@ -640,7 +805,7 @@ class DetectionOverlayTests(unittest.TestCase):
         ]
         self.assertEqual(labels, [])
 
-    def test_render_centers_detection_region_on_non_hd_display(self):
+    def test_render_projects_full_source_frame_over_entire_canvas(self):
         overlay, _window, canvases, _adapter, _calls = self.make_overlay(
             screen_size=(2560, 1440)
         )
@@ -648,15 +813,41 @@ class DetectionOverlayTests(unittest.TestCase):
         frame = DetectionFrameSnapshot(
             1,
             10.0,
-            (Detection(0, 0, 320, 320, 0.8, 0),),
+            (Detection(0, 0, 2560, 1440, 0.8, 0),),
             0,
+            2560,
+            1440,
         )
 
         overlay.render(frame, now=10.0)
 
-        self.assertEqual(canvases[0].items[0][0], (1120, 560, 1440, 880))
+        self.assertEqual(
+            canvases[0].items[0][0],
+            (0.0, 0.0, 2560.0, 1440.0),
+        )
 
-    def test_show_refreshes_geometry_and_box_offset_after_display_change(self):
+    def test_render_passes_changed_canvas_geometry_into_projection(self):
+        overlay, _window, canvases, _adapter, _calls = self.make_overlay(
+            screen_size=(2560, 1440)
+        )
+        overlay.show()
+        frame = DetectionFrameSnapshot(
+            1,
+            10.0,
+            (Detection(480, 270, 1440, 810, 0.8, 0),),
+            0,
+            1920,
+            1080,
+        )
+
+        overlay.render(frame, now=10.0)
+
+        self.assertEqual(
+            canvases[0].items[0][0],
+            (640.0, 360.0, 1920.0, 1080.0),
+        )
+
+    def test_show_refreshes_geometry_and_projection_after_display_change(self):
         overlay, window, canvases, _adapter, calls = self.make_overlay()
         overlay.show()
         overlay.hide()
@@ -667,15 +858,20 @@ class DetectionOverlayTests(unittest.TestCase):
         frame = DetectionFrameSnapshot(
             1,
             10.0,
-            (Detection(0, 0, 320, 320, 0.8, 0),),
+            (Detection(480, 270, 1440, 810, 0.8, 0),),
             0,
+            1920,
+            1080,
         )
         overlay.render(frame, now=10.0)
 
         self.assertIn(("geometry", "2560x1440+0+0"), calls)
         self.assertEqual(canvases[0].options["width"], 2560)
         self.assertEqual(canvases[0].options["height"], 1440)
-        self.assertEqual(canvases[0].items[0][0], (1120, 560, 1440, 880))
+        self.assertEqual(
+            canvases[0].items[0][0],
+            (640.0, 360.0, 1920.0, 1080.0),
+        )
 
     def test_render_uses_requested_box_color(self):
         overlay, _window, canvases, _adapter, _calls = self.make_overlay()
@@ -685,6 +881,8 @@ class DetectionOverlayTests(unittest.TestCase):
             10.0,
             (Detection(1, 2, 30, 40, 0.8, 0),),
             None,
+            1920,
+            1080,
         )
 
         overlay.render(frame, now=10.0, color="#00cc88")
@@ -699,6 +897,8 @@ class DetectionOverlayTests(unittest.TestCase):
             10.0,
             (Detection(100, 110, 130, 150, 0.9, 7),),
             0,
+            1920,
+            1080,
         )
 
         try:
@@ -823,6 +1023,8 @@ class DetectionOverlayTests(unittest.TestCase):
             10.0,
             (Detection(1, 2, 30, 40, 0.8, 0),),
             None,
+            1920,
+            1080,
         )
         try:
             style = overlay_module.OverlayStyle(hud_visible=False)
@@ -870,6 +1072,8 @@ class DetectionOverlayTests(unittest.TestCase):
             10.0,
             (Detection(1, 2, 30, 40, 0.8, 0),),
             0,
+            1920,
+            1080,
         )
         try:
             style = overlay_module.OverlayStyle(
@@ -914,6 +1118,8 @@ class DetectionOverlayTests(unittest.TestCase):
                     10.0,
                     (detection,),
                     selected_index,
+                    1920,
+                    1080,
                 )
                 overlay.render(
                     frame,
@@ -933,6 +1139,8 @@ class DetectionOverlayTests(unittest.TestCase):
             10.0,
             (Detection(100, 110, 130, 150, 0.9, 7),),
             0,
+            1920,
+            1080,
         )
 
         overlay.render(
@@ -954,6 +1162,8 @@ class DetectionOverlayTests(unittest.TestCase):
             10.0,
             (Detection(100, 110, 130, 150, 0.9, 0),),
             0,
+            1920,
+            1080,
         )
 
         try:
@@ -1002,6 +1212,8 @@ class DetectionOverlayTests(unittest.TestCase):
             10.0,
             (Detection(1, 2, 30, 40, 0.8, 0),),
             None,
+            1920,
+            1080,
         )
 
         overlay.render(frame, now=10.0, color="#010203")
@@ -1033,6 +1245,8 @@ class DetectionOverlayTests(unittest.TestCase):
             10.0,
             (Detection(1, 2, 30, 40, 0.8, 0),),
             None,
+            1920,
+            1080,
         )
         overlay.render(frame, now=10.0)
 

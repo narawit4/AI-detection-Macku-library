@@ -26,7 +26,8 @@ features.
 - `jitter_app/__init__.py`: application package marker.
 - `jitter_app/resources.py`: bundle and repository resource resolution.
 - `jitter_app/ai/__init__.py`: AI package marker.
-- `jitter_app/ai/capture.py`: centered DXCam capture wrapper.
+- `jitter_app/ai/capture.py`: complete native primary-output DXCam capture
+  wrapper.
 - `jitter_app/ai/detection.py`: dual-contract ONNX Runtime detector boundary for
   legacy post-NMS `[1,300,6]` and raw single-class `[1,5,K]` outputs.
 - `jitter_app/ai/model_selection.py`: runtime-only external ONNX selection and
@@ -115,9 +116,11 @@ with the supported Windows Python installation.
 - Jitter and AI Aim are independent selected sources; both start unselected.
   Master and the global hotkey arm the selected sources, while actual movement
   requires Trigger plus the configured Modifier, if any.
-- AI Aim uses the fixed centered 320-by-320 capture and bundled startup-default
-  model, considers accepted heads and players together, and shares the same
-  Trigger/Modifier gate.
+- AI Aim captures the complete native primary output and uses the bundled
+  startup-default model, considers accepted heads and players together, and
+  shares the same Trigger/Modifier gate. Letterbox each full base frame and
+  refinement crop into the active 160-, 320-, or 640-pixel model square while
+  preserving aspect ratio.
   `Browse...` accepts only runtime external ONNX models whose `images` float input
   is exactly `[1,3,N,N]` for N in 160, 320, or 640 and whose `output0` float output
   is exactly either legacy `[1,300,6]` or raw single-class `[1,5,K]`, with
@@ -125,10 +128,10 @@ with the supported Windows Python installation.
   `task=detect`/one-class `names` metadata. Custom metadata-map keys/values are
   strings; additional all-string Ultralytics fields are allowed. The string-valued
   `names` field is safely parsed with `ast.literal_eval` and must equal exactly
-  `{0: "<non-empty label>"}`. Capture, Overlay, targeting, movement,
-  and Adaptive Zoom
-  remain in canonical 320-by-320 coordinates; detector output is scaled back
-  before publication. Validate off the UI thread, pause AI during a switch, and
+  `{0: "<non-empty label>"}`. Scale detector output from model coordinates back
+  into the source frame, publish that source-screen geometry atomically, and
+  use canonical 320 normalization only for resolution-independent movement
+  policy thresholds. Validate off the UI thread, pause AI during a switch, and
   after its exact ready event restart the eligible AI runtime and motion. A
   candidate startup failure makes exactly one automatic rollback attempt to
   restart the previous model. Legacy `[1,300,6]` behavior, downstream canonical
@@ -137,8 +140,8 @@ with the supported Windows Python installation.
   with the bundled 320 model.
 - On every base frame, filter detections by confidence and supported class,
   derive the configured aim point for every accepted head and player, and
-  select the point with the shortest Euclidean distance to the centered
-  crosshair at `(160, 160)`. Preserve detector order as the exact-distance tie
+  select the point with the shortest Euclidean distance to the actual source
+  frame center. Preserve detector order as the exact-distance tie
   break. Do not use prior identity, ambiguity holds, recovery confirmation, or
   replacement delays; publish the current-frame selection immediately.
 - Derive capture cadence from the primary display and cap capture at 240 FPS.
@@ -181,16 +184,17 @@ with the supported Windows Python installation.
   has no target.
 - The optional overlay starts off and is independent of source selection. It
   fills the primary display, must be click-through and excluded from capture,
-  and translates canonical detection boxes into the centered 320-by-320
-  capture region. Its screen-top-left runtime HUD reports FPS, provider, zoom,
-  and the current-frame `HEAD`, `PLAYER`, or `NONE` lock; a detection frame
-  older than 150 ms reports `NONE`. Head-box visibility affects only the
-  overlay; AI Aim still considers hidden head boxes for nearest-target
-  selection. Runtime-only customization may independently hide player boxes,
-  set box width and labels, hide or place the HUD at any screen corner with
-  exact offsets, set HUD color and font size, and filter individual HUD
-  metrics. Clamp exact visual values safely and keep HUD placement on-screen;
-  these added visual choices reset on every launch and are never serialized.
+  and projects source-screen detection coordinates across the complete current
+  primary-display canvas. Its screen-top-left runtime HUD reports FPS,
+  provider, zoom, and the current-frame `HEAD`, `PLAYER`, or `NONE` lock; a
+  detection frame older than 150 ms reports `NONE`. Head-box visibility
+  affects only the overlay; AI Aim still considers hidden head boxes for
+  nearest-target selection. Runtime-only customization may independently hide
+  player boxes, set box width and labels, hide or place the HUD at any screen
+  corner with exact offsets, set HUD color and font size, and filter individual
+  HUD metrics. Clamp exact visual values safely and keep HUD placement
+  on-screen; these added visual choices reset on every launch and are never
+  serialized.
 - STOP immediately cancels movement, hides the overlay, and ends its inference
   demand. Disable, disconnect, and source changes immediately cancel movement;
   AI inference continues only while the visible independent overlay requires
