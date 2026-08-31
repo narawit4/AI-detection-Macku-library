@@ -247,6 +247,8 @@ class StubAiService:
         self.start_calls.append(
             (settings_provider, zoom_gate_provider, model_path, capture_mode)
         )
+        if self.worker_active and self.active_generation is None:
+            return None
         if self.start_exception is not None:
             raise self.start_exception
         if not self.start_result:
@@ -314,6 +316,8 @@ class StrictDuplicateStartAiService(StubAiService):
         self.start_calls.append(
             (settings_provider, zoom_gate_provider, model_path, capture_mode)
         )
+        if self.worker_active and self.active_generation is None:
+            return None
         if self.start_exception is not None:
             raise self.start_exception
         if not self.start_result:
@@ -3326,6 +3330,38 @@ class JitterLayoutTests(unittest.TestCase):
         self.drain_ui_queue()
         self.assertTrue(self.app._normal_motion_started)
 
+    def test_model_candidate_waits_for_physical_worker_retirement(self):
+        self.prepare_armed_sources(MotionSources(False, True))
+        self.ai.retire_immediately = False
+        choice, token = self.begin_custom_model_switch("retiring-candidate.onnx")
+        starts = len(self.ai.start_calls)
+        validated = self.validated_model_choice(choice, 640)
+
+        self.model_validator.emit(
+            ModelValidationEvent("ready", token, validated)
+        )
+        self.drain_ui_queue()
+
+        self.assertEqual(len(self.ai.start_calls), starts)
+        self.assertIsNotNone(self.app._model_switch)
+        self.assertEqual(self.app._model_switch.phase, "starting_candidate")
+        self.assertEqual(self.app._model_choice, self.app._model_switch.previous)
+
+        self.drain_ui_queue()
+        self.assertEqual(len(self.ai.start_calls), starts)
+
+        self.ai.finish_retirement()
+        self.drain_ui_queue()
+
+        self.assertEqual(len(self.ai.start_calls), starts + 1)
+        self.assertEqual(self.ai.start_calls[-1][2], validated.path)
+        self.assertEqual(self.ai.start_calls[-1][3], CENTER_320)
+        self.assertEqual(self.app._model_switch.phase, "starting_candidate")
+
+        self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        self.assertIsNone(self.app._model_switch)
+        self.assertEqual(self.app._model_choice, validated)
+
     def test_model_controls_remain_available_for_each_active_demand(self):
         for sources, overlay in (
             (MotionSources(False, True), False),
@@ -3375,6 +3411,50 @@ class JitterLayoutTests(unittest.TestCase):
         self.app.handle_ai_event(AiEvent("error", "RuntimeError: AI service failed"))
         self.assertEqual(self.app._model_switch.phase, "starting_rollback")
         self.assertEqual(self.ai.start_calls[-1][2], self.app._model_switch.previous.path)
+
+    def test_model_rollback_waits_for_candidate_worker_retirement(self):
+        self.app.capture_mode_var.set("Full Display")
+        self.app._capture_mode_changed()
+        self.prepare_armed_sources(MotionSources(False, True))
+        choice, token = self.begin_custom_model_switch("retiring-rollback.onnx")
+        self.model_validator.emit(
+            ModelValidationEvent(
+                "ready", token, self.validated_model_choice(choice)
+            )
+        )
+        self.drain_ui_queue()
+        previous = self.app._model_switch.previous
+        self.assertEqual(self.app._model_switch.phase, "starting_candidate")
+        starts = len(self.ai.start_calls)
+        self.ai.retire_immediately = False
+
+        with self.assertLogs(level="ERROR"):
+            self.app.handle_ai_event(AiEvent("error", "candidate failed"))
+
+        self.assertEqual(len(self.ai.start_calls), starts)
+        self.assertIsNotNone(self.app._model_switch)
+        self.assertEqual(self.app._model_switch.phase, "starting_rollback")
+        self.assertEqual(self.app._model_switch.failure, "candidate failed")
+
+        self.drain_ui_queue()
+        self.assertEqual(len(self.ai.start_calls), starts)
+
+        self.ai.finish_retirement()
+        self.drain_ui_queue()
+
+        self.assertEqual(len(self.ai.start_calls), starts + 1)
+        self.assertEqual(self.ai.start_calls[-1][2], previous.path)
+        self.assertEqual(self.ai.start_calls[-1][3], FULL_DISPLAY)
+        rollback_starts = [
+            call
+            for call in self.ai.start_calls[starts:]
+            if call[2] == previous.path
+        ]
+        self.assertEqual(len(rollback_starts), 1)
+
+        self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        self.assertIsNone(self.app._model_switch)
+        self.assertEqual(self.app._model_choice, previous)
 
     def test_reconcile_preserves_started_candidate_until_its_ready_event(self):
         self.prepare_armed_sources(MotionSources(False, True))
@@ -3795,7 +3875,7 @@ class JitterLayoutTests(unittest.TestCase):
             str(self.app.model_browse_button.cget("state")), "normal"
         )
 
-    def test_candidate_error_contains_stop_failure_and_starts_one_rollback(self):
+    def test_candidate_error_contains_stop_failure_and_defers_one_rollback(self):
         self.prepare_armed_sources(MotionSources(False, True))
         choice, token = self.begin_custom_model_switch("stop-error.onnx")
         self.model_validator.emit(ModelValidationEvent(
@@ -3814,6 +3894,14 @@ class JitterLayoutTests(unittest.TestCase):
 
         self.assertIsNone(failure)
         self.assertEqual(self.app._model_switch.phase, "starting_rollback")
+        self.assertEqual(len(self.ai.start_calls), starts_before_error)
+
+        self.drain_ui_queue()
+        self.assertEqual(len(self.ai.start_calls), starts_before_error)
+
+        self.ai.finish_retirement()
+        self.drain_ui_queue()
+
         self.assertEqual(len(self.ai.start_calls), starts_before_error + 1)
         self.assertEqual(self.ai.start_calls[-1][2], previous.path)
         self.assertEqual(self.app._model_switch.token, token)

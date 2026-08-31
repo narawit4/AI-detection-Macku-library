@@ -336,6 +336,7 @@ class JitterApp(tk.Tk):
         self._capture_mode = CENTER_320
         self._capture_mode_switching = False
         self._capture_restart_pending = False
+        self._model_start_pending: tuple[str, int] | None = None
         self._model_choice = bundled_model_choice()
         self._model_switch_token = 0
         self._model_switch: _ModelSwitch | None = None
@@ -3070,6 +3071,57 @@ class JitterApp(tk.Tk):
             return
         self._fail_capture_mode_switch()
 
+    def _continue_deferred_ai_start(self) -> None:
+        self._continue_capture_mode_switch()
+        self._continue_model_start()
+
+    def _continue_model_start(self) -> None:
+        pending = self._model_start_pending
+        if pending is None:
+            return
+        kind, token = pending
+        switch = self._model_switch
+        expected_phase = {
+            "candidate": "starting_candidate",
+            "rollback": "starting_rollback",
+        }.get(kind)
+        if (
+            expected_phase is None
+            or switch is None
+            or switch.token != token
+            or switch.phase != expected_phase
+        ):
+            self._model_start_pending = None
+            return
+        if self._closing or not self._ai_runtime_required():
+            self._model_start_pending = None
+            return
+        try:
+            worker_active = bool(self.ai_service.worker_active)
+        except Exception:
+            logging.exception("AI worker retirement probe failed")
+            self._model_start_pending = None
+            if kind == "candidate":
+                self._start_model_rollback(
+                    switch, "candidate retirement probe failed"
+                )
+            else:
+                self._handle_ai_runtime_error(
+                    "AI model rollback retirement probe failed"
+                )
+            return
+        if worker_active:
+            return
+        self._model_start_pending = None
+        choice = switch.candidate if kind == "candidate" else switch.previous
+        context = "Model switch" if kind == "candidate" else "Model rollback"
+        if self._start_ai_runtime(context, model_choice=choice):
+            return
+        if kind == "candidate":
+            self._start_model_rollback(switch, "candidate startup failed")
+        else:
+            self._handle_ai_runtime_error("AI model rollback failed")
+
     def _fail_capture_mode_switch(self) -> None:
         self._capture_restart_pending = False
         self._capture_mode_switching = False
@@ -3161,6 +3213,7 @@ class JitterApp(tk.Tk):
             )
 
     def _finish_model_switch(self, choice: ModelChoice, footer: str) -> None:
+        self._model_start_pending = None
         self._model_choice = choice
         self._model_switch = None
         self._normalize_idle_ai_runtime_status()
@@ -3180,6 +3233,7 @@ class JitterApp(tk.Tk):
         switch = self._model_switch
         if switch is None:
             return
+        self._model_start_pending = None
         self._model_switch_token += 1
         try:
             self.model_validator.cancel()
@@ -3240,10 +3294,8 @@ class JitterApp(tk.Tk):
         starting = replace(switch, phase="starting_candidate")
         self._model_switch = starting
         self._render_model_controls()
-        if not self._start_ai_runtime(
-            "Model switch", model_choice=starting.candidate
-        ):
-            self._start_model_rollback(starting, "candidate startup failed")
+        self._model_start_pending = ("candidate", starting.token)
+        self._continue_model_start()
 
     def _start_model_rollback(
         self,
@@ -3282,11 +3334,8 @@ class JitterApp(tk.Tk):
         self._model_switch = rollback
         self.ai_model_var.set(f"Loading · {rollback.previous.display_name}")
         self._render_model_controls()
-        if self._start_ai_runtime(
-            "Model rollback", model_choice=rollback.previous
-        ):
-            return
-        self._handle_ai_runtime_error("AI model rollback failed")
+        self._model_start_pending = ("rollback", rollback.token)
+        self._continue_model_start()
 
     def _render_runtime_controls(self) -> None:
         testing = self._motion_mode in _TEST_MOTION_MODES
@@ -3593,10 +3642,11 @@ class JitterApp(tk.Tk):
         if required and switch is not None and switch.phase == "validating":
             self._cancel_model_switch(f"{context}: AI demand started")
         if required and not self._ai_runtime_active:
-            if self._capture_restart_pending:
-                self._continue_capture_mode_switch()
+            if self._capture_restart_pending or self._model_start_pending:
+                self._continue_deferred_ai_start()
                 return bool(
                     self._capture_restart_pending
+                    or self._model_start_pending
                     or self._ai_runtime_active
                 )
             started = self._start_ai_runtime(context)
@@ -3615,6 +3665,7 @@ class JitterApp(tk.Tk):
                 )
             finally:
                 self._capture_restart_pending = False
+                self._model_start_pending = None
                 self._capture_mode_switching = False
                 self._ai_ready = False
                 self._ai_provider = None
@@ -4493,7 +4544,7 @@ class JitterApp(tk.Tk):
             if processed >= _UI_QUEUE_MAX_BATCH or not self._ui_queue.empty():
                 next_delay_ms = 0
         finally:
-            self._continue_capture_mode_switch()
+            self._continue_deferred_ai_start()
             if not self._closing and not self._closed:
                 try:
                     self._ui_pump_after_id = self.after(
@@ -4828,6 +4879,7 @@ class JitterApp(tk.Tk):
             return
         self._closing = True
         self._capture_restart_pending = False
+        self._model_start_pending = None
         self._capture_mode_switching = False
         self._cancel_ai_curve_callbacks()
         for widget in self.winfo_children():
