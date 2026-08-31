@@ -1081,13 +1081,14 @@ class AiServiceTests(unittest.TestCase):
         service.start(AimSettings, lambda: False)
         self.assertTrue(old_detector.entered.wait(1.0))
         service.stop("restart")
+        self.assertIsNone(service.start(AimSettings, lambda: False))
+        old_detector.release.set()
+        self.assertTrue(wait_until(lambda: not service.worker_active))
         service.start(AimSettings, lambda: False)
         self.assertTrue(wait_until(
             lambda: service.latest_snapshot() is not None
             and service.latest_snapshot().aim_x == 35.0
         ))
-
-        old_detector.release.set()
 
         self.assertTrue(old_capture.closed.wait(1.0))
         self.assertAlmostEqual(service.latest_snapshot().aim_x, 35.0)
@@ -1450,6 +1451,7 @@ class AiServiceTests(unittest.TestCase):
 
         service.stop("restart")
         self.assertIsNone(service.latest_snapshot())
+        self.assertTrue(wait_until(lambda: not service.worker_active))
         clock.set(20.0)
         service.start(AimSettings, lambda: True)
         self.release_and_wait(new_capture, service, 1)
@@ -1481,10 +1483,11 @@ class AiServiceTests(unittest.TestCase):
         new_detection = Detection(30, 30, 40, 40, 0.9, 7)
         new_detector = SequentialDetector(((new_detection,),))
         service_holder = {}
+        restart_requested = threading.Event()
 
         def restart_service():
             service_holder["service"].stop("restart")
-            service_holder["service"].start(AimSettings, lambda: False)
+            restart_requested.set()
 
         old_detector = SequentialDetector(
             (
@@ -1508,6 +1511,9 @@ class AiServiceTests(unittest.TestCase):
         self.addCleanup(service.close)
 
         service.start(AimSettings, lambda: True)
+        self.assertTrue(restart_requested.wait(1.0))
+        self.assertTrue(wait_until(lambda: not service.worker_active))
+        service.start(AimSettings, lambda: False)
         self.assertTrue(wait_until(
             lambda: service.latest_detection_snapshot() is not None
             and service.latest_detection_snapshot().detections == (new_detection,)
@@ -2037,6 +2043,30 @@ class AiServiceTests(unittest.TestCase):
         self.assertIn(AiEvent("stopped", "disabled"), events)
         self.assertIsInstance(generation, int)
 
+    def test_worker_active_tracks_physical_retirement_after_stop(self):
+        detector = BlockingDetector()
+        capture = CountingCapture()
+        service = AiService(
+            lambda _event: None,
+            detector_factory=lambda _path: detector,
+            capture_factory=lambda _mode: capture,
+        )
+        self.addCleanup(detector.release.set)
+        self.addCleanup(service.close)
+
+        service.start(AimSettings)
+        self.assertTrue(detector.entered.wait(1.0))
+        self.assertTrue(service.worker_active)
+
+        service.stop("capture switch")
+
+        self.assertFalse(service.running)
+        self.assertTrue(service.worker_active)
+        self.assertIsNone(service.start(AimSettings, capture_mode=FULL_DISPLAY))
+        detector.release.set()
+        self.assertTrue(wait_until(lambda: not service.worker_active))
+        self.assertTrue(capture.closed.wait(1.0))
+
     def test_explicit_model_path_is_created_on_daemon_worker(self):
         factory_entered = threading.Event()
         release_factory = threading.Event()
@@ -2119,6 +2149,7 @@ class AiServiceTests(unittest.TestCase):
         duplicate = service.start(AimSettings, model_path="ignored.onnx")
         self.assertEqual(duplicate, first)
         service.stop("switch")
+        self.assertTrue(wait_until(lambda: not service.worker_active))
         service.start(AimSettings, model_path="second.onnx")
 
         self.assertTrue(ready_count.wait(1.0))
@@ -2554,13 +2585,14 @@ class AiServiceTests(unittest.TestCase):
         self.assertTrue(old_detector.entered.wait(1.0))
 
         service.stop("restart")
+        self.assertIsNone(service.start(AimSettings))
+        old_detector.release.set()
+        self.assertTrue(wait_until(lambda: not service.worker_active))
         service.start(AimSettings)
         self.assertTrue(wait_until(
             lambda: service.latest_snapshot() is not None
             and service.latest_snapshot().aim_x == 35.0
         ))
-
-        old_detector.release.set()
 
         self.assertTrue(old_capture.closed.wait(1.0))
         self.assertEqual(service.latest_snapshot().aim_x, 35.0)
@@ -2602,14 +2634,17 @@ class AiServiceTests(unittest.TestCase):
         service.start(AimSettings)
         self.assertTrue(old_detector.entered.wait(1.0))
         service.stop("restart")
+        self.assertIsNone(
+            service.start(AimSettings, capture_mode=FULL_DISPLAY)
+        )
+        old_detector.release.set()
+        self.assertTrue(wait_until(lambda: not service.worker_active))
         service.start(AimSettings, capture_mode=FULL_DISPLAY)
         self.assertTrue(wait_until(
             lambda: service.latest_detection_snapshot() is not None
             and service.latest_detection_snapshot().output_width == 1920
             and service.latest_detection_snapshot().frame_width == 1920
         ))
-
-        old_detector.release.set()
 
         self.assertTrue(old_capture.closed.wait(1.0))
         latest = service.latest_detection_snapshot()

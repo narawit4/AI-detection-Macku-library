@@ -335,6 +335,7 @@ class JitterApp(tk.Tk):
         self._ai_runtime_active = False
         self._capture_mode = CENTER_320
         self._capture_mode_switching = False
+        self._capture_restart_pending = False
         self._model_choice = bundled_model_choice()
         self._model_switch_token = 0
         self._model_switch: _ModelSwitch | None = None
@@ -3018,10 +3019,27 @@ class JitterApp(tk.Tk):
             return
 
         self._capture_mode_switching = True
+        self._capture_restart_pending = False
         self._render_capture_mode_control()
         self._refresh_section_summaries()
-        self._ai_targeting_revision = self.ai_service.reset_targeting()
-        self._stop_ai_runtime("Capture mode changed")
+        try:
+            self._ai_targeting_revision = self.ai_service.reset_targeting()
+        except Exception:
+            logging.exception("AI targeting reset failed during capture switch")
+            try:
+                self._stop_ai_runtime("Capture mode change failed")
+            except Exception:
+                logging.exception(
+                    "AI runtime cleanup failed after targeting reset error"
+                )
+            self._fail_capture_mode_switch()
+            return
+        try:
+            self._stop_ai_runtime("Capture mode changed")
+        except Exception:
+            logging.exception("AI runtime stop failed during capture switch")
+            self._fail_capture_mode_switch()
+            return
         self._ai_ready = False
         self._ai_provider = None
         self._ai_runtime_active = False
@@ -3030,9 +3048,39 @@ class JitterApp(tk.Tk):
         self.ai_fps_var.set("0 FPS")
         self.ai_provider_var.set("No provider")
         self.ai_zoom_var.set("1.0\N{MULTIPLICATION SIGN}")
+        self._capture_restart_pending = True
+        self._continue_capture_mode_switch()
+
+    def _continue_capture_mode_switch(self) -> None:
+        if not self._capture_restart_pending:
+            return
+        if self._closing or not self._ai_runtime_required():
+            self._capture_restart_pending = False
+            return
+        try:
+            worker_active = bool(self.ai_service.worker_active)
+        except Exception:
+            logging.exception("AI worker retirement probe failed")
+            self._fail_capture_mode_switch()
+            return
+        if worker_active:
+            return
+        self._capture_restart_pending = False
         if self._start_ai_runtime("Capture mode changed"):
             return
+        self._fail_capture_mode_switch()
+
+    def _fail_capture_mode_switch(self) -> None:
+        self._capture_restart_pending = False
         self._capture_mode_switching = False
+        self._ai_ready = False
+        self._ai_provider = None
+        self._ai_runtime_active = False
+        self._sync_adaptive_zoom_gate()
+        self.ai_status_var.set("Error")
+        self.ai_fps_var.set("0 FPS")
+        self.ai_provider_var.set("No provider")
+        self.ai_zoom_var.set("1.0\N{MULTIPLICATION SIGN}")
         self._hide_overlay_after_ai_failure()
         self._handle_ai_start_failure()
         self._render_runtime_controls()
@@ -3545,6 +3593,12 @@ class JitterApp(tk.Tk):
         if required and switch is not None and switch.phase == "validating":
             self._cancel_model_switch(f"{context}: AI demand started")
         if required and not self._ai_runtime_active:
+            if self._capture_restart_pending:
+                self._continue_capture_mode_switch()
+                return bool(
+                    self._capture_restart_pending
+                    or self._ai_runtime_active
+                )
             started = self._start_ai_runtime(context)
             if not started:
                 self._hide_overlay_after_ai_failure()
@@ -3560,6 +3614,7 @@ class JitterApp(tk.Tk):
                     "AI runtime stop failed during %s", context
                 )
             finally:
+                self._capture_restart_pending = False
                 self._capture_mode_switching = False
                 self._ai_ready = False
                 self._ai_provider = None
@@ -3743,6 +3798,7 @@ class JitterApp(tk.Tk):
 
     def _handle_ai_start_failure(self) -> None:
         """Fail closed to Jitter when normal armed AI demand cannot start."""
+        self._capture_restart_pending = False
         self._capture_mode_switching = False
         self.ai_selected = False
         self._ai_ready = False
@@ -3937,6 +3993,7 @@ class JitterApp(tk.Tk):
         stop_device_motion: bool = True,
     ) -> None:
         stop_reason = str(reason or "Stopped")
+        self._capture_restart_pending = False
         self._capture_mode_switching = False
         self.master_armed = False
         self._sync_adaptive_zoom_gate()
@@ -4197,6 +4254,7 @@ class JitterApp(tk.Tk):
             self.ai_status_var.set(f"Ready ({provider})")
             self.ai_provider_var.set(provider)
             capture_mode_switching = self._capture_mode_switching
+            self._capture_restart_pending = False
             self._capture_mode_switching = False
             self._render_capture_mode_control()
             if capture_mode_switching:
@@ -4248,6 +4306,7 @@ class JitterApp(tk.Tk):
                 factor = 1.0
             self.ai_zoom_var.set(f"{factor:.1f}×")
         elif kind == "error":
+            self._capture_restart_pending = False
             if self._capture_mode_switching:
                 self._capture_mode_switching = False
             switch = self._model_switch
@@ -4260,6 +4319,7 @@ class JitterApp(tk.Tk):
                 return
             self._handle_ai_runtime_error(event.payload)
         elif kind == "stopped":
+            self._capture_restart_pending = False
             self._capture_mode_switching = False
             self._ai_ready = False
             self._ai_provider = None
@@ -4433,6 +4493,7 @@ class JitterApp(tk.Tk):
             if processed >= _UI_QUEUE_MAX_BATCH or not self._ui_queue.empty():
                 next_delay_ms = 0
         finally:
+            self._continue_capture_mode_switch()
             if not self._closing and not self._closed:
                 try:
                     self._ui_pump_after_id = self.after(
@@ -4766,6 +4827,7 @@ class JitterApp(tk.Tk):
         if self._closed or self._closing:
             return
         self._closing = True
+        self._capture_restart_pending = False
         self._capture_mode_switching = False
         self._cancel_ai_curve_callbacks()
         for widget in self.winfo_children():

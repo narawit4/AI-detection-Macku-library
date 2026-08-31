@@ -157,6 +157,7 @@ class AiService:
         self._event_lock = threading.RLock()
         self._generation = 0
         self._stop_event: threading.Event | None = None
+        self._worker_thread: threading.Thread | None = None
         self._running = False
         self._closed = False
         self._latest: TargetSnapshot | None = None
@@ -179,6 +180,18 @@ class AiService:
     def running(self) -> bool:
         with self._lock:
             return self._running
+
+    @property
+    def worker_active(self) -> bool:
+        """Whether a worker still owns generation-local runtime resources."""
+        with self._lock:
+            worker = self._worker_thread
+            if worker is None:
+                return False
+            if worker.is_alive():
+                return True
+            self._worker_thread = None
+            return False
 
     def latest_snapshot(self) -> TargetSnapshot | None:
         with self._lock:
@@ -229,6 +242,11 @@ class AiService:
                 return None
             if self._running:
                 return self._generation
+            retiring_worker = self._worker_thread
+            if retiring_worker is not None:
+                if retiring_worker.is_alive():
+                    return None
+                self._worker_thread = None
             self._generation += 1
             generation = self._generation
             stop_event = threading.Event()
@@ -241,6 +259,7 @@ class AiService:
         self._emit_current(AiEvent("loading"), generation, stop_event)
         start_error = None
         failure_generation = None
+        worker: threading.Thread | None = None
         with self._lock:
             if not self._is_current_locked(generation, stop_event):
                 return generation
@@ -258,9 +277,12 @@ class AiService:
                     name=f"AiInference-{generation}",
                     daemon=True,
                 )
+                self._worker_thread = worker
                 worker.start()
             except Exception as error:
                 stop_event.set()
+                if worker is not None and self._worker_thread is worker:
+                    self._worker_thread = None
                 self._generation += 1
                 failure_generation = self._generation
                 self._running = False

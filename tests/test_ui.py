@@ -222,10 +222,13 @@ class StubAiService:
         self.detection_snapshot = object()
         self.generation = 0
         self.active_generation = None
+        self.worker_active = False
+        self.retire_immediately = True
         self.start_result = True
         self.start_exception = None
         self.stop_exception = None
         self.stop_hook = None
+        self.reset_exception = None
         self.reset_targeting_calls = 0
         self.targeting_revision = 0
 
@@ -250,6 +253,7 @@ class StubAiService:
             return self.start_result
         self.generation += 1
         self.active_generation = self.generation
+        self.worker_active = True
         return self.active_generation
 
     def stop(self, reason="manual"):
@@ -259,6 +263,11 @@ class StubAiService:
         if self.stop_hook is not None:
             self.stop_hook(self.active_generation)
         self.active_generation = None
+        if self.retire_immediately:
+            self.worker_active = False
+
+    def finish_retirement(self):
+        self.worker_active = False
 
     def emit(self, event, *, generation=None):
         source_generation = (
@@ -283,6 +292,8 @@ class StubAiService:
 
     def reset_targeting(self):
         self.reset_targeting_calls += 1
+        if self.reset_exception is not None:
+            raise self.reset_exception
         self.targeting_revision += 1
         self.snapshot = None
         self.detection_snapshot = None
@@ -311,6 +322,7 @@ class StrictDuplicateStartAiService(StubAiService):
             return self.active_generation
         self.generation += 1
         self.active_generation = self.generation
+        self.worker_active = True
         return self.active_generation
 
 
@@ -705,6 +717,37 @@ class JitterLayoutTests(unittest.TestCase):
         self.drain_ui_queue()
         self.assertEqual(str(self.app.capture_mode_combo.cget("state")), "readonly")
 
+    def test_capture_replacement_waits_until_retiring_worker_is_inactive(self):
+        self.app.toggle_overlay()
+        self.ai.emit(AiEvent("ready", "DmlExecutionProvider"))
+        self.drain_ui_queue()
+        starts = len(self.ai.start_calls)
+        self.ai.retire_immediately = False
+
+        self.app.capture_mode_var.set("Full Display")
+        self.app._capture_mode_changed()
+
+        self.assertEqual(self.ai.stop_calls[-1], "Capture mode changed")
+        self.assertEqual(len(self.ai.start_calls), starts)
+        self.assertTrue(self.ai.worker_active)
+        self.assertTrue(self.app._capture_mode_switching)
+        self.assertEqual(
+            str(self.app.capture_mode_combo.cget("state")), "disabled"
+        )
+
+        self.drain_ui_queue()
+        self.assertEqual(len(self.ai.start_calls), starts)
+
+        self.ai.finish_retirement()
+        self.drain_ui_queue()
+
+        self.assertEqual(len(self.ai.start_calls), starts + 1)
+        self.assertEqual(self.ai.start_calls[-1][3], FULL_DISPLAY)
+        self.assertTrue(self.app._capture_mode_switching)
+        self.assertEqual(
+            str(self.app.capture_mode_combo.cget("state")), "disabled"
+        )
+
     def test_combined_motion_continues_during_capture_mode_restart(self):
         self.prepare_armed_sources(
             MotionSources(True, True), gate_active=True
@@ -890,6 +933,47 @@ class JitterLayoutTests(unittest.TestCase):
                 )
                 self.assertEqual(app._capture_mode, FULL_DISPLAY)
                 self.assertFalse(app._capture_mode_switching)
+
+    def test_capture_reset_or_stop_error_fails_closed_without_replacement(self):
+        for failure_site in ("reset", "stop"):
+            with self.subTest(failure_site=failure_site):
+                self.app.close_app()
+                app = self.make_app()
+                self.prepare_armed_sources(
+                    MotionSources(True, True), gate_active=True
+                )
+                app.toggle_overlay()
+                starts = len(self.ai.start_calls)
+                motion_generation = app._expected_motion_generation
+                cancellations = len(self.service.cancel_reasons)
+                if failure_site == "reset":
+                    self.ai.reset_exception = RuntimeError("reset failed")
+                else:
+                    self.ai.stop_exception = RuntimeError("stop failed")
+
+                app.capture_mode_var.set("Full Display")
+                with self.assertLogs(level="ERROR"):
+                    app._capture_mode_changed()
+
+                self.assertEqual(len(self.ai.start_calls), starts)
+                self.assertFalse(app._capture_mode_switching)
+                self.assertFalse(app._capture_restart_pending)
+                self.assertFalse(app.overlay_visible)
+                self.assertEqual(self.overlay.hidden, 1)
+                self.assertFalse(app.ai_selected)
+                self.assertTrue(app.jitter_selected)
+                self.assertTrue(app.master_armed)
+                self.assertTrue(app.trigger_gate.active)
+                self.assertEqual(
+                    app._expected_motion_generation, motion_generation
+                )
+                self.assertEqual(
+                    len(self.service.cancel_reasons), cancellations
+                )
+                self.assertEqual(app.ai_status_var.get(), "Error")
+                self.assertEqual(
+                    str(app.capture_mode_combo.cget("state")), "readonly"
+                )
 
     def test_async_capture_restart_error_clears_switch_before_failure_policy(self):
         self.prepare_armed_sources(
