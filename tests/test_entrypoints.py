@@ -582,6 +582,11 @@ class EntryPointTests(unittest.TestCase):
     def test_readme_documents_supported_external_sizes_and_full_primary_capture(self):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         padding_contract = "unused letterbox pixels are filled with RGB value 114"
+        features_start = readme.index("## คุณสมบัติหลัก")
+        targeting_start = readme.index("## หลักการเลือกเป้าหมาย AI")
+        features_section = readme[features_start:targeting_start]
+        next_heading = readme.index("\n## ", targeting_start + 1)
+        targeting_section = readme[targeting_start:next_heading]
         for contract in (
             "[1,3,160,160]",
             "[1,3,320,320]",
@@ -595,7 +600,8 @@ class EntryPointTests(unittest.TestCase):
         ):
             with self.subTest(contract=contract):
                 self.assertIn(contract, readme)
-        self.assertEqual(readme.count(padding_contract), 2)
+        self.assertIn(padding_contract, features_section)
+        self.assertIn(padding_contract, targeting_section)
 
     def test_readme_documents_exact_raw_single_class_contract_without_packaging_it(self):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
