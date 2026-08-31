@@ -50,24 +50,27 @@ Jitter เป็นโปรแกรมเดสก์ท็อปสำหร�
 - มี `Test 3s` สำหรับทดสอบแหล่งการเคลื่อนไหวที่เลือกเป็นเวลา 3 วินาที
 - มี global hotkey ค่าเริ่มต้น `-` สำหรับสลับ Master หนึ่งครั้งต่อการกด
 - ใช้ ONNX Runtime DirectML เป็น provider หลัก และมี CPU fallback
-- จับภาพ RGB ขนาดคงที่ 320×320 พิกเซลจากกึ่งกลางหน้าจอด้วย DXCam
+- DXCam จับภาพ RGB ของจอหลักทั้งหมดที่ native resolution; แต่ละ base frame จะถูก letterbox แบบรักษาอัตราส่วนไปยัง model input สี่เหลี่ยม 160, 320 หรือ 640 ที่กำลังใช้งาน และ detection จะ map กลับเป็นพิกัด source-screen
 - เลือก detection ใกล้ crosshair ที่สุดจาก head และ player รวมกันทุกเฟรม
 - มี response curve 5 จุด, time-based smoothing และ Max Step
-- ปรับ capture cadence ตาม refresh rate ของจอหลัก (สูงสุด 240 FPS) และใช้ motion servo เป้าหมายคงที่ 1,000 Hz; อัตราที่ส่งถึง USB/HID จริงขึ้นกับ Makcu, USB และ scheduling ของ Windows
+- ปรับ capture cadence ตาม refresh rate ของจอหลัก (สูงสุด 240 FPS) และใช้ motion servo เป้าหมายคงที่ 1,000 Hz ซึ่งเป็นอิสระจาก capture และ inference cadence; อัตราที่ส่งถึง USB/HID จริงขึ้นกับ Makcu, USB และ scheduling ของ Windows
 - มี Adaptive Zoom แบบ 1.0×, 1.5× และ 2.0× โดยไม่ขยายภาพบนหน้าจอ
 - มี Overlay กล่อง detection พร้อม AI Runtime HUD แบบ click-through และไม่ถูกจับกลับเข้า inference
 - เลือกโมเดล `.onnx` ภายนอกได้เฉพาะ runtime โดยไม่บันทึก path ลง config
 
 ## หลักการเลือกเป้าหมาย AI
 
-AI Aim ใช้ภาพขนาด 320×320 พิกเซล และถือว่าจุด crosshair อยู่ที่
-`(160, 160)` ทุกเฟรมมีขั้นตอนดังนี้:
+AI Aim ใช้ source frame เต็มจอหลักที่ native resolution แล้ว letterbox แบบรักษา
+อัตราส่วนเข้าสู่ model input สี่เหลี่ยม 160, 320 หรือ 640 ที่กำลังใช้งาน พิกัด
+detection จะถูก map กลับเป็น source-screen ก่อนเลือกเป้าหมาย โดยใช้จุดกึ่งกลางของ
+source frame จริง; canonical/model-space 320 ใช้เฉพาะ policy การตอบสนองหลัง map
+แล้ว ไม่ใช่ capture หรือ overlay geometry ทุกเฟรมมีขั้นตอนดังนี้:
 
 1. รับ detection จากโมเดล ONNX
 2. เก็บเฉพาะ class ที่รองรับและมี confidence ถึงค่าที่กำหนด
 3. สร้าง aim point ของ head และ player ทุกตัว
 4. รวม head และ player ไว้ในรายการเดียวกัน
-5. คำนวณระยะเส้นตรงจาก aim point ไปยัง `(160, 160)`
+5. คำนวณระยะเส้นตรงจาก aim point ไปยังจุดกึ่งกลางของ source frame
 6. เลือก aim point ที่มีระยะน้อยที่สุดและเผยแพร่ทันทีในเฟรมนั้น
 
 ระบบไม่ให้สิทธิ์ head มากกว่า player และไม่ยึดตัวที่เลือกจากเฟรมก่อนหน้า
@@ -94,7 +97,7 @@ Target Area มีสามระดับและเป็นสถานะ r
 - Windows 10 หรือใหม่กว่า
 - Python 3.11 ขึ้นไป พร้อม Tkinter
 - อุปกรณ์ Makcu ที่รองรับและไดรเวอร์ USB
-- จอภาพที่มีความละเอียดเพียงพอสำหรับพื้นที่จับภาพกึ่งกลาง 320×320
+- จอภาพหลักที่ DXCam สามารถจับภาพทั้งจอได้ที่ native resolution
 - GPU/ระบบที่รองรับ DirectML สำหรับ inference ที่แนะนำ
 - หาก DirectML ใช้งานไม่ได้ โปรแกรมสามารถ fallback ไป CPU ได้
 
@@ -226,6 +229,10 @@ Trigger/Modifier ครบในการเคลื่อนไหวปกต
 target เก่ามาใช้ และไม่เพิ่ม inference call เกินที่กำหนด กล่อง refinement
 จะสัมพันธ์กับ base target ที่ถูกเลือกไว้เพื่อไม่ให้ซูมไปหยิบวัตถุข้างเคียง
 
+base path ใช้ inference หนึ่งครั้งต่อ processed frame และ Adaptive Zoom ที่มีสิทธิ์
+อาจเพิ่ม refinement call ได้อีกหนึ่งครั้งในเฟรมเดียวกัน การ crop สำหรับ refinement
+รักษา native aspect ของ source frame และพิกัดผลลัพธ์จะ map กลับเป็น source-screen
+
 Adaptive Zoom ไม่ได้ขยายภาพที่ผู้ใช้เห็น และไม่สามารถค้นหาเป้าหมายที่ base pass
 ตรวจไม่พบ ค่า `ZOOM` และสถานะความนิ่งทั้งหมดเป็น runtime state
 
@@ -238,12 +245,17 @@ models/all_games_320.onnx
 ```
 
 
-พื้นที่ capture ยังคง 320×320 สำหรับทุกโมเดล และ FOV, targeting กับ movement
-ยังใช้พิกัด canonical 320×320 เดิม
-`jitter_app/ai/resize.py` เป็น shared primitive สำหรับ resize ภาพ RGB เท่านั้น ส่วน detector จะ scale
-ผลลัพธ์กลับมาเป็นพิกัด 320×320 ก่อนเผยแพร่ โมเดล 640 จึงเป็นการ upscale
-พื้นที่จริง 320×320 เดิม ไม่ใช่การขยายพื้นที่ที่จับภาพ โมเดล 160 อาจใช้ inference น้อยลง,
-320 เป็นจุดสมดุลเริ่มต้น และ 640 อาจใช้เวลามากขึ้น ทั้งหมดนี้ไม่รับประกัน FPS หรือความแม่นยำ
+DXCam จับภาพจอหลักทั้งหมดที่ native resolution สำหรับทุกโมเดล แล้ว
+`jitter_app/ai/resize.py` จะ letterbox ภาพแบบรักษาอัตราส่วนเข้าสู่ model input
+สี่เหลี่ยม 160×160, 320×320 หรือ 640×640 detector decode ใน model space และ map
+ผลลัพธ์กลับเป็นพิกัด source-screen ก่อนเผยแพร่ FOV, targeting และ Overlay จึงใช้
+geometry ของจอหลักจริง ไม่ใช่ canonical 320×320; canonical 320 ใช้เฉพาะ threshold
+policy ที่ไม่ขึ้นกับความละเอียด โมเดล 160 อาจใช้ inference น้อยลง, 320 เป็นจุดสมดุล
+เริ่มต้น และ 640 อาจใช้เวลามากขึ้น ทั้งหมดนี้ไม่รับประกัน FPS หรือความแม่นยำ
+
+โมเดล bundled 320 อาจสูญเสียรายละเอียดของเป้าหมายขนาดเล็กเมื่อประมวลผลพื้นที่จอ
+wide-screen ทั้งหมด โมเดลภายนอก 640 ที่ compatible ช่วยเพิ่ม model-input detail ได้
+แต่เป็น runtime-only เท่านั้น และไม่มี capture geometry ใดถูกบันทึกถาวร
 
 โมเดลเริ่มต้นเมื่อเปิดโปรแกรมยังคงเป็น bundled `models/all_games_320.onnx` เสมอ path และขนาดของ
 โมเดลภายนอกเป็น runtime-only: ไม่ถูกบันทึกลง config, copy, หรือ package ไปกับ release
@@ -263,7 +275,9 @@ models/all_games_320.onnx
 การคำนวณ NMS ใช้ NumPy ภายในโปรแกรม ด้วย confidence ขั้นต่ำ `0.05`, IoU `0.45` และส่งออกไม่เกิน `300` กล่องต่อเฟรม
 
 ระบบ reject `[1,K,5]`, raw แบบหลายคลาส, tensor แบบ dynamic/rectangular, จำนวน candidate ที่ไม่ใช่จำนวนที่ระบุ และ metadata ที่ขาดหรือ malformed
-`jitter_app/ai/yolo.py` เป็น pure NumPy decoder สำหรับ raw และ downstream ยังใช้ Detection แบบเดิมและพิกัด canonical 320×320
+`jitter_app/ai/yolo.py` เป็น pure NumPy decoder สำหรับ raw และ downstream ยังใช้
+contract `Detection` แบบเดิม: decoder ทำงานใน model space ก่อน inverse letterbox
+map เพื่อเผยแพร่พิกัด source-screen
 โมเดลภายนอกเป็น runtime-only และจะไม่ถูกบันทึก, copy, download หรือ package; มีเฉพาะ `models/all_games_320.onnx` ที่ถูก bundle
 
 โปรแกรมตรวจ contract นอก Tk UI thread และพัก AI ระหว่างสลับโมเดล เมื่อโมเดลใหม่
@@ -293,8 +307,8 @@ path ของโมเดลภายนอกและไฟล์โมเด
 
 ## Overlay
 
-Overlay เป็นหน้าต่างโปร่งใสเต็มขนาดจอหลัก โดยกล่อง detection ถูกวางทับพื้นที่
-capture 320×320 ที่กึ่งกลางจอ:
+Overlay เป็นหน้าต่างโปร่งใสเต็มขนาดจอหลัก โดยกล่อง detection ที่เป็นพิกัด
+source-screen จะถูก project ทับบน canvas ของจอหลักทั้งหมด:
 
 - เริ่มต้นปิดและทำงานแยกจากการเลือก AI Aim
 - click-through จึงไม่ขวางการคลิก
@@ -416,15 +430,15 @@ Overlay ถูกออกแบบให้ click-through และ capture-exc
 - `jitter_app/__init__.py`
 - `jitter_app/resources.py`
 - `jitter_app/ai/__init__.py`
-- `jitter_app/ai/capture.py`
-- `jitter_app/ai/detection.py`
+- `jitter_app/ai/capture.py`: DXCam wrapper สำหรับ capture จอหลักทั้งหมดที่ native resolution
+- `jitter_app/ai/detection.py`: detector boundary ที่ decode model-space output และ map กลับเป็น source-screen
 - `jitter_app/ai/model_selection.py`
 - `jitter_app/ai/service.py`
-- `jitter_app/ai/targeting.py`
+- `jitter_app/ai/targeting.py`: เลือกและเคลื่อนสู่ target ใน source-screen geometry โดย normalize เพื่อ response policy เท่านั้น
 - `jitter_app/ai/tracking.py`
-- `jitter_app/ai/resize.py`
+- `jitter_app/ai/resize.py`: resize และ integer/aspect-preserving letterbox พร้อม inverse coordinate mapping
 - `jitter_app/ai/yolo.py`
-- `jitter_app/ai/zoom.py`
+- `jitter_app/ai/zoom.py`: native-aspect Adaptive Zoom geometry และ same-frame refinement composition
 - `jitter_app/motion/__init__.py`
 - `jitter_app/motion/engine.py`
 - `jitter_app/motion/combined.py`
@@ -435,7 +449,7 @@ Overlay ถูกออกแบบให้ click-through และ capture-exc
 - `jitter_app/presentation/__init__.py`
 - `jitter_app/presentation/ui.py`
 - `jitter_app/presentation/widgets.py`
-- `jitter_app/presentation/overlay.py`
+- `jitter_app/presentation/overlay.py`: overlay เต็มจอหลักที่ project detection source-screen ไปยัง canvas
 - `jitter_app/presentation/sound.py`
 - `jitter_app/config/__init__.py`
 - `jitter_app/config/store.py`
