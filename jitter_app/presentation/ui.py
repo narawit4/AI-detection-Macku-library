@@ -17,6 +17,11 @@ from tkinter import colorchooser, filedialog, ttk
 import tokenize
 from typing import Any, Callable, Mapping
 
+from jitter_app.ai.capture import (
+    CENTER_320,
+    FULL_DISPLAY,
+    validated_capture_mode,
+)
 from jitter_app.ai.service import AiEvent, AiService
 from jitter_app.ai.model_selection import (
     ModelChoice,
@@ -91,6 +96,13 @@ _TARGET_AREA_LABELS = {
 }
 _TARGET_AREA_VALUES = {
     label: value for value, label in _TARGET_AREA_LABELS.items()
+}
+_CAPTURE_MODE_LABELS = {
+    CENTER_320: "Center 320",
+    FULL_DISPLAY: "Full Display",
+}
+_CAPTURE_MODE_VALUES = {
+    label: value for value, label in _CAPTURE_MODE_LABELS.items()
 }
 
 
@@ -321,6 +333,8 @@ class JitterApp(tk.Tk):
         self._ai_ready = False
         self._ai_provider: str | None = None
         self._ai_runtime_active = False
+        self._capture_mode = CENTER_320
+        self._capture_mode_switching = False
         self._model_choice = bundled_model_choice()
         self._model_switch_token = 0
         self._model_switch: _ModelSwitch | None = None
@@ -927,6 +941,10 @@ class JitterApp(tk.Tk):
             self,
             _TARGET_AREA_LABELS["head"],
         )
+        self.capture_mode_var = tk.StringVar(
+            self,
+            _CAPTURE_MODE_LABELS[CENTER_320],
+        )
         response_curve = validated_response_curve(self.config.ai.response_curve)
         self.ai_curve_vars = {
             index: tk.StringVar(
@@ -1186,6 +1204,7 @@ class JitterApp(tk.Tk):
             "preset_combo",
             "ramp_mode_combo",
             "target_area_combo",
+            "capture_mode_combo",
             "overlay_label_mode_combo",
             "overlay_hud_corner_combo",
         ):
@@ -1611,12 +1630,28 @@ class JitterApp(tk.Tk):
                 self.ai_controls_grid, index // 2, index % 2, spec[0], key,
                 spec[1], spec[2], spec[3],
             )
+        self.ai_target_row = ttk.Frame(
+            self.ai_settings_card, style="Liquid.Surface.TFrame"
+        )
+        self.ai_target_row.grid(row=2, column=0, sticky="ew", pady=(12, 0))
+        self.ai_target_row.columnconfigure(0, weight=1, uniform="ai_target")
+        self.ai_target_row.columnconfigure(1, weight=1, uniform="ai_target")
         target_area_field, self.target_area_combo = self._dropdown_field(
-            self.ai_settings_card, label="Target Area", variable=self.target_area_var,
+            self.ai_target_row, label="Target Area", variable=self.target_area_var,
             values=tuple(_TARGET_AREA_VALUES),
         )
-        target_area_field.grid(row=2, column=0, sticky="ew", padx=5, pady=(12, 0))
+        target_area_field.grid(row=0, column=0, sticky="ew", padx=5)
         self.target_area_combo.bind("<<ComboboxSelected>>", self._target_area_changed)
+        capture_mode_field, self.capture_mode_combo = self._dropdown_field(
+            self.ai_target_row,
+            label="Capture Mode",
+            variable=self.capture_mode_var,
+            values=tuple(_CAPTURE_MODE_VALUES),
+        )
+        capture_mode_field.grid(row=0, column=1, sticky="ew", padx=5)
+        self.capture_mode_combo.bind(
+            "<<ComboboxSelected>>", self._capture_mode_changed
+        )
         self.ai_model_frame = ttk.Frame(
             self.ai_settings_card, style="Liquid.Surface.TFrame", padding=(5, 10)
         )
@@ -2709,8 +2744,9 @@ class JitterApp(tk.Tk):
 
             aim = self.get_ai_settings()
             target = _TARGET_AREA_LABELS.get(aim.target_area, "Head")
+            capture_mode = _CAPTURE_MODE_LABELS[self._capture_mode]
             strength = f"Strength {_display_value(aim.aim_strength)}"
-            ai_details = _compact_section_summary(target, strength)
+            ai_details = _compact_section_summary(target, capture_mode, strength)
             model_limit = max(3, 72 - len(ai_details) - 3)
             model = _compact_section_summary(
                 self.ai_model_var.get(), limit=model_limit
@@ -2719,6 +2755,7 @@ class JitterApp(tk.Tk):
                 self.ai_section_summary_var,
                 model,
                 target,
+                capture_mode,
                 strength,
             )
 
@@ -2938,7 +2975,67 @@ class JitterApp(tk.Tk):
                 else "normal"
             )
         )
+        self._render_capture_mode_control()
         self._refresh_section_summaries()
+
+    def _render_capture_mode_control(self) -> None:
+        disabled = (
+            self._closing
+            or self._motion_mode in _TEST_MOTION_MODES
+            or self._model_switch is not None
+            or self._capture_mode_switching
+            or (self._ai_runtime_active and not self._ai_ready)
+        )
+        self.capture_mode_combo.configure(
+            state="disabled" if disabled else "readonly"
+        )
+
+    def _capture_mode_changed(self, _event: tk.Event | None = None) -> None:
+        label = self.capture_mode_var.get()
+        mode = _CAPTURE_MODE_VALUES.get(label)
+        try:
+            mode = validated_capture_mode(mode)
+        except ValueError:
+            self.capture_mode_var.set(_CAPTURE_MODE_LABELS[self._capture_mode])
+            return
+        guarded = (
+            self._closing
+            or self._motion_mode in _TEST_MOTION_MODES
+            or self._model_switch is not None
+            or self._capture_mode_switching
+            or (self._ai_runtime_active and not self._ai_ready)
+        )
+        if guarded:
+            self.capture_mode_var.set(_CAPTURE_MODE_LABELS[self._capture_mode])
+            self._render_capture_mode_control()
+            return
+        if mode == self._capture_mode:
+            return
+        self._capture_mode = mode
+        if not self._ai_runtime_active:
+            self._render_capture_mode_control()
+            self._refresh_section_summaries()
+            return
+
+        self._capture_mode_switching = True
+        self._render_capture_mode_control()
+        self._refresh_section_summaries()
+        self._ai_targeting_revision = self.ai_service.reset_targeting()
+        self._stop_ai_runtime("Capture mode changed")
+        self._ai_ready = False
+        self._ai_provider = None
+        self._ai_runtime_active = False
+        self._sync_adaptive_zoom_gate()
+        self.ai_status_var.set("Loading")
+        self.ai_fps_var.set("0 FPS")
+        self.ai_provider_var.set("No provider")
+        self.ai_zoom_var.set("1.0\N{MULTIPLICATION SIGN}")
+        if self._start_ai_runtime("Capture mode changed"):
+            return
+        self._capture_mode_switching = False
+        self._hide_overlay_after_ai_failure()
+        self._handle_ai_start_failure()
+        self._render_runtime_controls()
 
     def browse_ai_model(self) -> None:
         if self._motion_mode in _TEST_MOTION_MODES:
@@ -3220,6 +3317,7 @@ class JitterApp(tk.Tk):
                     ),
                 )
         self._render_model_controls()
+        self._render_capture_mode_control()
         self._refresh_section_summaries()
 
     def choose_overlay_color(self) -> None:
@@ -3462,6 +3560,7 @@ class JitterApp(tk.Tk):
                     "AI runtime stop failed during %s", context
                 )
             finally:
+                self._capture_mode_switching = False
                 self._ai_ready = False
                 self._ai_provider = None
                 self._ai_runtime_active = False
@@ -3610,11 +3709,13 @@ class JitterApp(tk.Tk):
             self._ai_event_epoch += 1
         self._ai_runtime_active = True
         self._sync_adaptive_zoom_gate()
+        self._render_capture_mode_control()
         try:
             generation = self.ai_service.start(
                 self.get_ai_settings,
                 self.get_adaptive_zoom_gate,
                 model_path=choice.path,
+                capture_mode=self._capture_mode,
             )
         except Exception:
             logging.exception("AI runtime could not start during %s", context)
@@ -3622,6 +3723,7 @@ class JitterApp(tk.Tk):
             self._ai_provider = None
             self._ai_runtime_active = False
             self._sync_adaptive_zoom_gate()
+            self._render_capture_mode_control()
             self.ai_status_var.set("Error")
             self.ai_fps_var.set("0 FPS")
             self.ai_provider_var.set("No provider")
@@ -3632,6 +3734,7 @@ class JitterApp(tk.Tk):
             self._ai_provider = None
             self._ai_runtime_active = False
             self._sync_adaptive_zoom_gate()
+            self._render_capture_mode_control()
             self.ai_status_var.set("Error")
             self.ai_fps_var.set("0 FPS")
             self.ai_provider_var.set("No provider")
@@ -3640,6 +3743,7 @@ class JitterApp(tk.Tk):
 
     def _handle_ai_start_failure(self) -> None:
         """Fail closed to Jitter when normal armed AI demand cannot start."""
+        self._capture_mode_switching = False
         self.ai_selected = False
         self._ai_ready = False
         self._ai_provider = None
@@ -3833,6 +3937,7 @@ class JitterApp(tk.Tk):
         stop_device_motion: bool = True,
     ) -> None:
         stop_reason = str(reason or "Stopped")
+        self._capture_mode_switching = False
         self.master_armed = False
         self._sync_adaptive_zoom_gate()
         was_overlay_visible = self.overlay_visible
@@ -3872,6 +3977,7 @@ class JitterApp(tk.Tk):
         self.footer_var.set(stop_reason)
 
     def _handle_disconnect(self, reason: str) -> None:
+        self._capture_mode_switching = False
         self.master_armed = False
         self._sync_adaptive_zoom_gate()
         self._normal_motion_started = False
@@ -4063,6 +4169,7 @@ class JitterApp(tk.Tk):
             self.ai_status_var.set("Loading")
             self.ai_fps_var.set("0 FPS")
             self.ai_provider_var.set("No provider")
+            self._render_capture_mode_control()
             self.ai_zoom_var.set("1.0×")
         elif kind == "ready":
             switch = self._model_switch
@@ -4089,6 +4196,14 @@ class JitterApp(tk.Tk):
             self._sync_adaptive_zoom_gate()
             self.ai_status_var.set(f"Ready ({provider})")
             self.ai_provider_var.set(provider)
+            capture_mode_switching = self._capture_mode_switching
+            self._capture_mode_switching = False
+            self._render_capture_mode_control()
+            if capture_mode_switching:
+                self.footer_var.set(
+                    f"AI capture ready: "
+                    f"{_CAPTURE_MODE_LABELS[self._capture_mode]}"
+                )
             if (
                 self._motion_mode in {
                     "test_ai_loading", "test_combined_loading"
@@ -4133,6 +4248,8 @@ class JitterApp(tk.Tk):
                 factor = 1.0
             self.ai_zoom_var.set(f"{factor:.1f}×")
         elif kind == "error":
+            if self._capture_mode_switching:
+                self._capture_mode_switching = False
             switch = self._model_switch
             if switch is not None and switch.phase == "starting_candidate":
                 failure = str(event.payload or "AI service failed")
@@ -4143,6 +4260,7 @@ class JitterApp(tk.Tk):
                 return
             self._handle_ai_runtime_error(event.payload)
         elif kind == "stopped":
+            self._capture_mode_switching = False
             self._ai_ready = False
             self._ai_provider = None
             self._ai_runtime_active = False
@@ -4150,6 +4268,7 @@ class JitterApp(tk.Tk):
             self.ai_status_var.set("Stopped")
             self.ai_fps_var.set("0 FPS")
             self.ai_provider_var.set("No provider")
+            self._render_capture_mode_control()
 
     def _handle_ai_runtime_error(self, payload: object) -> None:
         logging.error("AI runtime error: %s", payload)
@@ -4647,6 +4766,7 @@ class JitterApp(tk.Tk):
         if self._closed or self._closing:
             return
         self._closing = True
+        self._capture_mode_switching = False
         self._cancel_ai_curve_callbacks()
         for widget in self.winfo_children():
             self._cancel_slider_callbacks(widget)

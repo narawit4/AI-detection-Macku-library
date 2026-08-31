@@ -13,6 +13,7 @@ from jitter_app.ai.model_selection import (
     ModelValidationEvent,
     bundled_model_choice,
 )
+from jitter_app.ai.capture import CENTER_320, FULL_DISPLAY
 from jitter_app.ai.service import AiEvent
 from jitter_app.ai.targeting import (
     AimSettings,
@@ -232,9 +233,16 @@ class StubAiService:
         self.event_sink = event_sink
         return self
 
-    def start(self, settings_provider, zoom_gate_provider=None, *, model_path=None):
+    def start(
+        self,
+        settings_provider,
+        zoom_gate_provider=None,
+        *,
+        model_path=None,
+        capture_mode=CENTER_320,
+    ):
         self.start_calls.append(
-            (settings_provider, zoom_gate_provider, model_path)
+            (settings_provider, zoom_gate_provider, model_path, capture_mode)
         )
         if self.start_exception is not None:
             raise self.start_exception
@@ -276,15 +284,24 @@ class StubAiService:
     def reset_targeting(self):
         self.reset_targeting_calls += 1
         self.targeting_revision += 1
+        self.snapshot = None
+        self.detection_snapshot = None
         return self.targeting_revision
 
 
 class StrictDuplicateStartAiService(StubAiService):
     """Mirror production ownership: a duplicate start keeps its generation."""
 
-    def start(self, settings_provider, zoom_gate_provider=None, *, model_path=None):
+    def start(
+        self,
+        settings_provider,
+        zoom_gate_provider=None,
+        *,
+        model_path=None,
+        capture_mode=CENTER_320,
+    ):
         self.start_calls.append(
-            (settings_provider, zoom_gate_provider, model_path)
+            (settings_provider, zoom_gate_provider, model_path, capture_mode)
         )
         if self.start_exception is not None:
             raise self.start_exception
@@ -640,6 +657,361 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertEqual(self.ai.reset_targeting_calls, 1)
         self.assertEqual(app.ai_zoom_var.get(), "1.0×")
         self.assertIsNone(app._save_after_id)
+
+    def test_capture_mode_starts_centered_and_shares_target_row(self):
+        self.assertEqual(self.app._capture_mode, CENTER_320)
+        self.assertEqual(self.app.capture_mode_var.get(), "Center 320")
+        self.assertEqual(
+            tuple(self.app.capture_mode_combo.cget("values")),
+            ("Center 320", "Full Display"),
+        )
+        self.assertEqual(
+            self.app.capture_mode_combo.master.master,
+            self.app.target_area_combo.master.master,
+        )
+
+    def test_capture_mode_is_runtime_only_and_new_app_restores_center(self):
+        self.app.capture_mode_var.set("Full Display")
+        self.app._capture_mode_changed()
+        self.app.save_config()
+        self.assertFalse(hasattr(self.store.saved[-1], "capture_mode"))
+        config = self.app.config
+        self.app.close_app()
+        app = self.make_app(config=config)
+        self.assertEqual(app._capture_mode, CENTER_320)
+
+    def test_idle_capture_mode_change_does_not_start_ai(self):
+        self.app.capture_mode_var.set("Full Display")
+        self.app._capture_mode_changed()
+        self.assertEqual(self.app._capture_mode, FULL_DISPLAY)
+        self.assertEqual(self.ai.start_calls, [])
+        self.assertEqual(self.ai.stop_calls, [])
+
+    def test_active_capture_mode_change_restarts_ai_and_keeps_overlay(self):
+        self.app.toggle_overlay()
+        self.ai.emit(AiEvent("ready", "DmlExecutionProvider"))
+        self.drain_ui_queue()
+        starts = len(self.ai.start_calls)
+
+        self.app.capture_mode_var.set("Full Display")
+        self.app._capture_mode_changed()
+
+        self.assertTrue(self.app.overlay_visible)
+        self.assertEqual(self.ai.stop_calls[-1], "Capture mode changed")
+        self.assertEqual(len(self.ai.start_calls), starts + 1)
+        self.assertEqual(self.ai.start_calls[-1][3], FULL_DISPLAY)
+        self.assertEqual(str(self.app.capture_mode_combo.cget("state")), "disabled")
+        self.ai.emit(AiEvent("ready", "DmlExecutionProvider"))
+        self.drain_ui_queue()
+        self.assertEqual(str(self.app.capture_mode_combo.cget("state")), "readonly")
+
+    def test_combined_motion_continues_during_capture_mode_restart(self):
+        self.prepare_armed_sources(
+            MotionSources(True, True), gate_active=True
+        )
+        self.app.toggle_overlay()
+        motion_generation = self.app._expected_motion_generation
+        cancellations = len(self.service.cancel_reasons)
+
+        self.app.capture_mode_var.set("Full Display")
+        self.app._capture_mode_changed()
+
+        self.assertTrue(self.app.master_armed)
+        self.assertEqual(
+            self.app._selected_sources(), MotionSources(True, True)
+        )
+        self.assertTrue(self.app.trigger_gate.active)
+        self.assertTrue(self.app.overlay_visible)
+        self.assertEqual(
+            self.app._expected_motion_generation, motion_generation
+        )
+        self.assertEqual(len(self.service.cancel_reasons), cancellations)
+        self.assertTrue(self.app._normal_motion_started)
+
+    def test_invalid_capture_mode_label_restores_current_selection(self):
+        self.app.capture_mode_var.set("Unsupported")
+        self.app._capture_mode_changed()
+
+        self.assertEqual(self.app._capture_mode, CENTER_320)
+        self.assertEqual(self.app.capture_mode_var.get(), "Center 320")
+        self.assertEqual(self.ai.start_calls, [])
+        self.assertEqual(self.ai.stop_calls, [])
+
+    def test_model_validation_guards_capture_mode_lifecycle(self):
+        self.app.capture_mode_var.set("Full Display")
+        self.app._capture_mode_changed()
+        self.begin_custom_model_switch("validating.onnx")
+        starts = list(self.ai.start_calls)
+        stops = list(self.ai.stop_calls)
+
+        self.assertEqual(
+            str(self.app.capture_mode_combo.cget("state")), "disabled"
+        )
+        self.app.capture_mode_var.set("Center 320")
+        self.app._capture_mode_changed()
+
+        self.assertEqual(self.app._capture_mode, FULL_DISPLAY)
+        self.assertEqual(self.app.capture_mode_var.get(), "Full Display")
+        self.assertEqual(self.ai.start_calls, starts)
+        self.assertEqual(self.ai.stop_calls, stops)
+
+    def test_every_test_motion_mode_guards_capture_mode_lifecycle(self):
+        self.app.capture_mode_var.set("Full Display")
+        self.app._capture_mode_changed()
+        test_modes = (
+            "test_jitter_pending",
+            "test_jitter",
+            "test_ai_loading",
+            "test_ai",
+            "test_combined_loading",
+            "test_combined",
+        )
+        for motion_mode in test_modes:
+            with self.subTest(motion_mode=motion_mode):
+                self.app._motion_mode = motion_mode
+                self.app._render_runtime_controls()
+                starts = list(self.ai.start_calls)
+                stops = list(self.ai.stop_calls)
+
+                self.assertEqual(
+                    str(self.app.capture_mode_combo.cget("state")),
+                    "disabled",
+                )
+                self.app.capture_mode_var.set("Center 320")
+                self.app._capture_mode_changed()
+
+                self.assertEqual(self.app._capture_mode, FULL_DISPLAY)
+                self.assertEqual(
+                    self.app.capture_mode_var.get(), "Full Display"
+                )
+                self.assertEqual(self.ai.start_calls, starts)
+                self.assertEqual(self.ai.stop_calls, stops)
+
+    def test_loading_and_existing_restart_guard_capture_mode_lifecycle(self):
+        self.app.toggle_overlay()
+        starts = len(self.ai.start_calls)
+        self.assertEqual(
+            str(self.app.capture_mode_combo.cget("state")), "disabled"
+        )
+
+        self.app.capture_mode_var.set("Full Display")
+        self.app._capture_mode_changed()
+        self.assertEqual(self.app._capture_mode, CENTER_320)
+        self.assertEqual(self.app.capture_mode_var.get(), "Center 320")
+        self.assertEqual(len(self.ai.start_calls), starts)
+        self.assertEqual(self.ai.stop_calls, [])
+
+        self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        self.assertEqual(
+            str(self.app.capture_mode_combo.cget("state")), "readonly"
+        )
+        self.app.capture_mode_var.set("Full Display")
+        self.app._capture_mode_changed()
+        starts = len(self.ai.start_calls)
+        stops = len(self.ai.stop_calls)
+
+        self.app.capture_mode_var.set("Center 320")
+        self.app._capture_mode_changed()
+        self.assertEqual(self.app._capture_mode, FULL_DISPLAY)
+        self.assertEqual(self.app.capture_mode_var.get(), "Full Display")
+        self.assertEqual(len(self.ai.start_calls), starts)
+        self.assertEqual(len(self.ai.stop_calls), stops)
+
+    def test_test_candidate_and_rollback_generations_keep_capture_mode(self):
+        self.app.capture_mode_var.set("Full Display")
+        self.app._capture_mode_changed()
+        self.service.connected = True
+        self.app.ai_selected = True
+        self.app.start_test_run()
+        self.assertEqual(self.ai.start_calls[-1][3], FULL_DISPLAY)
+
+        self.app.close_app()
+        app = self.make_app()
+        app.capture_mode_var.set("Full Display")
+        app._capture_mode_changed()
+        app.toggle_overlay()
+        app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        choice, token = self.begin_custom_model_switch("candidate.onnx")
+        validated = self.validated_model_choice(choice)
+        self.model_validator.emit(
+            ModelValidationEvent("ready", token, validated)
+        )
+        self.drain_model_ui_queue()
+        self.assertEqual(self.ai.start_calls[-1][2], validated.path)
+        self.assertEqual(self.ai.start_calls[-1][3], FULL_DISPLAY)
+
+        app.handle_ai_event(AiEvent("error", "candidate failed"))
+        self.assertEqual(
+            self.ai.start_calls[-1][2], app._model_switch.previous.path
+        )
+        self.assertEqual(self.ai.start_calls[-1][3], FULL_DISPLAY)
+
+    def test_stop_keeps_runtime_capture_mode_and_new_app_starts_centered(self):
+        self.app.capture_mode_var.set("Full Display")
+        self.app._capture_mode_changed()
+        self.app.emergency_stop("Stopped by user")
+
+        self.assertEqual(self.app._capture_mode, FULL_DISPLAY)
+        self.assertEqual(self.app.capture_mode_var.get(), "Full Display")
+        self.app.close_app()
+        app = self.make_app(config=self.app.config)
+        self.assertEqual(app._capture_mode, CENTER_320)
+
+    def test_false_and_exception_capture_restarts_use_ai_failure_policy(self):
+        for failure in (False, RuntimeError("restart failed")):
+            with self.subTest(failure=type(failure).__name__):
+                self.app.close_app()
+                app = self.make_app()
+                self.prepare_armed_sources(
+                    MotionSources(True, True), gate_active=True
+                )
+                app.toggle_overlay()
+                generation = app._expected_motion_generation
+                cancellations = len(self.service.cancel_reasons)
+                if isinstance(failure, Exception):
+                    self.ai.start_exception = failure
+                else:
+                    self.ai.start_result = failure
+
+                app.capture_mode_var.set("Full Display")
+                with self.assertLogs(level="ERROR"):
+                    app._capture_mode_changed()
+
+                self.assertFalse(app.overlay_visible)
+                self.assertFalse(app.ai_selected)
+                self.assertTrue(app.jitter_selected)
+                self.assertTrue(app.master_armed)
+                self.assertTrue(app.trigger_gate.active)
+                self.assertEqual(
+                    app._expected_motion_generation, generation
+                )
+                self.assertEqual(
+                    len(self.service.cancel_reasons), cancellations
+                )
+                self.assertEqual(app._capture_mode, FULL_DISPLAY)
+                self.assertFalse(app._capture_mode_switching)
+
+    def test_async_capture_restart_error_clears_switch_before_failure_policy(self):
+        self.prepare_armed_sources(
+            MotionSources(True, True), gate_active=True
+        )
+        self.app.toggle_overlay()
+        self.app.capture_mode_var.set("Full Display")
+        self.app._capture_mode_changed()
+
+        with self.assertLogs(level="ERROR"):
+            self.app.handle_ai_event(AiEvent("error", "capture failed"))
+
+        self.assertFalse(self.app._capture_mode_switching)
+        self.assertEqual(self.app._capture_mode, FULL_DISPLAY)
+        self.assertFalse(self.app.overlay_visible)
+        self.assertFalse(self.app.ai_selected)
+        self.assertTrue(self.app.jitter_selected)
+        self.assertTrue(self.app.master_armed)
+
+    def test_stop_disconnect_and_shutdown_clear_capture_restart_state(self):
+        for action in ("stop", "disconnect", "shutdown"):
+            with self.subTest(action=action):
+                self.app.close_app()
+                app = self.make_app()
+                app.toggle_overlay()
+                app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+                app.capture_mode_var.set("Full Display")
+                app._capture_mode_changed()
+                self.assertTrue(app._capture_mode_switching)
+
+                if action == "stop":
+                    app.emergency_stop("Stopped by user")
+                elif action == "disconnect":
+                    app._handle_disconnect("Device disconnected")
+                else:
+                    app.close_app()
+
+                self.assertFalse(app._capture_mode_switching)
+                if action == "stop":
+                    self.assertEqual(
+                        str(app.capture_mode_combo.cget("state")),
+                        "readonly",
+                    )
+                elif action == "disconnect":
+                    app.handle_ai_event(
+                        AiEvent("ready", "DmlExecutionProvider")
+                    )
+                    self.assertEqual(
+                        str(app.capture_mode_combo.cget("state")),
+                        "readonly",
+                    )
+
+    def test_stale_ai_events_cannot_mutate_capture_replacement(self):
+        for stale_event in (
+            AiEvent("ready", "CPUExecutionProvider"),
+            AiEvent("error", "old capture failed"),
+        ):
+            with self.subTest(kind=stale_event.kind):
+                self.app.close_app()
+                app = self.make_app()
+                app.toggle_overlay()
+                app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+                app.queue_ai_event(stale_event)
+
+                app.capture_mode_var.set("Full Display")
+                app._capture_mode_changed()
+                self.drain_ui_queue()
+
+                self.assertTrue(app._capture_mode_switching)
+                self.assertTrue(app._ai_runtime_active)
+                self.assertTrue(app.overlay_visible)
+                self.assertEqual(app._capture_mode, FULL_DISPLAY)
+                self.assertEqual(app.ai_status_var.get(), "Loading")
+
+    def test_each_capture_direction_makes_exactly_one_stop_and_start(self):
+        self.app.toggle_overlay()
+        self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        for label, mode in (
+            ("Full Display", FULL_DISPLAY),
+            ("Center 320", CENTER_320),
+        ):
+            with self.subTest(label=label):
+                starts = len(self.ai.start_calls)
+                stops = len(self.ai.stop_calls)
+                self.app.capture_mode_var.set(label)
+                self.app._capture_mode_changed()
+
+                self.assertEqual(len(self.ai.start_calls), starts + 1)
+                self.assertEqual(len(self.ai.stop_calls), stops + 1)
+                self.assertEqual(self.ai.start_calls[-1][3], mode)
+                self.app.handle_ai_event(
+                    AiEvent("ready", "DmlExecutionProvider")
+                )
+                self.assertEqual(
+                    self.app.footer_var.get(),
+                    f"AI capture ready: {label}",
+                )
+
+    def test_motion_worker_survives_capture_restart_with_cleared_ai_target(self):
+        for sources in (
+            MotionSources(False, True),
+            MotionSources(True, True),
+        ):
+            with self.subTest(sources=sources):
+                self.app.close_app()
+                app = self.make_app()
+                self.prepare_armed_sources(sources, gate_active=True)
+                call = self.service.composite_motion_calls[-1]
+                generation = app._expected_motion_generation
+                cancellations = len(self.service.cancel_reasons)
+
+                app.capture_mode_var.set("Full Display")
+                app._capture_mode_changed()
+
+                self.assertIsNone(call.target_provider())
+                self.assertEqual(
+                    app._expected_motion_generation, generation
+                )
+                self.assertEqual(
+                    len(self.service.cancel_reasons), cancellations
+                )
+                self.assertTrue(app._normal_motion_started)
 
     def test_save_config_keeps_target_area_runtime_only(self):
         self.app.target_area_var.set("Chest")
@@ -1378,6 +1750,7 @@ class JitterLayoutTests(unittest.TestCase):
             "2 px paired pulse at 60 Hz | Smooth",
         )
         self.assertIn("Head", self.app.ai_section_summary_var.get())
+        self.assertIn("Center 320", self.app.ai_section_summary_var.get())
         self.assertIn("Overlay Off", self.app.overlay_section_summary_var.get())
         self.assertIn("Sound On", self.app.settings_section_summary_var.get())
 
@@ -1423,6 +1796,7 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertLessEqual(len(summary), 72)
         self.assertIn("Head", summary)
         self.assertIn("Strength", summary)
+        self.assertIn("Center 320", summary)
 
     def test_main_dashboard_excludes_ai_runtime_readouts(self):
         visible = set(widget_texts(self.app.dashboard_content))
@@ -1529,7 +1903,8 @@ class JitterLayoutTests(unittest.TestCase):
                 self.app.ai_aim_strength_scale, self.app.ai_aim_strength_entry,
                 self.app.ai_smoothing_scale, self.app.ai_smoothing_entry,
                 self.app.ai_max_step_scale, self.app.ai_max_step_entry,
-                self.app.target_area_combo, self.app.model_browse_button,
+                self.app.target_area_combo, self.app.capture_mode_combo,
+                self.app.model_browse_button,
                 self.app.use_default_model_button, self.app.ai_curve_canvas,
                 self.app.ai_curve_reset_button,
             ),
@@ -2604,6 +2979,7 @@ class JitterLayoutTests(unittest.TestCase):
             self.app.preset_combo,
             self.app.ramp_mode_combo,
             self.app.target_area_combo,
+            self.app.capture_mode_combo,
             self.app.overlay_label_mode_combo,
             self.app.overlay_hud_corner_combo,
         )
@@ -3479,8 +3855,14 @@ class JitterLayoutTests(unittest.TestCase):
         self.app.toggle_ai_source()
         self.app.set_master(True)
         self.assertFalse(self.app.get_adaptive_zoom_gate())
-        _settings_provider, zoom_provider, model_path = self.ai.start_calls[-1]
+        (
+            _settings_provider,
+            zoom_provider,
+            model_path,
+            capture_mode,
+        ) = self.ai.start_calls[-1]
         self.assertEqual(model_path, self.app._model_choice.path)
+        self.assertEqual(capture_mode, CENTER_320)
         self.assertIs(zoom_provider.__self__, self.app)
         self.assertIs(
             zoom_provider.__func__, self.app.get_adaptive_zoom_gate.__func__
