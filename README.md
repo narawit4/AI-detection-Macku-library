@@ -50,7 +50,7 @@ Jitter เป็นโปรแกรมเดสก์ท็อปสำหร�
 - มี `Test 3s` สำหรับทดสอบแหล่งการเคลื่อนไหวที่เลือกเป็นเวลา 3 วินาที
 - มี global hotkey ค่าเริ่มต้น `-` สำหรับสลับ Master หนึ่งครั้งต่อการกด
 - ใช้ ONNX Runtime DirectML เป็น provider หลัก และมี CPU fallback
-- DXCam จับภาพ RGB ของจอหลักทั้งหมดที่ native resolution; แต่ละ base frame จะถูก letterbox แบบรักษาอัตราส่วนไปยัง model input สี่เหลี่ยม 160, 320 หรือ 640 ที่กำลังใช้งาน และ detection จะ map กลับเป็นพิกัด source-screen
+- DXCam จับภาพ RGB ของจอหลักทั้งหมดที่ native resolution; แต่ละ base frame จะถูก letterbox แบบรักษาอัตราส่วนไปยัง model input สี่เหลี่ยม 160, 320 หรือ 640 ที่กำลังใช้งาน โดย unused letterbox pixels are filled with RGB value 114 และ detection จะ map กลับเป็นพิกัด source-screen
 - เลือก detection ใกล้ crosshair ที่สุดจาก head และ player รวมกันทุกเฟรม
 - มี response curve 5 จุด, time-based smoothing และ Max Step
 - ปรับ capture cadence ตาม refresh rate ของจอหลัก (สูงสุด 240 FPS) และใช้ motion servo เป้าหมายคงที่ 1,000 Hz ซึ่งเป็นอิสระจาก capture และ inference cadence; อัตราที่ส่งถึง USB/HID จริงขึ้นกับ Makcu, USB และ scheduling ของ Windows
@@ -61,7 +61,7 @@ Jitter เป็นโปรแกรมเดสก์ท็อปสำหร�
 ## หลักการเลือกเป้าหมาย AI
 
 AI Aim ใช้ source frame เต็มจอหลักที่ native resolution แล้ว letterbox แบบรักษา
-อัตราส่วนเข้าสู่ model input สี่เหลี่ยม 160, 320 หรือ 640 ที่กำลังใช้งาน พิกัด
+อัตราส่วนเข้าสู่ model input สี่เหลี่ยม 160, 320 หรือ 640 ที่กำลังใช้งาน โดย unused letterbox pixels are filled with RGB value 114 พิกัด
 detection จะถูก map กลับเป็น source-screen ก่อนเลือกเป้าหมาย โดยใช้จุดกึ่งกลางของ
 source frame จริง; canonical/model-space 320 ใช้เฉพาะ policy การตอบสนองหลัง map
 แล้ว ไม่ใช่ capture หรือ overlay geometry ทุกเฟรมมีขั้นตอนดังนี้:
@@ -246,9 +246,10 @@ models/all_games_320.onnx
 
 
 DXCam จับภาพจอหลักทั้งหมดที่ native resolution สำหรับทุกโมเดล แล้ว
-`jitter_app/ai/resize.py` จะ letterbox ภาพแบบรักษาอัตราส่วนเข้าสู่ model input
-สี่เหลี่ยม 160×160, 320×320 หรือ 640×640 detector decode ใน model space และ map
-ผลลัพธ์กลับเป็นพิกัด source-screen ก่อนเผยแพร่ FOV, targeting และ Overlay จึงใช้
+`jitter_app/ai/detection.py` owns the integer letterbox canvas สำหรับ model input
+สี่เหลี่ยม 160×160, 320×320 หรือ 640×640 โดยใช้ `jitter_app/ai/resize.py` เฉพาะ
+deterministic rectangular bilinear RGB resizing เท่านั้น detector decode ทั้ง legacy และ raw
+ใน model space แล้ว inverse map ผลลัพธ์กลับเป็นพิกัด source-screen ก่อนเผยแพร่ FOV, targeting และ Overlay จึงใช้
 geometry ของจอหลักจริง ไม่ใช่ canonical 320×320; canonical 320 ใช้เฉพาะ threshold
 policy ที่ไม่ขึ้นกับความละเอียด โมเดล 160 อาจใช้ inference น้อยลง, 320 เป็นจุดสมดุล
 เริ่มต้น และ 640 อาจใช้เวลามากขึ้น ทั้งหมดนี้ไม่รับประกัน FPS หรือความแม่นยำ
@@ -431,12 +432,12 @@ Overlay ถูกออกแบบให้ click-through และ capture-exc
 - `jitter_app/resources.py`
 - `jitter_app/ai/__init__.py`
 - `jitter_app/ai/capture.py`: DXCam wrapper สำหรับ capture จอหลักทั้งหมดที่ native resolution
-- `jitter_app/ai/detection.py`: detector boundary ที่ decode model-space output และ map กลับเป็น source-screen
+- `jitter_app/ai/detection.py`: integer letterbox transform/canvas, legacy และ raw decoder boundaries, และ inverse mapping จาก model space กลับเป็น source-screen
 - `jitter_app/ai/model_selection.py`
 - `jitter_app/ai/service.py`
 - `jitter_app/ai/targeting.py`: เลือกและเคลื่อนสู่ target ใน source-screen geometry โดย normalize เพื่อ response policy เท่านั้น
 - `jitter_app/ai/tracking.py`
-- `jitter_app/ai/resize.py`: resize และ integer/aspect-preserving letterbox พร้อม inverse coordinate mapping
+- `jitter_app/ai/resize.py`: deterministic rectangular bilinear RGB resizing only
 - `jitter_app/ai/yolo.py`
 - `jitter_app/ai/zoom.py`: native-aspect Adaptive Zoom geometry และ same-frame refinement composition
 - `jitter_app/motion/__init__.py`

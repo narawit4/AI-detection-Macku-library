@@ -581,6 +581,7 @@ class EntryPointTests(unittest.TestCase):
 
     def test_readme_documents_supported_external_sizes_and_full_primary_capture(self):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        padding_contract = "unused letterbox pixels are filled with RGB value 114"
         for contract in (
             "[1,3,160,160]",
             "[1,3,320,320]",
@@ -590,9 +591,11 @@ class EntryPointTests(unittest.TestCase):
             "letterbox แบบรักษาอัตราส่วน",
             "พิกัด source-screen",
             "1,000 Hz ซึ่งเป็นอิสระจาก capture และ inference cadence",
+            "`jitter_app/ai/detection.py` owns the integer letterbox canvas",
         ):
             with self.subTest(contract=contract):
                 self.assertIn(contract, readme)
+        self.assertEqual(readme.count(padding_contract), 2)
 
     def test_readme_documents_exact_raw_single_class_contract_without_packaging_it(self):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
