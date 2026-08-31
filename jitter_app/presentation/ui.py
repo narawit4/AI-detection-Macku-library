@@ -4504,7 +4504,7 @@ class JitterApp(tk.Tk):
         ):
             return
         if (
-            kind in {"loading", "ready", "fps", "zoom", "error"}
+            kind in {"loading", "ready", "fps", "zoom", "error", "stopped"}
             and (
                 (
                     active_lifecycle is None

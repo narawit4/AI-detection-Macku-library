@@ -563,6 +563,28 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertIsNotNone(generation)
         self.app.handle_ai_event(replace(event, generation=generation))
 
+    def ai_runtime_event_state(self):
+        return (
+            self.app._capture_restart_pending,
+            self.app._capture_mode_switching,
+            self.app._ai_ready,
+            self.app._ai_provider,
+            self.app._ai_runtime_active,
+            self.app._active_ai_lifecycle,
+            self.app.ai_status_var.get(),
+            self.app.ai_fps_var.get(),
+            self.app.ai_provider_var.get(),
+            self.app.ai_zoom_var.get(),
+            self.app.footer_var.get(),
+            self.app.master_armed,
+            self.app.jitter_selected,
+            self.app.ai_selected,
+            self.app.overlay_visible,
+            self.app._normal_motion_started,
+            self.app._expected_motion_generation,
+            self.app.runtime_state_var.get(),
+        )
+
     def begin_custom_model_switch(self, filename):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -4526,6 +4548,62 @@ class JitterLayoutTests(unittest.TestCase):
         self.app.handle_ai_event(AiEvent("stopped", "manual"))
         self.assertEqual(self.app.ai_zoom_var.get(), "1.0×")
 
+    def test_generationless_stopped_cannot_clear_active_ai_lifecycle(self):
+        self.prepare_armed_sources(
+            MotionSources(False, True), gate_active=True
+        )
+        self.handle_current_ai_event(AiEvent("fps", 37.25))
+        self.handle_current_ai_event(AiEvent("zoom", 1.5))
+        self.app._capture_restart_pending = True
+        self.app._capture_mode_switching = True
+        state_before = self.ai_runtime_event_state()
+
+        self.app.handle_ai_event(AiEvent("stopped", "unowned"))
+
+        self.assertEqual(self.ai_runtime_event_state(), state_before)
+
+    def test_mismatched_stopped_cannot_clear_active_ai_lifecycle(self):
+        self.prepare_armed_sources(
+            MotionSources(False, True), gate_active=True
+        )
+        self.handle_current_ai_event(AiEvent("fps", 37.25))
+        self.handle_current_ai_event(AiEvent("zoom", 1.5))
+        self.app._capture_restart_pending = True
+        self.app._capture_mode_switching = True
+        state_before = self.ai_runtime_event_state()
+
+        self.app.handle_ai_event(
+            AiEvent(
+                "stopped",
+                "stale",
+                generation=self.ai.active_generation + 1,
+            )
+        )
+
+        self.assertEqual(self.ai_runtime_event_state(), state_before)
+
+    def test_matching_stopped_clears_active_ai_lifecycle(self):
+        self.prepare_armed_sources(
+            MotionSources(False, True), gate_active=True
+        )
+        self.handle_current_ai_event(AiEvent("fps", 37.25))
+        self.handle_current_ai_event(AiEvent("zoom", 1.5))
+        self.app._capture_restart_pending = True
+        self.app._capture_mode_switching = True
+
+        self.handle_current_ai_event(AiEvent("stopped", "current"))
+
+        self.assertFalse(self.app._capture_restart_pending)
+        self.assertFalse(self.app._capture_mode_switching)
+        self.assertFalse(self.app._ai_ready)
+        self.assertIsNone(self.app._ai_provider)
+        self.assertFalse(self.app._ai_runtime_active)
+        self.assertIsNone(self.app._active_ai_lifecycle)
+        self.assertEqual(self.app.ai_status_var.get(), "Stopped")
+        self.assertEqual(self.app.ai_fps_var.get(), "0 FPS")
+        self.assertEqual(self.app.ai_provider_var.get(), "No provider")
+        self.assertEqual(self.app.ai_zoom_var.get(), "1.0×")
+
     def test_trigger_release_resets_zoom_metric_without_waiting_for_ai_frame(self):
         self.prepare_armed_sources(MotionSources(False, True), gate_active=True)
         self.handle_current_ai_event(AiEvent("zoom", 1.5))
@@ -4538,7 +4616,9 @@ class JitterLayoutTests(unittest.TestCase):
         self.prepare_armed_sources(MotionSources(False, True), gate_active=True)
         self.app._cancel_after("_ui_pump_after_id")
         self.app.handle_service_event(ServiceEvent("button", ("Left", False)))
-        self.app.queue_ai_event(AiEvent("zoom", 2.0))
+        self.app.queue_ai_event(
+            AiEvent("zoom", 2.0, generation=self.ai.active_generation)
+        )
         self.drain_ui_queue()
 
         self.assertFalse(self.app.get_adaptive_zoom_gate())
@@ -4547,7 +4627,9 @@ class JitterLayoutTests(unittest.TestCase):
     def test_stale_queued_zoom_event_cannot_change_metric_after_stop(self):
         self.prepare_armed_sources(MotionSources(False, True), gate_active=True)
         self.app._cancel_after("_ui_pump_after_id")
-        self.app.queue_ai_event(AiEvent("zoom", 2.0))
+        self.app.queue_ai_event(
+            AiEvent("zoom", 2.0, generation=self.ai.active_generation)
+        )
         self.app.emergency_stop("Stopped")
         self.drain_ui_queue()
         self.assertEqual(self.app.ai_zoom_var.get(), "1.0×")
@@ -4556,7 +4638,14 @@ class JitterLayoutTests(unittest.TestCase):
         self.prepare_armed_sources(MotionSources(False, True), gate_active=True)
         self.app._cancel_after("_ui_pump_after_id")
         old_revision = self.app._ai_targeting_revision
-        self.app.queue_ai_event(AiEvent("zoom", 2.0, old_revision))
+        self.app.queue_ai_event(
+            AiEvent(
+                "zoom",
+                2.0,
+                old_revision,
+                generation=self.ai.active_generation,
+            )
+        )
 
         self.app.target_area_var.set("Chest")
         self.app._target_area_changed()
@@ -4679,7 +4768,7 @@ class JitterLayoutTests(unittest.TestCase):
 
     def test_disconnect_recovery_start_failure_hides_existing_overlay(self):
         self.app.toggle_overlay()
-        self.app.handle_ai_event(AiEvent("stopped", "worker ended"))
+        self.handle_current_ai_event(AiEvent("stopped", "worker ended"))
         self.ai.active_generation = None
         self.ai.finish_retirement()
         self.ai.start_result = False
