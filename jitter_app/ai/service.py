@@ -8,7 +8,16 @@ import threading
 import time
 from typing import Any
 
-from .capture import DxcamCapture
+import numpy as np
+
+from .capture import (
+    CENTER_320,
+    FULL_DISPLAY,
+    CapturedFrame,
+    DxcamCapture,
+    centered_region,
+    validated_capture_mode,
+)
 from .detection import OnnxDetector, model_resource_path
 from .targeting import (
     AimSettings,
@@ -30,6 +39,7 @@ from .zoom import (
 
 
 LOGGER = logging.getLogger(__name__)
+_CAPTURE_GEOMETRY_ERROR = "AI captured frame geometry is inconsistent"
 
 
 @dataclass(frozen=True)
@@ -37,6 +47,87 @@ class AiEvent:
     kind: str
     payload: Any = None
     targeting_revision: int | None = None
+
+
+def _validate_captured_frame(
+    captured: CapturedFrame,
+    generation_mode: str,
+) -> tuple[np.ndarray, int, int, int, int, int, int]:
+    def fail() -> None:
+        raise ValueError(_CAPTURE_GEOMETRY_ERROR)
+
+    if not isinstance(captured, CapturedFrame):
+        fail()
+    try:
+        captured_mode = validated_capture_mode(captured.mode)
+    except ValueError:
+        fail()
+    if captured_mode != generation_mode:
+        fail()
+    frame = captured.pixels
+    if (
+        not isinstance(frame, np.ndarray)
+        or frame.ndim != 3
+        or frame.shape[0] <= 0
+        or frame.shape[1] <= 0
+        or frame.shape[2] != 3
+        or frame.dtype != np.uint8
+    ):
+        fail()
+    frame_height, frame_width = frame.shape[:2]
+    if (
+        type(captured.output_width) is not int
+        or captured.output_width <= 0
+        or type(captured.output_height) is not int
+        or captured.output_height <= 0
+        or type(captured.capture_left) is not int
+        or captured.capture_left < 0
+        or type(captured.capture_top) is not int
+        or captured.capture_top < 0
+        or type(captured.capture_width) is not int
+        or captured.capture_width <= 0
+        or type(captured.capture_height) is not int
+        or captured.capture_height <= 0
+        or frame_width != captured.capture_width
+        or frame_height != captured.capture_height
+        or captured.capture_left + captured.capture_width > captured.output_width
+        or captured.capture_top + captured.capture_height > captured.output_height
+    ):
+        fail()
+    if generation_mode == CENTER_320:
+        try:
+            expected_region = centered_region(
+                captured.output_width,
+                captured.output_height,
+            )
+        except ValueError:
+            fail()
+        if (
+            captured.capture_left,
+            captured.capture_top,
+            captured.capture_left + captured.capture_width,
+            captured.capture_top + captured.capture_height,
+        ) != expected_region:
+            fail()
+    elif (
+        generation_mode == FULL_DISPLAY
+        and (
+            captured.capture_left != 0
+            or captured.capture_top != 0
+            or captured.capture_width != captured.output_width
+            or captured.capture_height != captured.output_height
+        )
+    ):
+        fail()
+    return (
+        frame,
+        frame_width,
+        frame_height,
+        captured.output_width,
+        captured.output_height,
+        captured.capture_left,
+        captured.capture_top,
+    )
 
 
 class AiService:
@@ -47,7 +138,7 @@ class AiService:
         event_sink: Callable[[AiEvent], None],
         model_path: Path | str | None = None,
         detector_factory: Callable[[Path | str], Any] = OnnxDetector,
-        capture_factory: Callable[[], Any] | None = None,
+        capture_factory: Callable[[str], Any] | None = None,
         clock: Callable[[], float] = time.perf_counter,
         capture_fps: int = 120,
     ) -> None:
@@ -59,7 +150,7 @@ class AiService:
         self._capture_factory = (
             capture_factory
             if capture_factory is not None
-            else lambda: DxcamCapture(target_fps=capture_fps)
+            else lambda mode: DxcamCapture(mode=mode, target_fps=capture_fps)
         )
         self._clock = clock
         self._lock = threading.Lock()
@@ -128,7 +219,9 @@ class AiService:
         zoom_gate_provider: Callable[[], bool] | None = None,
         *,
         model_path: Path | str | None = None,
+        capture_mode: str = CENTER_320,
     ) -> int | None:
+        generation_capture_mode = validated_capture_mode(capture_mode)
         if zoom_gate_provider is None:
             zoom_gate_provider = lambda: False
         with self._lock:
@@ -160,6 +253,7 @@ class AiService:
                         settings_provider,
                         zoom_gate_provider,
                         model_path,
+                        generation_capture_mode,
                     ),
                     name=f"AiInference-{generation}",
                     daemon=True,
@@ -301,6 +395,7 @@ class AiService:
         settings_provider: Callable[[], AimSettings],
         zoom_gate_provider: Callable[[], bool],
         generation_model_path: Path | str | None,
+        generation_capture_mode: str,
     ) -> None:
         capture = None
         try:
@@ -314,7 +409,7 @@ class AiService:
             detector = self._detector_factory(model_path)
             if not self._is_current(generation, stop_event):
                 return
-            capture = self._capture_factory()
+            capture = self._capture_factory(generation_capture_mode)
             capture.start()
             provider = detector.provider
             with self._lock:
@@ -333,11 +428,22 @@ class AiService:
             fps_started_at = self._clock()
             completed_inferences = 0
             while self._is_current(generation, stop_event):
-                frame = capture.read()
-                if frame is None:
+                captured = capture.read()
+                if captured is None:
                     stop_event.wait(0.001)
                     continue
-                frame_height, frame_width = frame.shape[:2]
+                (
+                    frame,
+                    frame_width,
+                    frame_height,
+                    output_width,
+                    output_height,
+                    capture_left,
+                    capture_top,
+                ) = _validate_captured_frame(
+                    captured,
+                    generation_capture_mode,
+                )
                 captured_at = self._clock()
                 sequence += 1
                 with self._lock:
@@ -363,6 +469,10 @@ class AiService:
                     captured_at=captured_at,
                     frame_width=frame_width,
                     frame_height=frame_height,
+                    output_width=output_width,
+                    output_height=output_height,
+                    capture_left=capture_left,
+                    capture_top=capture_top,
                 )
                 factor = 1.0
                 published = base_analysis
