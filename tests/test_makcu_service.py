@@ -111,14 +111,16 @@ class BlockingFailingAimEngine:
 
 class StopAfterFirstWait:
     def __init__(self):
-        self.timeouts = []
+        self.deadlines = []
         self._set = False
 
     def is_set(self):
         return self._set
 
-    def wait(self, timeout):
-        self.timeouts.append(timeout)
+    def wait_until(self, stop_event, deadline):
+        if stop_event is not self:
+            raise AssertionError("waiter received a different stop event")
+        self.deadlines.append(deadline)
         self._set = True
         return True
 
@@ -1543,7 +1545,16 @@ class MakcuMovementTests(unittest.TestCase):
             service._motion_thread = threading.current_thread()
         snapshot = TargetSnapshot(1, 100.0, "head", 170, 160)
 
-        with mock.patch("jitter_app.device.makcu.time.perf_counter", return_value=100.0):
+        with (
+            mock.patch(
+                "jitter_app.device.makcu.time.perf_counter",
+                return_value=100.0,
+            ),
+            mock.patch(
+                "jitter_app.device.makcu._wait_until_motion_deadline",
+                side_effect=stop_event.wait_until,
+            ),
+        ):
             service._motion_worker(
                 motion_generation,
                 connection_generation,
@@ -1555,9 +1566,23 @@ class MakcuMovementTests(unittest.TestCase):
                 None,
             )
 
-        self.assertEqual(stop_event.timeouts, [1 / 330])
+        self.assertEqual(len(stop_event.deadlines), 1)
+        self.assertAlmostEqual(stop_event.deadlines[0] - 100.0, 1 / 330, places=12)
 
-    def test_invalid_ai_poll_hz_falls_back_to_240(self):
+    def test_default_servo_runs_every_source_at_one_kilohertz(self):
+        service = MakcuService(lambda _event: None)
+        self.addCleanup(service.close)
+
+        for sources in (
+            MotionSources(True, False),
+            MotionSources(False, True),
+            MotionSources(True, True),
+        ):
+            with self.subTest(sources=sources):
+                engine = service._combined_engine_factory(sources)
+                self.assertEqual(engine.poll_interval(MotionSettings()), 0.001)
+
+    def test_invalid_ai_poll_hz_falls_back_to_one_kilohertz(self):
         invalid_values = (
             0,
             -1,
@@ -1579,7 +1604,7 @@ class MakcuMovementTests(unittest.TestCase):
                     )
                     self.assertEqual(
                         engine.poll_interval(MotionSettings()),
-                        1 / 240,
+                        0.001,
                     )
                 finally:
                     service.close()
@@ -1621,7 +1646,7 @@ class MakcuMovementTests(unittest.TestCase):
                 for x, y in moves_after_stop)
         )
 
-    def test_worker_waits_one_half_pulse_interval(self):
+    def test_jitter_worker_waits_one_servo_interval(self):
         service, _controller, _events = self.connected_service()
         stop_event = StopAfterFirstWait()
         connection_generation = service.connection_generation
@@ -1631,7 +1656,16 @@ class MakcuMovementTests(unittest.TestCase):
             service._motion_stop_reasons[motion_generation] = None
             service._motion_active = True
             service._motion_thread = threading.current_thread()
-        with mock.patch("jitter_app.device.makcu.time.perf_counter", return_value=100.0):
+        with (
+            mock.patch(
+                "jitter_app.device.makcu.time.perf_counter",
+                return_value=100.0,
+            ),
+            mock.patch(
+                "jitter_app.device.makcu._wait_until_motion_deadline",
+                side_effect=stop_event.wait_until,
+            ),
+        ):
             service._motion_worker(
                 motion_generation,
                 connection_generation,
@@ -1642,7 +1676,69 @@ class MakcuMovementTests(unittest.TestCase):
                 AimSettings,
                 None,
             )
-        self.assertEqual(stop_event.timeouts, [1 / 240])
+        self.assertEqual(len(stop_event.deadlines), 1)
+        self.assertAlmostEqual(stop_event.deadlines[0] - 100.0, 0.001, places=12)
+
+    def test_worker_skips_missed_servo_slots_without_immediate_catch_up(self):
+        engine = RecordingCombinedEngine(MotionSources(True, False))
+        service, _controller, _events = self.connected_service(
+            combined_engine_factory=lambda _sources: engine,
+        )
+        stop_event = StopAfterFirstWait()
+        connection_generation = service.connection_generation
+        with service._lock:
+            service._motion_generation += 1
+            motion_generation = service._motion_generation
+            service._motion_stop_reasons[motion_generation] = None
+            service._motion_active = True
+            service._motion_thread = threading.current_thread()
+
+        clock = iter((100.0, 100.0, 100.0, 100.0026, 100.003))
+        with (
+            mock.patch(
+                "jitter_app.device.makcu.time.perf_counter",
+                side_effect=lambda: next(clock),
+            ),
+            mock.patch(
+                "jitter_app.device.makcu._wait_until_motion_deadline",
+                side_effect=stop_event.wait_until,
+            ),
+        ):
+            service._motion_worker(
+                motion_generation,
+                connection_generation,
+                stop_event,
+                MotionSources(True, False),
+                MotionSettings,
+                lambda: None,
+                AimSettings,
+                None,
+            )
+
+        self.assertEqual(len(stop_event.deadlines), 1)
+        self.assertAlmostEqual(
+            stop_event.deadlines[0] - 100.0026,
+            0.0004,
+            places=9,
+        )
+
+    def test_one_kilohertz_worker_avoids_the_coarse_windows_event_tick(self):
+        engine = RecordingCombinedEngine(MotionSources(True, False))
+        service, _controller, _events = self.connected_service(
+            combined_engine_factory=lambda _sources: engine,
+        )
+
+        source = service.start_composite_motion_source(
+            MotionSources(True, False),
+            MotionSettings,
+            lambda: None,
+            AimSettings,
+            duration_s=0.1,
+        )
+        service.join_motion(1.0)
+
+        self.assertIsInstance(source, int)
+        self.assertGreaterEqual(len(engine.calls), 50)
 
     def test_stop_signals_while_move_is_blocked_and_serializes_its_return(self):
         class GatedController(FakeController):

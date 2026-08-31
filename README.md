@@ -53,7 +53,7 @@ Jitter เป็นโปรแกรมเดสก์ท็อปสำหร�
 - จับภาพ RGB ขนาดคงที่ 320×320 พิกเซลจากกึ่งกลางหน้าจอด้วย DXCam
 - เลือก detection ใกล้ crosshair ที่สุดจาก head และ player รวมกันทุกเฟรม
 - มี response curve 5 จุด, time-based smoothing และ Max Step
-- ปรับ capture/servo cadence ตาม refresh rate ของจอหลักโดยอัตโนมัติ
+- ปรับ capture cadence ตาม refresh rate ของจอหลัก (สูงสุด 240 FPS) และใช้ motion servo เป้าหมายคงที่ 1,000 Hz; อัตราที่ส่งถึง USB/HID จริงขึ้นกับ Makcu, USB และ scheduling ของ Windows
 - มี Adaptive Zoom แบบ 1.0×, 1.5× และ 2.0× โดยไม่ขยายภาพบนหน้าจอ
 - มี Overlay กล่อง detection พร้อม AI Runtime HUD แบบ click-through และไม่ถูกจับกลับเข้า inference
 - เลือกโมเดล `.onnx` ภายนอกได้เฉพาะ runtime โดยไม่บันทึก path ลง config

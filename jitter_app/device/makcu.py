@@ -15,12 +15,17 @@ from typing import Any, Callable
 
 from makcu import MouseButton, create_controller
 from jitter_app.ai.targeting import AimMovementEngine, AimSettings, TargetSnapshot
-from jitter_app.motion.combined import CombinedMotionEngine, MotionSources
+from jitter_app.motion.combined import (
+    DEFAULT_SERVO_HZ,
+    CombinedMotionEngine,
+    MotionSources,
+)
 from jitter_app.motion.engine import MotionSettings, PairedPulseEngine
 
 
 _MISSING = object()
 _CONNECTION_FAILURE_MESSAGE = "Makcu unavailable; check USB and reconnect"
+_MOTION_WAIT_SLICE_S = 0.00025
 LOGGER = logging.getLogger(__name__)
 
 
@@ -31,6 +36,19 @@ BUTTON_NAMES = {
     MouseButton.MOUSE4: "Mouse4",
     MouseButton.MOUSE5: "Mouse5",
 }
+
+
+def _wait_until_motion_deadline(
+    stop_event: threading.Event,
+    deadline: float,
+) -> bool:
+    """Wait with sub-millisecond STOP checks without Windows Event timeout drift."""
+    while not stop_event.is_set():
+        remaining = deadline - time.perf_counter()
+        if remaining <= 0.0:
+            return False
+        time.sleep(min(remaining, _MOTION_WAIT_SLICE_S))
+    return True
 
 
 @dataclass(frozen=True)
@@ -58,21 +76,25 @@ class MakcuService:
         engine_factory: Callable[[], Any] = PairedPulseEngine,
         aim_engine_factory: Callable[[], Any] | None = None,
         combined_engine_factory: Callable[[MotionSources], Any] | None = None,
-        ai_poll_hz: float = 240.0,
+        ai_poll_hz: float = DEFAULT_SERVO_HZ,
     ) -> None:
         self._event_sink = event_sink
         self._controller_factory = controller_factory
         self._engine_factory = engine_factory
         self._aim_engine_factory = aim_engine_factory
         try:
-            validated_ai_poll_hz = (
-                float(ai_poll_hz) if not isinstance(ai_poll_hz, bool) else 240.0
+            validated_servo_hz = (
+                float(ai_poll_hz)
+                if not isinstance(ai_poll_hz, bool)
+                else DEFAULT_SERVO_HZ
             )
         except (TypeError, ValueError, OverflowError):
-            validated_ai_poll_hz = 240.0
-        if not math.isfinite(validated_ai_poll_hz) or validated_ai_poll_hz <= 0.0:
-            validated_ai_poll_hz = 240.0
-        self._ai_poll_hz = validated_ai_poll_hz
+            validated_servo_hz = DEFAULT_SERVO_HZ
+        if not math.isfinite(validated_servo_hz) or validated_servo_hz <= 0.0:
+            validated_servo_hz = DEFAULT_SERVO_HZ
+        # Retain the historical ``ai_poll_hz`` keyword while applying it to
+        # the unified Jitter/AI motion servo.
+        self._servo_hz = validated_servo_hz
         self._combined_engine_factory = (
             combined_engine_factory
             if combined_engine_factory is not None
@@ -80,7 +102,7 @@ class MakcuService:
                 sources,
                 jitter_engine_factory=engine_factory,
                 aim_engine_factory=aim_engine_factory,
-                ai_poll_hz=self._ai_poll_hz,
+                ai_poll_hz=self._servo_hz,
             )
         )
         self._lock = threading.RLock()
@@ -682,6 +704,7 @@ class MakcuService:
         error_payload: str | None = None
         started = time.perf_counter()
         previous_tick = started
+        next_tick_deadline = started
         if expected_controller is None:
             with self._lock:
                 expected_controller = self._controller
@@ -769,7 +792,15 @@ class MakcuService:
                         except Exception as exc:
                             error_payload = f"{type(exc).__name__}: {exc}"
                             break
-                stop_event.wait(max(0.0, interval - (time.perf_counter() - tick_started)))
+                wait_started = time.perf_counter()
+                next_tick_deadline += interval
+                if next_tick_deadline <= wait_started:
+                    missed_slots = (
+                        math.floor((wait_started - next_tick_deadline) / interval)
+                        + 1
+                    )
+                    next_tick_deadline += missed_slots * interval
+                _wait_until_motion_deadline(stop_event, next_tick_deadline)
         finally:
             terminal_event: ServiceEvent | None = None
             should_dispatch = False

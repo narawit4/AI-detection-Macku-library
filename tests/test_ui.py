@@ -500,7 +500,7 @@ class JitterLayoutTests(unittest.TestCase):
             runtime_cadence=(
                 runtime_cadence
                 if runtime_cadence is not None
-                else RuntimeCadence(None, 120, 240)
+                else RuntimeCadence(None, 120, 1000)
             ),
         )
         original_after_cancel = self.app.after_cancel
@@ -532,7 +532,7 @@ class JitterLayoutTests(unittest.TestCase):
 
     def test_app_default_factories_receive_runtime_cadence(self):
         self.app.close_app()
-        cadence = RuntimeCadence(144, 144, 288)
+        cadence = RuntimeCadence(144, 144, 1000)
         makcu_kwargs = []
         ai_kwargs = []
 
@@ -555,22 +555,22 @@ class JitterLayoutTests(unittest.TestCase):
             )
 
         self.assertEqual(app.runtime_cadence, cadence)
-        self.assertEqual(makcu_kwargs, [{"ai_poll_hz": 288}])
+        self.assertEqual(makcu_kwargs, [{"ai_poll_hz": 1000}])
         self.assertEqual(ai_kwargs, [{"capture_fps": 144}])
         self.assertEqual(
             app.ai_cadence_var.get(),
-            "DISPLAY 144 HZ · SERVO 288 HZ",
+            "DISPLAY 144 HZ · SERVO 1000 HZ",
         )
 
     def test_fallback_cadence_status_is_explicit(self):
         self.app.close_app()
         app = self.make_app(
-            runtime_cadence=RuntimeCadence(None, 120, 240),
+            runtime_cadence=RuntimeCadence(None, 120, 1000),
         )
 
         self.assertEqual(
             app.ai_cadence_var.get(),
-            "DISPLAY AUTO · SERVO 240 HZ",
+            "DISPLAY AUTO · SERVO 1000 HZ",
         )
 
     def test_injected_service_factories_keep_one_argument_contract(self):

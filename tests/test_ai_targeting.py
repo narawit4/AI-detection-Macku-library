@@ -332,7 +332,7 @@ class AimMovementEngineTests(unittest.TestCase):
 
     def test_elapsed_time_not_tick_count_controls_total_displacement(self):
         totals = []
-        for hz in (120, 288, 480):
+        for hz in (120, 288, 480, 1000):
             engine = AimMovementEngine(nominal_hz=hz)
             target = TargetSnapshot(1, 20.0, "head", 220.0, 160.0)
             reports = [
@@ -341,6 +341,131 @@ class AimMovementEngineTests(unittest.TestCase):
             ]
             totals.append(sum(x for x, _ in reports))
         self.assertLessEqual(max(totals) - min(totals), 2)
+
+    def test_fresh_frames_keep_only_direction_compatible_fractional_carry(self):
+        settings = AimSettings(
+            aim_strength=0.05,
+            smoothing=0.0,
+            max_step=127,
+            response_curve=self.LINEAR_CURVE,
+        )
+        same_direction = AimMovementEngine(nominal_hz=1000)
+        same_direction_reports = []
+        for index in range(20):
+            frame_index = index // 5
+            now = 10.0 + index / 1000
+            same_direction_reports.append(
+                same_direction.step(
+                    TargetSnapshot(
+                        frame_index + 1,
+                        10.0 + frame_index / 200,
+                        "head",
+                        180.0,
+                        160.0,
+                    ),
+                    settings,
+                    now,
+                )
+            )
+
+        reversed_direction = AimMovementEngine(nominal_hz=10)
+        reverse_reports = [
+            reversed_direction.step(
+                TargetSnapshot(1, 10.0, "head", 163.0, 160.0),
+                settings,
+                10.0,
+            ),
+            reversed_direction.step(
+                TargetSnapshot(2, 10.1, "head", 156.0, 160.0),
+                settings,
+                10.1,
+            ),
+        ]
+
+        self.assertEqual(
+            {
+                "same_direction_total": sum(
+                    report_x for report_x, _report_y in same_direction_reports
+                ),
+                "reverse_reports": reverse_reports,
+            },
+            {
+                "same_direction_total": 1,
+                "reverse_reports": [(0, 0), (-1, 0)],
+            },
+        )
+
+    def test_smoothed_reversal_cannot_regenerate_incompatible_fractional_carry(self):
+        settings = AimSettings(aim_strength=1.0, smoothing=0.65)
+        cases = (
+            (
+                "positive x",
+                (170.0, 160.0),
+                (150.0, 160.0),
+                [(0, 0), (1, 0), (0, 0), (0, 0)],
+            ),
+            (
+                "negative x",
+                (150.0, 160.0),
+                (170.0, 160.0),
+                [(0, 0), (-1, 0), (0, 0), (0, 0)],
+            ),
+            (
+                "positive y",
+                (160.0, 170.0),
+                (160.0, 150.0),
+                [(0, 0), (0, 1), (0, 0), (0, 0)],
+            ),
+            (
+                "negative y",
+                (160.0, 150.0),
+                (160.0, 170.0),
+                [(0, 0), (0, -1), (0, 0), (0, 0)],
+            ),
+        )
+
+        for name, initial_point, reverse_point, expected in cases:
+            with self.subTest(name=name):
+                engine = AimMovementEngine(nominal_hz=60)
+                reports = [
+                    engine.step(
+                        TargetSnapshot(
+                            sequence,
+                            10.0 if sequence == 1 else 10.0 + index / 60,
+                            "head",
+                            *point,
+                        ),
+                        settings,
+                        10.0 + index / 60,
+                    )
+                    for index, (sequence, point) in enumerate((
+                        (1, initial_point),
+                        (1, initial_point),
+                        (2, reverse_point),
+                        (3, initial_point),
+                    ))
+                ]
+
+                self.assertEqual(reports, expected)
+
+    def test_zero_axis_cannot_regenerate_carry_while_other_axis_is_active(self):
+        engine = AimMovementEngine(nominal_hz=60)
+        settings = AimSettings(aim_strength=0.35, smoothing=0.2)
+
+        reports = [
+            engine.step(
+                TargetSnapshot(sequence, 10.0 + index / 60, "head", aim_x, aim_y),
+                settings,
+                10.0 + index / 60,
+            )
+            for index, (sequence, aim_x, aim_y) in enumerate((
+                (1, 170.0, 160.0),
+                (2, 160.0, 165.0),
+                (3, 170.0, 165.0),
+            ))
+        ]
+
+        self.assertEqual(reports, [(0, 0), (0, 0), (0, 0)])
 
     def test_first_tick_uses_exact_nominal_interval(self):
         engine = AimMovementEngine(nominal_hz=60)

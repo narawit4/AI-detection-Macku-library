@@ -96,6 +96,25 @@ class PairedPulseEngineTests(unittest.TestCase):
         self.assertEqual(engine.step(settings, 0.05, 0.0), (1, -1))
         self.assertEqual(engine.step(settings, 0.1, 1.0), (-1, 1))
 
+    def test_exact_grid_delay_does_not_replay_a_missed_half_pulse(self):
+        engine = PairedPulseEngine()
+        settings = MotionSettings(2.0, 20.0, "Instant")
+
+        self.assertNotEqual(engine.step(settings, 0.025, 0.0), (0, 0))
+        self.assertNotEqual(engine.step(settings, 0.075, 0.075), (0, 0))
+        self.assertEqual(engine.step(settings, 0.001, 0.076), (0, 0))
+
+    def test_one_kilohertz_ticks_preserve_exact_120_hertz_pulse_cadence(self):
+        engine = PairedPulseEngine()
+        settings = MotionSettings(2.0, 120.0, "Instant")
+
+        reports = [
+            engine.step(settings, 0.001, index / 1000)
+            for index in range(1000)
+        ]
+
+        self.assertEqual(sum(report != (0, 0) for report in reports), 240)
+
     def test_reset_starts_a_fresh_up_down_pair(self):
         engine = PairedPulseEngine()
         settings = MotionSettings(2.0, 30.0, "Instant")

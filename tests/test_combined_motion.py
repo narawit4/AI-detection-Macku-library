@@ -78,7 +78,24 @@ class CombinedMotionTests(unittest.TestCase):
             jitter_engine_factory=lambda: FixedJitter((1, 1)),
             aim_engine_factory=lambda: self.fail("AI factory must stay unused"),
         )
-        self.assertEqual(engine.poll_interval(MotionSettings(pulse_rate_hz=50)), 0.01)
+        self.assertEqual(engine.poll_interval(MotionSettings(pulse_rate_hz=50)), 0.001)
+
+    def test_default_one_kilohertz_servo_applies_to_every_source_combination(self):
+        for sources in (
+            MotionSources(jitter=True),
+            MotionSources(ai=True),
+            MotionSources(jitter=True, ai=True),
+        ):
+            with self.subTest(sources=sources):
+                engine = CombinedMotionEngine(
+                    sources,
+                    jitter_engine_factory=lambda: FixedJitter((0, 0)),
+                    aim_engine_factory=lambda: FixedAim((0, 0)),
+                )
+                self.assertEqual(
+                    engine.poll_interval(MotionSettings(pulse_rate_hz=20)),
+                    0.001,
+                )
 
     def test_ai_only_output_uses_ai_component(self):
         aim = FixedAim((-4, 7))

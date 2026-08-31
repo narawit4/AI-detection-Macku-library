@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import math
 
 from jitter_app.ai.targeting import AimMovementEngine, AimSettings, TargetSnapshot
-from .engine import MotionSettings, PairedPulseEngine
+from .engine import DEFAULT_SERVO_HZ, MotionSettings, PairedPulseEngine
 
 
 @dataclass(frozen=True)
@@ -24,15 +24,15 @@ class CombinedMotionEngine:
         sources: MotionSources,
         jitter_engine_factory: Callable[[], object] = PairedPulseEngine,
         aim_engine_factory: Callable[[], object] | None = None,
-        ai_poll_hz: float = 240.0,
+        ai_poll_hz: float = DEFAULT_SERVO_HZ,
     ) -> None:
         if not sources.any:
             raise ValueError("At least one motion source must be selected")
         try:
-            self._ai_poll_hz = float(ai_poll_hz)
+            self._servo_hz = float(ai_poll_hz)
         except (TypeError, ValueError, OverflowError) as exc:
             raise ValueError("AI poll rate must be positive and finite") from exc
-        if not math.isfinite(self._ai_poll_hz) or self._ai_poll_hz <= 0.0:
+        if not math.isfinite(self._servo_hz) or self._servo_hz <= 0.0:
             raise ValueError("AI poll rate must be positive and finite")
         self.sources = sources
         self._jitter = jitter_engine_factory() if sources.jitter else None
@@ -41,7 +41,7 @@ class CombinedMotionEngine:
             self._aim = (
                 aim_engine_factory()
                 if aim_engine_factory is not None
-                else AimMovementEngine(nominal_hz=self._ai_poll_hz)
+                else AimMovementEngine(nominal_hz=self._servo_hz)
             )
 
     def step(
@@ -67,8 +67,5 @@ class CombinedMotionEngine:
             max(-127, min(127, int(jitter[1]) + int(aim[1]))),
         )
 
-    def poll_interval(self, motion_settings: MotionSettings) -> float:
-        if self.sources.ai:
-            return 1.0 / self._ai_poll_hz
-        rate = max(20.0, min(120.0, float(motion_settings.pulse_rate_hz)))
-        return 1.0 / (rate * 2.0)
+    def poll_interval(self, _motion_settings: MotionSettings) -> float:
+        return 1.0 / self._servo_hz

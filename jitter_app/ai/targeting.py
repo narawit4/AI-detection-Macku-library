@@ -357,9 +357,14 @@ class AimMovementEngine:
         if fresh_sequence:
             self._settled_sequence = None
             self._last_sequence = snapshot.sequence
-            self._remaining_x = snapshot.aim_x - self.CENTER
-            self._remaining_y = snapshot.aim_y - self.CENTER
-            self._fraction_x = self._fraction_y = 0.0
+            next_remaining_x = snapshot.aim_x - self.CENTER
+            next_remaining_y = snapshot.aim_y - self.CENTER
+            if self._fraction_x * next_remaining_x <= 0.0:
+                self._fraction_x = 0.0
+            if self._fraction_y * next_remaining_y <= 0.0:
+                self._fraction_y = 0.0
+            self._remaining_x = next_remaining_x
+            self._remaining_y = next_remaining_y
             self._target_captured_at = snapshot.captured_at
 
         radius = math.hypot(self._remaining_x, self._remaining_y)
@@ -411,12 +416,22 @@ class AimMovementEngine:
         total_y = self._velocity_y * dt + self._fraction_y
         candidate_x = math.trunc(total_x)
         candidate_y = math.trunc(total_y)
-        self._fraction_x = total_x - candidate_x
-        self._fraction_y = total_y - candidate_y
+        next_fraction_x = total_x - candidate_x
+        next_fraction_y = total_y - candidate_y
         report_x = self._clamp_report(candidate_x, self._remaining_x, settings.max_step)
         report_y = self._clamp_report(candidate_y, self._remaining_y, settings.max_step)
         self._remaining_x -= report_x
         self._remaining_y -= report_y
+        self._fraction_x = (
+            next_fraction_x
+            if next_fraction_x * self._remaining_x > 0.0
+            else 0.0
+        )
+        self._fraction_y = (
+            next_fraction_y
+            if next_fraction_y * self._remaining_y > 0.0
+            else 0.0
+        )
         if math.hypot(self._remaining_x, self._remaining_y) <= self.DEAD_ZONE:
             settled_sequence = self._last_sequence
             self.reset()

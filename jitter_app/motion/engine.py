@@ -16,6 +16,8 @@ MOTION_LIMITS = {
 }
 RAMP_MODES = ("Instant", "Smooth")
 PULSE_AXIS_DEGREES = 45.0
+DEFAULT_SERVO_HZ = 1000
+_DUE_EPSILON_S = 1e-12
 MOTION_PRESETS = {
     "Soft": {"pulse_size_px": "1", "pulse_rate_hz": "30", "ramp_mode": "Smooth"},
     "Balanced": {"pulse_size_px": "2", "pulse_rate_hz": "60", "ramp_mode": "Smooth"},
@@ -91,7 +93,7 @@ class PairedPulseEngine:
     def step(self, settings: MotionSettings, dt: float, elapsed: float) -> tuple[int, int]:
         elapsed = max(0.0, float(elapsed))
         interval = 1.0 / (settings.pulse_rate_hz * 2.0)
-        if elapsed + 1e-12 < self.next_due_elapsed:
+        if elapsed + _DUE_EPSILON_S < self.next_due_elapsed:
             return 0, 0
         directions = (-1.0, 1.0, 1.0, -1.0)
         direction = directions[self.half_pulse_index % 4]
@@ -110,7 +112,14 @@ class PairedPulseEngine:
         report_x = max(-8, min(8, int(-direction * self.current_pair_x)))
         report_y = max(-8, min(8, int(direction * self.current_pair_y)))
         self.half_pulse_index += 1
-        self.next_due_elapsed = elapsed + interval
+        next_due_elapsed = self.next_due_elapsed + interval
+        due_threshold = elapsed + _DUE_EPSILON_S
+        if next_due_elapsed <= due_threshold:
+            missed = math.floor((due_threshold - next_due_elapsed) / interval) + 1
+            next_due_elapsed += max(1, missed) * interval
+            if next_due_elapsed <= due_threshold:
+                next_due_elapsed += interval
+        self.next_due_elapsed = next_due_elapsed
         return report_x, report_y
 
 

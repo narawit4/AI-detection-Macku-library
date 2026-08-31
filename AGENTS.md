@@ -141,10 +141,13 @@ with the supported Windows Python installation.
   crosshair at `(160, 160)`. Preserve detector order as the exact-distance tie
   break. Do not use prior identity, ambiguity holds, recovery confirmation, or
   replacement delays; publish the current-frame selection immediately.
-- Derive runtime cadence from the primary display: cap capture at 240 FPS and
-  run the servo at twice display refresh, clamped to 120-480 Hz. Fall back to
-  120 FPS capture and a 240 Hz servo when detection is unavailable or invalid.
-  Display, servo, and measured inference cadence are runtime status only.
+- Derive capture cadence from the primary display and cap capture at 240 FPS.
+  Run one fixed 1,000 Hz motion servo for every selected source while movement
+  is active; Jitter still emits only when its configured pulse is due and zero
+  deltas are not sent to Makcu. Use absolute deadlines, skip missed slots, and
+  never queue catch-up movement. Fall back to 120 FPS capture when display
+  detection is unavailable or invalid. Display, servo, and measured inference
+  cadence are runtime status only.
 - AI Aim uses a five-point distance-to-speed response curve at 0%, 25%, 50%,
   75%, and 100% distance. The first point is fixed at zero; the other four are
   adjustable exact ordered percentages. Curve output is scaled by Strength,
