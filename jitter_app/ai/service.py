@@ -242,28 +242,21 @@ class AiService:
     def _validated_trigger_epoch(raw: object) -> int | None:
         return raw if type(raw) is int and raw > 0 else None
 
-    def _claim_trigger_epoch(self, epoch: int) -> bool:
-        with self._lock:
-            if (
-                self._claimed_trigger_epoch is not None
-                and epoch <= self._claimed_trigger_epoch
-            ):
-                return False
-            self._claimed_trigger_epoch = epoch
-            return True
+    def _claim_trigger_epoch_locked(self, epoch: int) -> bool:
+        if (
+            self._claimed_trigger_epoch is not None
+            and epoch <= self._claimed_trigger_epoch
+        ):
+            return False
+        self._claimed_trigger_epoch = epoch
+        return True
 
     def invalidate_trigger_lock(self, trigger_epoch: int | None) -> int:
         """Invalidate AI publication and consume a supplied Trigger epoch."""
         with self._lock:
             epoch = self._validated_trigger_epoch(trigger_epoch)
-            if (
-                epoch is not None
-                and (
-                    self._claimed_trigger_epoch is None
-                    or epoch > self._claimed_trigger_epoch
-                )
-            ):
-                self._claimed_trigger_epoch = epoch
+            if epoch is not None:
+                self._claim_trigger_epoch_locked(epoch)
             return self._reset_targeting_locked()
 
     def _reset_targeting_locked(self) -> int:
@@ -570,17 +563,25 @@ class AiService:
                     observed_at,
                 )
                 sequence += 1
-                with self._lock:
-                    targeting_revision = self._targeting_revision
                 trigger_epoch = None
                 if managed_trigger_lock:
                     trigger_epoch = read_trigger_epoch()
-                    if trigger_epoch != active_trigger_epoch:
+                    epoch_changed = trigger_epoch != active_trigger_epoch
+                    claimed_epoch = False
+                    with self._lock:
+                        if not self._is_current_locked(generation, stop_event):
+                            return
+                        targeting_revision = self._targeting_revision
+                        if epoch_changed and trigger_epoch is not None:
+                            claimed_epoch = self._claim_trigger_epoch_locked(
+                                trigger_epoch
+                            )
+                    if epoch_changed:
                         active_trigger_epoch = trigger_epoch
                         active_trigger_revision = targeting_revision
                         if trigger_epoch is None:
                             lock_state = StrictTriggerLockState()
-                        elif self._claim_trigger_epoch(trigger_epoch):
+                        elif claimed_epoch:
                             lock_state = StrictTriggerLockState()
                         else:
                             lock_state = StrictTriggerLockState(
@@ -595,6 +596,9 @@ class AiService:
                                 epoch=trigger_epoch,
                                 mode=STRICT_LOCK_LOST,
                             )
+                else:
+                    with self._lock:
+                        targeting_revision = self._targeting_revision
                 settings = settings_provider()
                 target_area = validated_target_area(settings.target_area)
                 if (

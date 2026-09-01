@@ -727,6 +727,87 @@ class AiServiceTests(unittest.TestCase):
         capture_three.release_frame()
         self.assertTrue(wait_until(lambda: service.latest_snapshot() is not None))
 
+    def test_new_epoch_baselines_revision_after_ordered_reset(self):
+        target = (Detection(145, 145, 165, 165, .9, 7),)
+        epoch = {"value": None}
+        provider_entered = threading.Event()
+        release_provider = threading.Event()
+        provider_calls = 0
+
+        def trigger_epoch_provider():
+            nonlocal provider_calls
+            provider_calls += 1
+            if provider_calls == 1:
+                provider_entered.set()
+                release_provider.wait(1.0)
+            return epoch["value"]
+
+        capture = FrameCompletionCapture([rgb_frame(1), rgb_frame(2)])
+        service = AiService(
+            lambda _event: None,
+            detector_factory=lambda _path: SequenceDetector((target, target)),
+            capture_factory=lambda _mode: capture,
+        )
+        self.addCleanup(service.close)
+        service.start(AimSettings, lambda: False, trigger_epoch_provider)
+
+        capture.release_frame()
+        self.assertTrue(provider_entered.wait(1.0))
+        service.reset_targeting()
+        epoch["value"] = 1
+        release_provider.set()
+        self.assertTrue(capture.processed[0].wait(1.0))
+        first = service.latest_snapshot()
+        self.assertIsNotNone(first)
+        self.assertEqual(first.sequence, 1)
+
+        capture.release_frame()
+        self.assertTrue(capture.processed[1].wait(1.0))
+        second = service.latest_snapshot()
+        self.assertIsNotNone(second)
+        self.assertEqual(second.sequence, 2)
+
+    def test_obsolete_generation_cannot_claim_epoch_after_stop(self):
+        target = (Detection(145, 145, 165, 165, .9, 7),)
+        epoch = {"value": None}
+        provider_entered = threading.Event()
+        release_provider = threading.Event()
+        provider_calls = 0
+
+        def trigger_epoch_provider():
+            nonlocal provider_calls
+            provider_calls += 1
+            if provider_calls == 1:
+                provider_entered.set()
+                release_provider.wait(1.0)
+            return epoch["value"]
+
+        capture_one = ControlledCapture([rgb_frame(1)])
+        capture_two = ControlledCapture([rgb_frame(2)])
+        captures = [capture_one, capture_two]
+        detectors = [SequenceDetector((target,)), SequenceDetector((target,))]
+        service = AiService(
+            lambda _event: None,
+            detector_factory=lambda _path: detectors.pop(0),
+            capture_factory=lambda _mode: captures.pop(0),
+        )
+        self.addCleanup(service.close)
+
+        service.start(AimSettings, lambda: False, trigger_epoch_provider)
+        capture_one.release_frame()
+        self.assertTrue(provider_entered.wait(1.0))
+        service.stop("obsolete_before_claim")
+        epoch["value"] = 1
+        release_provider.set()
+        self.assertTrue(wait_until(lambda: not service.worker_active))
+
+        service.start(AimSettings, lambda: False, trigger_epoch_provider)
+        capture_two.release_frame()
+        self.assertTrue(wait_until(
+            lambda: service.latest_detection_snapshot() is not None
+        ))
+        self.assertIsNotNone(service.latest_snapshot())
+
     def test_release_during_blocking_base_inference_discards_result(self):
         epoch = {"value": 1}
         capture = FrameCompletionCapture([rgb_frame(1)])
