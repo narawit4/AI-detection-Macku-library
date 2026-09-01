@@ -4,8 +4,9 @@ Jitter เป็นโปรแกรมเดสก์ท็อปสำหร�
 ใช้ควบคุมอุปกรณ์ Makcu USB โดยรวมความสามารถสองส่วนที่เปิดใช้งานแยกกันได้:
 
 - `Jitter` สร้างการขยับเมาส์สองมิติแบบ paired pulse ที่ปรับแต่งได้
-- `AI Aim` ตรวจจับผู้เล่นและศีรษะจากภาพกลางหน้าจอ แล้วขยับเมาส์ไปยัง
-  detection ที่ใกล้ crosshair ที่สุดในเฟรมปัจจุบัน
+- `AI Aim` ตรวจจับผู้เล่นและศีรษะจากภาพกลางหน้าจอ: นอก Trigger epoch ที่เข้าเกณฑ์
+  ใช้ detection ที่ใกล้ crosshair ที่สุดสำหรับ Overlay และการเริ่มเลือกเป้าหมาย;
+  ใน epoch จะติดตามต่อเฉพาะกล่อง base ที่ต่อเนื่องได้แบบ unique มิฉะนั้น latch `LOST`
 
 ทั้งสองแหล่งการเคลื่อนไหวสามารถใช้เดี่ยว ๆ หรือเปิดพร้อมกันได้ เมื่อเปิดพร้อมกัน
 โปรแกรมจะรวม delta ของ Jitter และ AI Aim ก่อนส่งไปยัง Makcu หาก AI Aim
@@ -51,7 +52,10 @@ Jitter เป็นโปรแกรมเดสก์ท็อปสำหร�
 - มี global hotkey ค่าเริ่มต้น `-` สำหรับสลับ Master หนึ่งครั้งต่อการกด
 - ใช้ ONNX Runtime DirectML เป็น provider หลัก และมี CPU fallback
 - `Capture Mode` เป็น runtime-only: `Center 320` คือค่าเริ่มต้นและจับภาพจริงเป็นสี่เหลี่ยม 320×320 ตรงกลางจอหลัก ส่วน `Full Display` จับภาพจอหลักทั้งหมดที่ native resolution; ใช้ได้เพียงหนึ่ง mode/AI generation ต่อครั้ง แล้ว letterbox base frame แบบรักษาอัตราส่วนไปยัง model input สี่เหลี่ยม 160, 320 หรือ 640 โดย unused letterbox pixels are filled with RGB value 114 และ detection จะ map กลับเป็นพิกัด source-screen
-- เลือก detection ใกล้ crosshair ที่สุดจาก head และ player รวมกันทุกเฟรม
+- นอก Trigger epoch ที่เข้าเกณฑ์ เลือก detection ที่ใกล้ crosshair ที่สุดจาก head
+  และ player รวมกันสำหรับ Overlay และการเริ่มเลือกเป้าหมาย; ใน epoch ใช้
+  Strict Trigger Lock แบบ fail-closed และ latch `LOST` เมื่อไม่มีหรือมี
+  continuation ที่ plausible มากกว่าหนึ่งกล่อง
 - มี response curve 5 จุด, time-based smoothing และ Max Step
 - ปรับ capture cadence ตาม refresh rate ของจอหลัก (สูงสุด 240 FPS) และใช้ motion servo เป้าหมายคงที่ 1,000 Hz ซึ่งเป็นอิสระจาก capture และ inference cadence; อัตราที่ส่งถึง USB/HID จริงขึ้นกับ Makcu, USB และ scheduling ของ Windows
 - มี Adaptive Zoom แบบ 1.0×, 1.5× และ 2.0× โดยไม่ขยายภาพบนหน้าจอ
@@ -64,18 +68,19 @@ AI Aim ใช้ source frame ของ `Capture Mode` ที่เลือก:
 320×320 ตรงกลางจอหลัก ส่วน `Full Display` ใช้จอหลักทั้งหมดที่ native resolution
 แล้ว letterbox แบบรักษาอัตราส่วนเข้าสู่ model input สี่เหลี่ยม 160, 320 หรือ 640
 ที่กำลังใช้งาน โดย unused letterbox pixels are filled with RGB value 114 พิกัด
-detection จะถูก map กลับเป็น source-screen ก่อนเลือกเป้าหมาย; the crosshair center comes from the selected source frame. canonical/model-space 320 ใช้เฉพาะ policy การตอบสนองหลัง map แล้ว ไม่ใช่ capture หรือ overlay geometry ทุกเฟรมมีขั้นตอนดังนี้:
+detection จะถูก map กลับเป็น source-screen ก่อนเลือกเป้าหมาย; the crosshair center comes from the selected source frame. canonical/model-space 320 ใช้เฉพาะ policy การตอบสนองหลัง map แล้ว ไม่ใช่ capture หรือ overlay geometry.
 
-1. รับ detection จากโมเดล ONNX
-2. เก็บเฉพาะ class ที่รองรับและมี confidence ถึงค่าที่กำหนด
-3. สร้าง aim point ของ head และ player ทุกตัว
-4. รวม head และ player ไว้ในรายการเดียวกัน
-5. คำนวณระยะเส้นตรงจาก aim point ไปยังจุดกึ่งกลางของ source frame
-6. เลือก aim point ที่มีระยะน้อยที่สุดและเผยแพร่ทันทีในเฟรมนั้น
+นอก raw-Trigger epoch ที่เข้าเกณฑ์ ระบบรับ detection จากโมเดล ONNX, เก็บเฉพาะ
+class ที่รองรับและมี confidence ถึงค่าที่กำหนด, สร้าง aim point ของ head และ player
+และเลือก aim point ที่ใกล้จุดกึ่งกลางของ source frame ที่สุดสำหรับ Overlay และการ
+เริ่มเลือกเป้าหมาย.
 
-ระบบไม่ให้สิทธิ์ head มากกว่า player และไม่ยึดตัวที่เลือกจากเฟรมก่อนหน้า
-จึงสามารถสลับไปยัง detection ใหม่ที่ใกล้ crosshair กว่าได้ทันที หากสองจุดมี
-ระยะเท่ากันพอดี จะใช้ลำดับ output จาก detector เป็นตัวตัดสิน
+ใน raw-Trigger epoch ที่เข้าเกณฑ์ ระบบทำการเริ่มเลือกได้เพียงครั้งเดียว แล้วติดตาม
+ต่อเฉพาะกล่อง base ที่เป็น continuation เดียวซึ่ง class เดียวกันและ plausible ทาง
+geometry. หากไม่พบ continuation หรือพบมากกว่าหนึ่งกล่อง ระบบจะ latch `LOST` และ
+ไม่ส่ง AI movement หรือเลือกกล่องสำหรับ Overlay ตลอดการกดนั้น; ต้องปล่อยแล้วกด
+Trigger ใหม่จึงเริ่มเลือกได้อีกครั้ง และการเปลี่ยน Modifier ไม่สร้าง epoch ใหม่.
+การจับคู่ใช้ class และ geometry ของกล่องตรวจจับเท่านั้น จึงไม่ใช่การยืนยัน identity.
 
 โมเดลที่รองรับใช้ class ดังนี้:
 
@@ -423,11 +428,14 @@ display cadence, servo cadence และ zoom status
 - Confidence ไม่สูงจน detection ถูกตัดทิ้งทั้งหมด
 - Target Area ตรงกับ class ที่โมเดลตรวจได้
 
-### AI สลับไปอีกตัวเมื่อเป้าหมายอยู่ใกล้กัน
+### AI assistance หยุดเมื่อเป้าหมายอยู่ใกล้กัน
 
-นี่เป็นพฤติกรรมที่ออกแบบไว้ ระบบเลือก detection ที่ใกล้ crosshair ที่สุดใหม่
-ทุกเฟรมและไม่จำ identity จากเฟรมก่อน หากต้องการให้ตัวใดถูกเลือก ให้วาง crosshair
-ให้ aim point ของตัวนั้นใกล้ศูนย์กลางกว่า
+ระหว่าง raw-Trigger epoch ที่เข้าเกณฑ์ นี่เป็นพฤติกรรมที่ออกแบบไว้: หากไม่พบ
+continuation ที่ plausible หรือพบมากกว่าหนึ่งกล่อง Strict Trigger Lock จะ latch
+`LOST` และหยุด AI assistance ตลอดการกดนั้น. ปล่อยแล้วกด Trigger ใหม่เพื่อเริ่ม
+เลือกใหม่; การปล่อยหรือกด Modifier ใหม่เพียงอย่างเดียวไม่เลือกเป้าหมายใหม่.
+นอก epoch ระบบยังแสดง detection ที่ใกล้ crosshair ที่สุดสำหรับ Overlay และการเริ่ม
+เลือกเป้าหมาย โดยการจับคู่ไม่ใช่การยืนยัน identity ของบุคคล.
 
 ### เลือกโมเดลแล้วถูก Reject
 
