@@ -4884,6 +4884,17 @@ class JitterApp(tk.Tk):
                         "hotkey": self._hotkey_event_epoch,
                     }.get(kind)
                     if epoch is not None and epoch != current_epoch:
+                        if kind == "service" and payload.kind == "button":
+                            try:
+                                button, pressed = payload.payload
+                            except (TypeError, ValueError):
+                                pass
+                            else:
+                                button = str(button)
+                                if bool(pressed):
+                                    self._physical_buttons_down.add(button)
+                                else:
+                                    self._physical_buttons_down.discard(button)
                         processed += 1
                         continue
                     if kind == "service":

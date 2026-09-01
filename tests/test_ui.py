@@ -4493,6 +4493,62 @@ class JitterLayoutTests(unittest.TestCase):
         self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
         self.assertGreater(self.app.get_trigger_lock_epoch(), first)
 
+    def test_stale_queued_trigger_down_preserves_physical_latch_only(self):
+        self.service.connected = True
+        self.app.ai_selected = True
+        self.app.queue_service_event(
+            ServiceEvent("button", ("Left", True))
+        )
+
+        self.app.set_master(True)
+        self.drain_ui_queue()
+
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+        self.assertFalse(self.app.trigger_gate.trigger_held)
+        self.assertFalse(self.app._normal_motion_started)
+
+        self.app.queue_service_event(
+            ServiceEvent("button", ("Left", True))
+        )
+        self.drain_ui_queue()
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+
+        self.app.queue_service_event(
+            ServiceEvent("button", ("Left", False))
+        )
+        self.drain_ui_queue()
+        self.app.queue_service_event(
+            ServiceEvent("button", ("Left", True))
+        )
+        self.drain_ui_queue()
+        self.assertIsInstance(self.app.get_trigger_lock_epoch(), int)
+
+    def test_stale_queued_trigger_release_updates_physical_latch(self):
+        self.prepare_armed_sources(MotionSources(False, True))
+        self.app.queue_service_event(
+            ServiceEvent("button", ("Left", True))
+        )
+        self.drain_ui_queue()
+        first = self.app.get_trigger_lock_epoch()
+        self.assertIsInstance(first, int)
+
+        self.app.queue_service_event(
+            ServiceEvent("button", ("Left", False))
+        )
+        self.app.set_master(False)
+        self.drain_ui_queue()
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+        self.assertFalse(self.app.trigger_gate.trigger_held)
+
+        self.app.set_master(True)
+        self.app.queue_service_event(
+            ServiceEvent("button", ("Left", True))
+        )
+        self.drain_ui_queue()
+        next_epoch = self.app.get_trigger_lock_epoch()
+        self.assertIsInstance(next_epoch, int)
+        self.assertGreater(next_epoch, first)
+
     def test_modifier_release_repress_keeps_raw_trigger_epoch(self):
         self.app.modifier_var.set("Right")
         self.app.on_bindings_changed()
