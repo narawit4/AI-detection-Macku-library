@@ -4894,7 +4894,10 @@ class JitterApp(tk.Tk):
                                 if bool(pressed):
                                     self._physical_buttons_down.add(button)
                                 else:
-                                    self._physical_buttons_down.discard(button)
+                                    # Releases fail closed even after a
+                                    # lifecycle advance; stale presses remain
+                                    # latch-only and cannot rearm movement.
+                                    self.handle_service_event(payload)
                         processed += 1
                         continue
                     if kind == "service":

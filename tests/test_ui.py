@@ -5759,6 +5759,54 @@ class JitterLayoutTests(unittest.TestCase):
             retiring,
         )
 
+    def test_stale_trigger_release_blocks_source_change_retirement_restart(self):
+        self.prepare_armed_sources(
+            MotionSources(True, False), gate_active=True
+        )
+        retiring = self.service.active_motion_generation
+        self.app.queue_service_event(
+            ServiceEvent("button", ("Left", False))
+        )
+
+        self.app.toggle_ai_source()
+        self.assertIsNotNone(self.app._deferred_motion_action)
+        self.handle_current_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        self.service.emit(ServiceEvent(
+            "motion_stopped", "sources_changed", retiring
+        ))
+        self.drain_ui_queue()
+
+        self.assertNotIn("Left", self.app._physical_buttons_down)
+        self.assertEqual(len(self.service.composite_motion_calls), 1)
+        self.assertFalse(self.app.trigger_gate.active)
+        self.assertIsNone(self.app._deferred_motion_action)
+        self.assertFalse(self.app._normal_motion_started)
+
+    def test_stale_modifier_release_blocks_source_change_retirement_restart(self):
+        self.app.modifier_var.set("Right")
+        self.app.on_bindings_changed()
+        self.prepare_armed_sources(MotionSources(True, False))
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        self.app.handle_service_event(ServiceEvent("button", ("Right", True)))
+        retiring = self.service.active_motion_generation
+        self.app.queue_service_event(
+            ServiceEvent("button", ("Right", False))
+        )
+
+        self.app.toggle_ai_source()
+        self.assertIsNotNone(self.app._deferred_motion_action)
+        self.handle_current_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        self.service.emit(ServiceEvent(
+            "motion_stopped", "sources_changed", retiring
+        ))
+        self.drain_ui_queue()
+
+        self.assertNotIn("Right", self.app._physical_buttons_down)
+        self.assertEqual(len(self.service.composite_motion_calls), 1)
+        self.assertFalse(self.app.trigger_gate.active)
+        self.assertIsNone(self.app._deferred_motion_action)
+        self.assertFalse(self.app._normal_motion_started)
+
     def test_removing_final_source_disarms_master_and_preserves_selection(self):
         self.service.connected = True
         self.app.toggle_jitter_source()
