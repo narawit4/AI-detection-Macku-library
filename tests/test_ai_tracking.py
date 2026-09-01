@@ -714,6 +714,28 @@ class StrictTriggerLockTests(unittest.TestCase):
         self.assertIsNone(result.analysis.frame.selected_index)
         self.assertEqual(result.analysis.frame.detections, (oversized,))
 
+    def test_nonfinite_derived_dimensions_fail_closed(self):
+        oversized = Detection(-1e308, -1e308, 1e308, 1e308, .9, 7)
+
+        acquired = self.observe(StrictTriggerLockState(), (oversized,), 1)
+
+        self.assertEqual(acquired.state.mode, "lost")
+        self.assertEqual(acquired.state.epoch, 1)
+        self.assertIsNone(acquired.analysis.target)
+        self.assertIsNone(acquired.analysis.frame.selected_index)
+        self.assertEqual(acquired.analysis.frame.detections, (oversized,))
+
+        tracked = self.observe(
+            StrictTriggerLockState(), (head_box(120),), 1, epoch=2,
+        )
+        continued = self.observe(tracked.state, (oversized,), 2, epoch=2)
+
+        self.assertEqual(continued.state.mode, "lost")
+        self.assertEqual(continued.state.epoch, 2)
+        self.assertIsNone(continued.analysis.target)
+        self.assertIsNone(continued.analysis.frame.selected_index)
+        self.assertEqual(continued.analysis.frame.detections, (oversized,))
+
     def test_non_finite_capture_time_fails_closed(self):
         result = self.observe(
             StrictTriggerLockState(),

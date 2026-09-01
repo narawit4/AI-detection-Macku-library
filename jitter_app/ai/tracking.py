@@ -645,7 +645,17 @@ def _strict_candidates(
             detection.x2,
             detection.y2,
             detection.confidence,
-        ) or _box_area(detection) <= 0.0:
+        ):
+            continue
+        width = detection.x2 - detection.x1
+        height = detection.y2 - detection.y1
+        area = width * height
+        if (
+            not _strict_is_finite(width, height, area)
+            or width <= 0.0
+            or height <= 0.0
+            or area <= 0.0
+        ):
             continue
         point = detection_aim_point(detection, settings.target_area)
         if point is None or not _strict_is_finite(point[1], point[2]):
