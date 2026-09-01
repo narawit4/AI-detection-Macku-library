@@ -245,10 +245,13 @@ request.
 
 ### Service ownership and cross-generation safety
 
-`AiInferenceService.start` receives a Trigger-epoch provider in addition to
-the settings and Adaptive Zoom gate providers. The default provider reports no
-epoch so isolated callers remain safe and Overlay-only behavior remains
-supported.
+`AiInferenceService.start` accepts an optional Trigger-epoch provider in
+addition to the settings and Adaptive Zoom gate providers. The production UI
+always supplies it. In that managed mode, a provider result of no epoch keeps
+stateless Overlay visualization but publishes no movement target. Omitting the
+provider entirely retains the existing stateless target-publication behavior
+for isolated compatibility callers and tests; it does not opt the production
+UI out of Strict Trigger Lock.
 
 The service owns an epoch-claim record outside worker-generation-local state.
 Claiming an epoch is atomic and may succeed only once. Consequently, a capture
