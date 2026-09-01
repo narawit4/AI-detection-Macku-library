@@ -235,6 +235,8 @@ class StubAiService:
         self.reset_exception = None
         self.reset_targeting_calls = 0
         self.targeting_revision = 0
+        self.trigger_epoch_providers = []
+        self.invalidated_trigger_epochs = []
 
     def with_sink(self, event_sink):
         self.event_sink = event_sink
@@ -244,10 +246,12 @@ class StubAiService:
         self,
         settings_provider,
         zoom_gate_provider=None,
+        trigger_epoch_provider=None,
         *,
         model_path=None,
         capture_mode=CENTER_320,
     ):
+        self.trigger_epoch_providers.append(trigger_epoch_provider)
         self.start_calls.append(
             (settings_provider, zoom_gate_provider, model_path, capture_mode)
         )
@@ -307,6 +311,10 @@ class StubAiService:
         self.detection_snapshot = None
         return self.targeting_revision
 
+    def invalidate_trigger_lock(self, epoch):
+        self.invalidated_trigger_epochs.append(epoch)
+        return self.reset_targeting()
+
     def current_targeting_revision(self):
         return self.targeting_revision
 
@@ -318,10 +326,12 @@ class StrictDuplicateStartAiService(StubAiService):
         self,
         settings_provider,
         zoom_gate_provider=None,
+        trigger_epoch_provider=None,
         *,
         model_path=None,
         capture_mode=CENTER_320,
     ):
+        self.trigger_epoch_providers.append(trigger_epoch_provider)
         self.start_calls.append(
             (settings_provider, zoom_gate_provider, model_path, capture_mode)
         )
@@ -1223,11 +1233,12 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertTrue(callable(provider))
         self.assertEqual(provider(), self.ai.targeting_revision)
 
+        before_switch = provider()
         self.app.capture_mode_var.set("Full Display")
         self.app._capture_mode_changed()
 
+        self.assertGreater(provider(), before_switch)
         self.assertEqual(provider(), self.ai.targeting_revision)
-        self.assertEqual(provider(), 1)
 
     def test_save_config_keeps_target_area_runtime_only(self):
         self.app.target_area_var.set("Chest")
@@ -3420,12 +3431,16 @@ class JitterLayoutTests(unittest.TestCase):
             path = Path(directory) / "custom.onnx"
             path.write_bytes(b"model")
             self.model_dialog_result = str(path)
+            resets_before_switch = self.ai.reset_targeting_calls
             self.app.model_browse_button.invoke()
             choice, token = self.model_validator.start_calls[-1]
 
             self.assertIn("model_switch", self.service.cancel_reasons)
             self.assertEqual(self.ai.stop_calls[-1], "Model switch")
-            self.assertEqual(self.ai.reset_targeting_calls, 1)
+            self.assertEqual(
+                self.ai.reset_targeting_calls,
+                resets_before_switch + 1,
+            )
             self.assertFalse(self.app._ai_ready)
             self.assertEqual(self.app.ai_zoom_var.get(), "1.0×")
             self.assertTrue(self.app.master_armed)
@@ -4448,6 +4463,256 @@ class JitterLayoutTests(unittest.TestCase):
             self.app.handle_service_event(
                 ServiceEvent("button", ("Left", True))
             )
+
+    def begin_ai_trigger_epoch(self):
+        self.prepare_armed_sources(MotionSources(False, True))
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        epoch = self.app.get_trigger_lock_epoch()
+        self.assertIsInstance(epoch, int)
+        return epoch
+
+    def test_ai_runtime_receives_thread_safe_trigger_epoch_provider(self):
+        self.service.connected = True
+        self.app.toggle_ai_source()
+        self.app.set_master(True)
+        provider = self.ai.trigger_epoch_providers[-1]
+        self.assertIs(provider.__self__, self.app)
+        self.assertIs(provider.__func__, self.app.get_trigger_lock_epoch.__func__)
+        self.assertIsNone(provider())
+
+    def test_raw_trigger_release_and_repress_creates_new_epoch(self):
+        self.prepare_armed_sources(MotionSources(False, True))
+        self.handle_current_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        first = self.app.get_trigger_lock_epoch()
+        self.assertIsInstance(first, int)
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        self.assertEqual(self.app.get_trigger_lock_epoch(), first)
+        self.app.handle_service_event(ServiceEvent("button", ("Left", False)))
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        self.assertGreater(self.app.get_trigger_lock_epoch(), first)
+
+    def test_modifier_release_repress_keeps_raw_trigger_epoch(self):
+        self.app.modifier_var.set("Right")
+        self.app.on_bindings_changed()
+        self.prepare_armed_sources(MotionSources(False, True))
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        epoch = self.app.get_trigger_lock_epoch()
+        self.app.handle_service_event(ServiceEvent("button", ("Right", True)))
+        self.app.handle_service_event(ServiceEvent("button", ("Right", False)))
+        self.app.handle_service_event(ServiceEvent("button", ("Right", True)))
+        self.assertEqual(self.app.get_trigger_lock_epoch(), epoch)
+        self.app.handle_service_event(ServiceEvent("button", ("Left", False)))
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+
+    def test_press_while_master_disabled_requires_new_raw_press_after_enable(self):
+        self.service.connected = True
+        self.app.ai_selected = True
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+        self.app.set_master(True)
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+        self.app.handle_service_event(ServiceEvent("button", ("Left", False)))
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        self.assertIsInstance(self.app.get_trigger_lock_epoch(), int)
+
+    def test_press_while_ai_unselected_requires_new_press_after_source_addition(self):
+        self.prepare_armed_sources(MotionSources(True, False))
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+        self.app.toggle_ai_source()
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+        self.app.handle_service_event(ServiceEvent("button", ("Left", False)))
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        self.assertIsInstance(self.app.get_trigger_lock_epoch(), int)
+
+    def test_press_while_disconnected_cannot_acquire_after_reconnect(self):
+        self.prepare_armed_sources(MotionSources(False, True))
+        self.service.connected = False
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+        self.service.connected = True
+        self.app.handle_service_event(ServiceEvent("reconnected", "Makcu"))
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+
+    def test_stop_clears_trigger_epoch_before_runtime_cancellation(self):
+        self.begin_ai_trigger_epoch()
+        self.app.emergency_stop("test stop")
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+
+    def test_disconnect_clears_trigger_epoch(self):
+        self.begin_ai_trigger_epoch()
+        self.app.handle_service_event(ServiceEvent("disconnected", "lost"))
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+
+    def test_binding_change_clears_trigger_epoch(self):
+        self.begin_ai_trigger_epoch()
+        self.app.trigger_var.set("Mouse4")
+        self.app.on_bindings_changed()
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+
+    def test_ai_source_removal_clears_trigger_epoch(self):
+        self.begin_ai_trigger_epoch()
+        self.app.toggle_ai_source()
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+
+    def test_adding_or_removing_jitter_clears_normal_ai_epoch(self):
+        epoch = self.begin_ai_trigger_epoch()
+        self.app.toggle_jitter_source()
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+        self.app.handle_service_event(ServiceEvent("button", ("Left", False)))
+
+        self.app.close_app()
+        self.make_app()
+        self.prepare_armed_sources(MotionSources(True, True))
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        self.assertIsInstance(self.app.get_trigger_lock_epoch(), int)
+        self.app.toggle_jitter_source()
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+
+    def test_confidence_and_target_area_changes_invalidate_active_epoch(self):
+        epoch = self.begin_ai_trigger_epoch()
+        self.app.ai_vars["confidence"].set("0.30")
+        self.app._ai_changed("confidence")
+        self.assertEqual(self.ai.invalidated_trigger_epochs[-1], epoch)
+        self.assertEqual(self.app.get_trigger_lock_epoch(), epoch)
+        self.app.target_area_var.set("Chest")
+        self.app._target_area_changed()
+        self.assertEqual(self.ai.invalidated_trigger_epochs[-1], epoch)
+        self.assertEqual(self.app.get_trigger_lock_epoch(), epoch)
+
+    def test_motion_only_ai_settings_do_not_invalidate_active_epoch(self):
+        epoch = self.begin_ai_trigger_epoch()
+        baseline = list(self.ai.invalidated_trigger_epochs)
+        for key, value in (
+            ("aim_strength", "0.40"),
+            ("smoothing", "0.60"),
+            ("max_step", "19"),
+        ):
+            self.app.ai_vars[key].set(value)
+            self.app._ai_changed(key)
+        self.app._reset_ai_curve()
+        self.assertEqual(self.ai.invalidated_trigger_epochs, baseline)
+        self.assertEqual(self.app.get_trigger_lock_epoch(), epoch)
+
+    def test_ai_test_run_creates_one_synthetic_epoch_and_clears_it(self):
+        self.prepare_armed_sources(MotionSources(False, True))
+        self.app.start_test_run()
+        epoch = self.app.get_trigger_lock_epoch()
+        self.assertIsInstance(epoch, int)
+        self.assertFalse(self.app._begin_test_motion(self.app._test_generation))
+        self.assertEqual(self.app.get_trigger_lock_epoch(), epoch)
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        self.assertEqual(self.app.get_trigger_lock_epoch(), epoch)
+        self.app.handle_service_event(ServiceEvent("button", ("Left", False)))
+        self.assertEqual(self.app.get_trigger_lock_epoch(), epoch)
+        self.app._restore_after_test()
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+
+    def test_trigger_held_through_test_completion_requires_release_repress(self):
+        self.prepare_armed_sources(MotionSources(False, True))
+        self.app.start_test_run()
+        synthetic = self.app.get_trigger_lock_epoch()
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        self.assertEqual(self.app.get_trigger_lock_epoch(), synthetic)
+
+        self.app._restore_after_test()
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+        self.app.handle_service_event(ServiceEvent("button", ("Left", False)))
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        self.assertGreater(self.app.get_trigger_lock_epoch(), synthetic)
+
+    def test_target_reset_finishes_before_new_epoch_is_exposed(self):
+        self.prepare_armed_sources(MotionSources(False, True))
+        observed_epochs = []
+        motion_observations = []
+        original_reset = self.ai.reset_targeting
+        original_motion_start = self.service.start_composite_motion_source
+
+        def recording_reset():
+            observed_epochs.append(self.app.get_trigger_lock_epoch())
+            return original_reset()
+
+        def recording_motion_start(*args, **kwargs):
+            motion_observations.append(
+                (
+                    self.app.get_trigger_lock_epoch(),
+                    self.ai.snapshot,
+                )
+            )
+            return original_motion_start(*args, **kwargs)
+
+        self.ai.reset_targeting = recording_reset
+        self.service.start_composite_motion_source = recording_motion_start
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        self.assertEqual(observed_epochs, [None])
+        self.assertIsInstance(self.app.get_trigger_lock_epoch(), int)
+        self.assertEqual(
+            motion_observations,
+            [(self.app.get_trigger_lock_epoch(), None)],
+        )
+
+    def test_master_and_hotkey_disable_clear_active_epoch(self):
+        self.begin_ai_trigger_epoch()
+        self.app.set_master(False)
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+
+        self.app.close_app()
+        self.make_app()
+        self.begin_ai_trigger_epoch()
+        self.app._cancel_after("_ui_pump_after_id")
+        self.app._hotkey_pressed()
+        self.drain_ui_queue()
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+
+    def test_ai_error_and_close_clear_active_epoch(self):
+        self.begin_ai_trigger_epoch()
+        with self.assertLogs(level="ERROR"):
+            self.handle_current_ai_event(
+                AiEvent("error", "RuntimeError: detector failed")
+            )
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+
+        self.app.close_app()
+        self.make_app()
+        self.begin_ai_trigger_epoch()
+        self.app.close_app()
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+
+    def test_reconnect_during_held_trigger_cannot_reacquire(self):
+        self.begin_ai_trigger_epoch()
+        self.app.reconnect()
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+        self.service.connected = True
+        self.app.handle_service_event(ServiceEvent("reconnected", "Makcu"))
+        self.app.set_master(True)
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+
+    def test_capture_switch_invalidates_but_keeps_exposed_epoch(self):
+        epoch = self.begin_ai_trigger_epoch()
+        self.app.capture_mode_var.set("Full Display")
+        self.app._capture_mode_changed()
+        self.assertEqual(self.ai.invalidated_trigger_epochs[-1], epoch)
+        self.assertEqual(self.app.get_trigger_lock_epoch(), epoch)
+
+    def test_model_switch_invalidates_but_keeps_exposed_epoch(self):
+        epoch = self.begin_ai_trigger_epoch()
+        self.begin_custom_model_switch("strict-lock.onnx")
+        self.assertEqual(self.ai.invalidated_trigger_epochs[-1], epoch)
+        self.assertEqual(self.app.get_trigger_lock_epoch(), epoch)
 
     def test_adaptive_zoom_gate_requires_connected_normal_ai_movement_gate(self):
         self.service.connected = True

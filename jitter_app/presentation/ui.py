@@ -391,6 +391,10 @@ class JitterApp(tk.Tk):
             else replace(self.config.ai, target_area="head")
         )
         self._adaptive_zoom_gate = False
+        self._trigger_lock_counter = 0
+        self._trigger_lock_epoch: int | None = None
+        self._trigger_lock_owner: str | None = None
+        self._physical_buttons_down: set[str] = set()
         self._hotkey_vk = int(self.config.hotkey_vk)
 
         self._configure_styles()
@@ -2345,7 +2349,7 @@ class JitterApp(tk.Tk):
         self._replace_ai_snapshot(
             replace(self.get_ai_settings(), target_area=target_area)
         )
-        self._ai_targeting_revision = self.ai_service.reset_targeting()
+        self._invalidate_trigger_lock_epoch()
         self.ai_zoom_var.set("1.0×")
 
     def _curve_entry_changed(self, index: int) -> None:
@@ -3079,10 +3083,7 @@ class JitterApp(tk.Tk):
         self.footer_var.set(f"Switching AI capture to {label}...")
         self._render_model_controls()
         self._refresh_section_summaries()
-        try:
-            self._ai_targeting_revision = self.ai_service.reset_targeting()
-        except Exception:
-            logging.exception("AI targeting reset failed during capture switch")
+        if not self._invalidate_trigger_lock_epoch():
             try:
                 self._stop_ai_runtime("Capture mode change failed")
             except Exception:
@@ -3408,7 +3409,7 @@ class JitterApp(tk.Tk):
             self._set_runtime_state(
                 "armed" if self.master_armed else "disabled"
             )
-        self._ai_targeting_revision = self.ai_service.reset_targeting()
+        self._invalidate_trigger_lock_epoch()
         self.ai_zoom_var.set("1.0\N{MULTIPLICATION SIGN}")
         if self._ai_runtime_active:
             self._stop_ai_runtime("Model switch")
@@ -3740,6 +3741,7 @@ class JitterApp(tk.Tk):
     def set_master(self, armed: bool) -> None:
         armed = bool(armed)
         if not armed:
+            self._retire_owned_trigger_lock_epoch()
             self.master_armed = False
             self._normal_motion_started = False
             self.trigger_gate.clear()
@@ -3792,6 +3794,7 @@ class JitterApp(tk.Tk):
             self.footer_var.set("Test Run is active; use STOP to cancel")
             return
         old_sources = self._selected_sources()
+        self._end_trigger_lock_epoch()
         if source_name == "jitter":
             self.jitter_selected = not self.jitter_selected
         elif source_name == "ai":
@@ -4088,6 +4091,7 @@ class JitterApp(tk.Tk):
             generation = self.ai_service.start(
                 self.get_ai_settings,
                 self.get_adaptive_zoom_gate,
+                self.get_trigger_lock_epoch,
                 model_path=choice.path,
                 capture_mode=generation_capture_mode,
             )
@@ -4125,6 +4129,7 @@ class JitterApp(tk.Tk):
 
     def _handle_ai_start_failure(self) -> None:
         """Fail closed to Jitter when normal armed AI demand cannot start."""
+        self._retire_owned_trigger_lock_epoch()
         self._capture_restart_pending = False
         self._deferred_ai_start = None
         self._capture_mode_switching = False
@@ -4219,6 +4224,7 @@ class JitterApp(tk.Tk):
         self._deferred_motion_action = None
         self._test_restore_master = self.master_armed
         self.master_armed = False
+        self._end_trigger_lock_epoch()
         self.trigger_gate.clear()
         self._test_sources = sources
         self._test_generation += 1
@@ -4278,6 +4284,14 @@ class JitterApp(tk.Tk):
         self._test_start_pending = False
         self._test_pending_generation = None
         self._motion_event_epoch += 1
+        if sources.ai:
+            if not self._reset_targeting_for_trigger_lock(
+                "AI Test 3s start"
+            ):
+                return False
+            self._publish_trigger_lock_epoch(
+                self._next_trigger_lock_epoch(), "test"
+            )
         started = self._request_motion_start(sources, duration_s=3.0)
         if started:
             self.footer_var.set("Test Run active")
@@ -4289,6 +4303,9 @@ class JitterApp(tk.Tk):
         self.footer_var.set(message)
 
     def _restore_after_test(self, *, restore_master: bool = True) -> None:
+        test_epoch = self._clear_trigger_lock_epoch("test")
+        if test_epoch is not None:
+            self._reset_targeting_for_trigger_lock("AI Test 3s cleanup")
         restore = (
             restore_master
             and self._test_restore_master
@@ -4305,11 +4322,11 @@ class JitterApp(tk.Tk):
         self._test_waiting_for_motion_stop = False
         self._test_restore_master = False
         self._set_test_button_enabled(True)
+        self.trigger_gate.clear()
         self.master_armed = bool(restore)
         if restore:
             self._set_runtime_state("armed")
         else:
-            self.trigger_gate.clear()
             self._set_runtime_state("disabled")
         self._sync_adaptive_zoom_gate()
         self._reconcile_ai_runtime("Test Run complete")
@@ -4322,6 +4339,7 @@ class JitterApp(tk.Tk):
         stop_device_motion: bool = True,
     ) -> None:
         stop_reason = str(reason or "Stopped")
+        self._retire_owned_trigger_lock_epoch()
         self._capture_restart_pending = False
         self._capture_mode_switching = False
         self.master_armed = False
@@ -4363,6 +4381,7 @@ class JitterApp(tk.Tk):
         self.footer_var.set(stop_reason)
 
     def _handle_disconnect(self, reason: str) -> None:
+        self._retire_owned_trigger_lock_epoch()
         self._capture_mode_switching = False
         self.master_armed = False
         self._sync_adaptive_zoom_gate()
@@ -4473,7 +4492,24 @@ class JitterApp(tk.Tk):
                 button, pressed = event.payload
             except (TypeError, ValueError):
                 return
-            self.trigger_gate.update_button(str(button), bool(pressed))
+            button = str(button)
+            pressed = bool(pressed)
+            was_physically_down = button in self._physical_buttons_down
+            if pressed:
+                self._physical_buttons_down.add(button)
+            else:
+                self._physical_buttons_down.discard(button)
+            self.trigger_gate.update_button(button, pressed)
+            is_trigger_button = button == self.trigger_gate.trigger
+            if self._motion_mode not in _TEST_MOTION_MODES:
+                if is_trigger_button and pressed and not was_physically_down:
+                    self._begin_trigger_lock_epoch()
+                elif (
+                    is_trigger_button
+                    and not pressed
+                    and was_physically_down
+                ):
+                    self._end_trigger_lock_epoch()
             self._sync_adaptive_zoom_gate()
             if not self.trigger_gate.active:
                 action = self._deferred_motion_action
@@ -4707,6 +4743,7 @@ class JitterApp(tk.Tk):
 
     def _handle_ai_runtime_error(self, payload: object) -> None:
         logging.error("AI runtime error: %s", payload)
+        self._retire_owned_trigger_lock_epoch()
         self._deferred_ai_start = None
         self._active_ai_lifecycle = None
         self._ai_runtime_active = False
@@ -4959,6 +4996,7 @@ class JitterApp(tk.Tk):
     def on_bindings_changed(self) -> None:
         trigger = self.trigger_var.get()
         modifier = self.modifier_var.get()
+        self._end_trigger_lock_epoch()
         action = self._deferred_motion_action
         self._deferred_motion_action = None
         if action is not None and action.kind == "test":
@@ -4985,6 +5023,99 @@ class JitterApp(tk.Tk):
     def get_adaptive_zoom_gate(self) -> bool:
         with self._ai_lock:
             return self._adaptive_zoom_gate
+
+    def get_trigger_lock_epoch(self) -> int | None:
+        with self._ai_lock:
+            return self._trigger_lock_epoch
+
+    def _publish_trigger_lock_epoch(
+        self,
+        epoch: int | None,
+        owner: str | None,
+    ) -> None:
+        if (epoch is None) != (owner is None) or owner not in {
+            None, "normal", "test",
+        }:
+            raise ValueError("Trigger-lock epoch and owner must agree")
+        with self._ai_lock:
+            self._trigger_lock_epoch = epoch
+            self._trigger_lock_owner = owner
+
+    def _clear_trigger_lock_epoch(
+        self,
+        expected_owner: str | None = None,
+    ) -> int | None:
+        with self._ai_lock:
+            if (
+                expected_owner is not None
+                and self._trigger_lock_owner != expected_owner
+            ):
+                return None
+            epoch = self._trigger_lock_epoch
+            self._trigger_lock_epoch = None
+            self._trigger_lock_owner = None
+            return epoch
+
+    def _next_trigger_lock_epoch(self) -> int:
+        with self._ai_lock:
+            self._trigger_lock_counter += 1
+            return self._trigger_lock_counter
+
+    def _raw_trigger_press_eligible(self) -> bool:
+        return bool(
+            not self._closing
+            and self.service.connected
+            and self.master_armed
+            and self.ai_selected
+            and self._motion_mode is None
+        )
+
+    def _reset_targeting_for_trigger_lock(self, context: str) -> bool:
+        try:
+            revision = self.ai_service.reset_targeting()
+        except Exception:
+            logging.exception("AI targeting reset failed during %s", context)
+            self._clear_trigger_lock_epoch()
+            self.footer_var.set("AI target lock stopped; check app.log")
+            return False
+        self._ai_targeting_revision = revision
+        return True
+
+    def _begin_trigger_lock_epoch(self) -> None:
+        with self._ai_lock:
+            if self._trigger_lock_owner is not None:
+                return
+        if not self._raw_trigger_press_eligible():
+            return
+        if not self._reset_targeting_for_trigger_lock("Trigger press"):
+            return
+        self._publish_trigger_lock_epoch(
+            self._next_trigger_lock_epoch(), "normal"
+        )
+
+    def _end_trigger_lock_epoch(self) -> None:
+        epoch = self._clear_trigger_lock_epoch("normal")
+        if epoch is None:
+            return
+        self._reset_targeting_for_trigger_lock("Trigger release")
+
+    def _retire_owned_trigger_lock_epoch(self) -> None:
+        epoch = self._clear_trigger_lock_epoch()
+        if epoch is None:
+            return
+        self._reset_targeting_for_trigger_lock("Trigger lock retirement")
+
+    def _invalidate_trigger_lock_epoch(self) -> bool:
+        epoch = self.get_trigger_lock_epoch()
+        try:
+            revision = self.ai_service.invalidate_trigger_lock(epoch)
+        except Exception:
+            logging.exception("AI Trigger lock invalidation failed")
+            self._clear_trigger_lock_epoch()
+            self.footer_var.set("AI target lock stopped; check app.log")
+            return False
+        self._ai_targeting_revision = revision
+        return True
 
     def _sync_adaptive_zoom_gate(self) -> None:
         active = bool(
@@ -5088,6 +5219,8 @@ class JitterApp(tk.Tk):
                 finally:
                     self._updating_ai_controls = False
         self._replace_ai_snapshot(aim_settings_from_mapping(mapping))
+        if key == "confidence":
+            self._invalidate_trigger_lock_epoch()
         self._schedule_save()
 
     @staticmethod
