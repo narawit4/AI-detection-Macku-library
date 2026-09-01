@@ -4480,6 +4480,49 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertIs(provider.__func__, self.app.get_trigger_lock_epoch.__func__)
         self.assertIsNone(provider())
 
+    def test_ai_worker_trigger_epoch_provider_reads_only_snapshot_state(self):
+        self.service.connected = True
+        self.app.toggle_ai_source()
+        self.app.set_master(True)
+        provider = self.ai.trigger_epoch_providers[-1]
+        self.app._publish_trigger_lock_epoch(73, "normal")
+        results = []
+        errors = []
+        completed = threading.Event()
+
+        def forbid_tk_access(*_args, **_kwargs):
+            raise AssertionError("AI worker provider accessed Tk state")
+
+        def read_epoch_from_worker():
+            try:
+                results.append(provider())
+            except BaseException as exc:
+                errors.append(exc)
+            finally:
+                completed.set()
+
+        with (
+            mock.patch.object(
+                self.app.trigger_var,
+                "get",
+                side_effect=forbid_tk_access,
+            ),
+            mock.patch.object(
+                self.app.master_button,
+                "cget",
+                side_effect=forbid_tk_access,
+            ),
+        ):
+            worker = threading.Thread(target=read_epoch_from_worker, daemon=True)
+            worker.start()
+            completed_in_time = completed.wait(1.0)
+            worker.join(1.0)
+
+        self.assertTrue(completed_in_time, "AI worker provider hung")
+        self.assertFalse(worker.is_alive(), "AI worker provider did not retire")
+        self.assertEqual(errors, [])
+        self.assertEqual(results, [73])
+
     def test_raw_trigger_release_and_repress_creates_new_epoch(self):
         self.prepare_armed_sources(MotionSources(False, True))
         self.handle_current_ai_event(AiEvent("ready", "DmlExecutionProvider"))
