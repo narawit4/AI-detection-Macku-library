@@ -182,10 +182,10 @@ Presets:
 
 | ตัวควบคุม | ช่วง | ค่าเริ่มต้น | ความหมาย |
 |---|---:|---:|---|
-| `Confidence` | 0.05–0.95 | 0.35 | confidence ขั้นต่ำของ detection |
+| `Confidence` | 0.05–0.95 | 0.25 | confidence ขั้นต่ำของ detection |
 | `Aim Strength` | 0.05–2.00 | 0.35 | ตัวคูณความเร็วจาก response curve |
-| `Smoothing` | 0.00–0.95 | 0.65 | ความนุ่มของการเปลี่ยนความเร็วตามเวลา |
-| `Max Step` | 1–127 | 20 | delta สูงสุดที่รายงานต่อรอบ servo |
+| `Smoothing` | 0.00–0.95 | 0.58 | ความนุ่มของการเปลี่ยนความเร็วตามเวลา |
+| `Max Step` | 1–127 | 18 | delta สูงสุดที่รายงานต่อรอบ servo |
 | `Target Area` | Head/Upper Body/Chest | Head | ระดับแนวตั้งของ aim point |
 | `Capture Mode` | Center 320/Full Display | Center 320 | ขอบเขตการจับภาพ AI แบบ runtime-only |
 
@@ -194,6 +194,15 @@ AI Aim ใช้ time-based servo microsteps เพื่อให้การ�
 ตำแหน่งเก่าค้างอยู่ การ clamp, acceleration limit และ fractional accumulation
 ยังคงทำงาน และ movement ส่วนเกินจะถูกทิ้งแทนการสะสมคิว
 
+### Trigger Lock
+
+`raw Trigger` คือปุ่ม Trigger ที่ตั้งค่าไว้โดยไม่รวม Modifier. ในการกด raw
+Trigger ที่เข้าเกณฑ์แต่ละครั้ง AI Aim จะเลือกได้เพียงเป้าหมายเดียวจาก base
+frame; หากเป้าหมายหายไปหรือมีความกำกวม AI assistance จะหยุดตลอดการกดครั้งนั้น
+และจะเลือกใหม่ได้เมื่อปล่อยแล้วกด Trigger อีกครั้งเท่านั้น. การปล่อยหรือกด
+Modifier ใหม่เพียงอย่างเดียวจะไม่เลือกเป้าหมายใหม่. การจับคู่ใช้เฉพาะ class และ
+geometry ของกล่องตรวจจับ จึงไม่ใช่การระบุใบหน้าหรือบุคคล.
+
 ## Response Curve
 
 Response Curve แปลงระยะจาก crosshair เป็นความเร็วการขยับ มีจุดควบคุมห้าจุดที่
@@ -201,7 +210,7 @@ Response Curve แปลงระยะจาก crosshair เป็นควา
 
 ```text
 ระยะ:       0%   25%   50%   75%   100%
-ค่าเริ่มต้น: 0%   12%   35%   68%   100%
+ค่าเริ่มต้น: 0%   16%   38%   68%   95%
 ```
 
 - จุดแรกถูกตรึงที่ศูนย์
@@ -220,7 +229,7 @@ base pass แบบเต็มพื้นที่ 1.0× ก่อนเสม
 แล้วเท่านั้นจึงมีสิทธิ์รับ refinement pass เพิ่มในเฟรมเดียวกัน
 
 - `1.0×`: base inference เต็มเฟรม
-- `1.5×`: refinement ที่กว้างกว่า ใช้กับเป้าหมายใหม่หรือเป้าหมายที่ยังไม่นิ่ง
+- `1.5×`: refinement ที่กว้างกว่า ใช้กับ strict locked base target ใน Trigger epoch
 - `2.0×`: refinement ที่ละเอียดขึ้นหลังยืนยันความนิ่งและผ่าน cooldown 100 ms
 
 refinement ทำงานเฉพาะขณะเชื่อมต่อ Makcu, เปิด Master, เลือก AI Aim และกด
@@ -230,6 +239,8 @@ Trigger/Modifier ครบในการเคลื่อนไหวปกต
 หาก refinement ไม่สำเร็จ โปรแกรมจะใช้ผล 1.0× ของเฟรมเดียวกันต่อไป ไม่ถือ
 target เก่ามาใช้ และไม่เพิ่ม inference call เกินที่กำหนด กล่อง refinement
 จะสัมพันธ์กับ base target ที่ถูกเลือกไว้เพื่อไม่ให้ซูมไปหยิบวัตถุข้างเคียง
+ใน Trigger epoch จะใช้ได้เฉพาะ strict locked base target; ผล refinement มีผลกับ
+กล่องของเฟรมปัจจุบันเท่านั้น และไม่เปลี่ยน state การจับคู่สำหรับ base frame ถัดไป
 
 base path ใช้ inference หนึ่งครั้งต่อ processed frame และ Adaptive Zoom ที่มีสิทธิ์
 อาจเพิ่ม refinement call ได้อีกหนึ่งครั้งในเฟรมเดียวกัน การ crop สำหรับ refinement

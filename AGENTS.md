@@ -36,7 +36,7 @@ features.
 - `jitter_app/ai/targeting.py`: immutable AI settings, target selection, and
   movement.
 - `jitter_app/ai/tracking.py`: legacy pure tracker retained for compatibility
-  tests; production target selection is stateless and current-frame only.
+  tests and pure Strict Trigger Lock.
 - `jitter_app/ai/resize.py`: pure resizing and coordinate mapping for supported
   model sizes.
 - `jitter_app/ai/yolo.py`: pure NumPy decoder for the raw single-class
@@ -145,12 +145,14 @@ with the supported Windows Python installation.
   behavior, downstream canonical `Detection`, and the bundled startup model
   remain unchanged. Never download, copy, package, or persist an external model
   or its path; every launch starts with the bundled 320 model and `Center 320`.
-- On every base frame, filter detections by confidence and supported class,
-  derive the configured aim point for every accepted head and player, and
-  select the point with the shortest Euclidean distance to the actual source
-  frame center. Preserve detector order as the exact-distance tie
-  break. Do not use prior identity, ambiguity holds, recovery confirmation, or
-  replacement delays; publish the current-frame selection immediately.
+- Outside an eligible raw-Trigger epoch, base selection remains current-frame
+  nearest for Overlay visualization and initial acquisition. During an eligible
+  raw-Trigger press, perform at most one acquisition, follow only one unique
+  same-class geometrically plausible base continuation, and latch LOST on no
+  match or multiple plausible matches. LOST publishes no AI movement and no
+  selected Overlay index until Trigger-up followed by Trigger-down creates a new
+  epoch. Modifier cycling is not a new epoch. Never describe box association as
+  guaranteed physical identity.
 - Derive capture cadence from the primary display and cap capture at 240 FPS.
   Run one fixed 1,000 Hz motion servo for every selected source while movement
   is active; Jitter still emits only when its configured pulse is due and zero
@@ -167,26 +169,29 @@ with the supported Windows Python installation.
   any unconsumed target after 150 ms. This does not change Jitter composition
   or immediate cancellation behavior.
 - Adaptive Zoom is automatic and has no persisted control. Every frame first
-  performs full-field 1.0× target acquisition; only an already-selected small
-  target may receive a same-frame 1.5× or 2.0× refinement pass. That second
-  pass runs only during connected, Master-armed, AI-selected normal movement
-  with the configured Trigger and Modifier active. It is excluded while idle,
-  for Overlay-only inference, and during `Test 3s`.
+  performs full-field 1.0× target acquisition; during an active epoch, only an
+  already-selected strict locked small base target may receive a same-frame 1.5×
+  or 2.0× refinement pass. That second pass runs only during connected,
+  Master-armed, AI-selected normal movement with the configured Trigger and
+  Modifier active. It is excluded while idle, for Overlay-only inference, and
+  during `Test 3s`.
 - `ZOOM` is runtime status only and reports 1.0×, 1.5×, or 2.0×. If refinement
   is ineligible or cannot produce a compatible result, the same-frame 1.0×
   base result remains. A successful refinement replaces only the selected base
-  box; its box is mapped back to the original frame for Overlay rendering and
-  unrelated base boxes remain. Adaptive Zoom does not magnify the display or
-  recover targets the base pass never detected.
-- Recoil-stable zoom confirmation is separate from movement publication. It
-  observes the current nearest base target and may limit refinement to 1.5x,
-  but it must not withhold that base target from AI movement while confirming
-  2.0x refinement eligibility.
+  box for that frame; its box is mapped back to the original frame for Overlay
+  rendering, unrelated base boxes remain, and it never changes next-frame lock
+  state. Adaptive Zoom does not magnify the display or recover targets the base
+  pass never detected.
+- Recoil-stable zoom confirmation is separate from movement publication. During
+  an active epoch it observes the strict locked base target and may limit
+  refinement to 1.5x, but it must not withhold that base target from AI movement
+  while confirming 2.0x refinement eligibility.
 - A requested 2.0x refinement is capped at 1.5x until confirmation and a fixed
   100 ms cooldown both pass. A normal refinement miss resets confirmation and
   extends cooldown without adding an inference call or holding a stale target.
 - Zoom stability is local to one AI generation and resets when the movement
-  zoom gate is false. Base target selection remains stateless across frames.
+  zoom gate is false. It observes the strict locked base target during an active
+  epoch; outside an active epoch, base selection remains stateless across frames.
 - Combined movement sums current source deltas; Jitter continues when AI Aim
   has no target.
 - The optional overlay starts off and is independent of source selection. It
