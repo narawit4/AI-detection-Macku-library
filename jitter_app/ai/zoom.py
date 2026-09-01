@@ -311,15 +311,9 @@ def compose_zoom_refinement(
         ):
             compatible.append((mapped, point))
 
-    if not compatible:
+    if len(compatible) != 1:
         return None
-    selected_refined, selected_point = min(
-        compatible,
-        key=lambda item: math.hypot(
-            item[1][1] - base.target.aim_x,
-            item[1][2] - base.target.aim_y,
-        ),
-    )
+    selected_refined, selected_point = compatible[0]
     refined_target = TargetSnapshot(
         base.frame.sequence,
         base.frame.captured_at,
