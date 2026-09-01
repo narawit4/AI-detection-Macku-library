@@ -24,6 +24,32 @@ from jitter_app.ai.targeting import (
 
 
 class AimSettingsTests(unittest.TestCase):
+    def test_recommended_ai_defaults_are_exact(self):
+        self.assertEqual(DEFAULT_RESPONSE_CURVE, (0.0, 0.16, 0.38, 0.68, 0.95))
+        self.assertEqual(
+            AimSettings(),
+            AimSettings(
+                confidence=0.25,
+                aim_strength=0.35,
+                smoothing=0.58,
+                max_step=18,
+                response_curve=(0.0, 0.16, 0.38, 0.68, 0.95),
+                target_area="head",
+            ),
+        )
+
+    def test_default_confidence_boundary_is_inclusive(self):
+        accepted = select_target(
+            (Detection(150, 150, 170, 170, 0.25, 7),),
+            AimSettings(), sequence=1, captured_at=1.0,
+        )
+        rejected = select_target(
+            (Detection(150, 150, 170, 170, 0.249, 7),),
+            AimSettings(), sequence=2, captured_at=2.0,
+        )
+        self.assertIsNotNone(accepted)
+        self.assertIsNone(rejected)
+
     def test_canonical_limits_match_approved_ui_and_config_contract(self):
         self.assertEqual(AIM_LIMITS, {
             "confidence": (0.05, 0.95),
@@ -69,7 +95,7 @@ class AimSettingsTests(unittest.TestCase):
             "aim_strength": "2",
             "smoothing": "0.25",
             "max_step": "20",
-            "response_curve": ["0", "0.12", "0.35", "0.68", "1"],
+            "response_curve": ["0", "0.16", "0.38", "0.68", "0.95"],
         })
 
     def test_target_area_defaults_validates_and_round_trips(self):
@@ -362,7 +388,7 @@ class TargetSelectionTests(unittest.TestCase):
 
     def test_rejects_below_confidence(self):
         self.assertIsNone(select_target(
-            (Detection(0, 0, 10, 10, 0.34, 7),),
+            (Detection(0, 0, 10, 10, 0.24, 7),),
             AimSettings(), sequence=1, captured_at=1.0,
         ))
 
@@ -612,7 +638,11 @@ class AimMovementEngineTests(unittest.TestCase):
         )
 
     def test_smoothed_reversal_cannot_regenerate_incompatible_fractional_carry(self):
-        settings = AimSettings(aim_strength=1.0, smoothing=0.65)
+        settings = AimSettings(
+            aim_strength=1.0,
+            smoothing=0.65,
+            response_curve=(0.0, 0.12, 0.35, 0.68, 1.0),
+        )
         cases = (
             (
                 "positive x",
@@ -666,7 +696,11 @@ class AimMovementEngineTests(unittest.TestCase):
 
     def test_zero_axis_cannot_regenerate_carry_while_other_axis_is_active(self):
         engine = AimMovementEngine(nominal_hz=60)
-        settings = AimSettings(aim_strength=0.35, smoothing=0.2)
+        settings = AimSettings(
+            aim_strength=0.35,
+            smoothing=0.2,
+            response_curve=(0.0, 0.12, 0.35, 0.68, 1.0),
+        )
 
         reports = [
             engine.step(

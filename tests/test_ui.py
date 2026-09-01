@@ -669,6 +669,16 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertEqual(self.app.ai_source_button.cget("text"), "AI Aim OFF")
         self.assertFalse(hasattr(self.app, "mode_combo"))
 
+    def test_ai_controls_show_recommended_defaults(self):
+        self.assertEqual(self.app.ai_vars["confidence"].get(), "0.25")
+        self.assertEqual(self.app.ai_vars["aim_strength"].get(), "0.35")
+        self.assertEqual(self.app.ai_vars["smoothing"].get(), "0.58")
+        self.assertEqual(self.app.ai_vars["max_step"].get(), "18")
+        self.assertEqual(
+            tuple(self.app.get_ai_settings().response_curve),
+            (0.0, 0.16, 0.38, 0.68, 0.95),
+        )
+
     def test_ai_controls_reflect_config_without_restoring_runtime_selection(self):
         self.app.close_app()
         app = self.make_app(config=AppConfig(
@@ -2171,7 +2181,7 @@ class JitterLayoutTests(unittest.TestCase):
 
         self.assertEqual(
             app.get_ai_settings(),
-            AimSettings(0.5, 0.6, 0.7, 30, (0.0, 0.12, 0.42, 0.68, 1.0)),
+            AimSettings(0.5, 0.6, 0.7, 30, (0.0, 0.16, 0.42, 0.68, 0.95)),
         )
 
     def test_scalar_edit_preserves_fractional_curve_from_last_valid_snapshot(self):
@@ -2201,7 +2211,7 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertNotIn("response_curve", self.app.ai_vars)
         self.assertEqual(
             {index: variable.get() for index, variable in self.app.ai_curve_vars.items()},
-            {1: "12", 2: "35", 3: "68", 4: "100"},
+            {1: "16", 2: "38", 3: "68", 4: "95"},
         )
         self.assertEqual(set(self.app.ai_curve_entries), {1, 2, 3, 4})
         self.assertTrue(self.app.ai_curve_canvas.find_withtag("ai-curve-node-0"))
@@ -2238,7 +2248,7 @@ class JitterLayoutTests(unittest.TestCase):
 
         self.assertEqual(
             self.app.get_ai_settings().response_curve,
-            (0.0, 0.0, 0.35, 0.68, 1.0),
+            (0.0, 0.0, 0.38, 0.68, 1.0),
         )
         self.assertEqual(
             self.app.ai_curve_entries[1].cget("style"),
@@ -2329,7 +2339,7 @@ class JitterLayoutTests(unittest.TestCase):
 
         self.assertEqual(
             self.app.get_ai_settings().response_curve,
-            (0.0, 0.3, 0.35, 0.7, 1.0),
+            (0.0, 0.3, 0.38, 0.7, 0.95),
         )
         for entry in self.app.ai_curve_entries.values():
             self.assertEqual(entry.cget("style"), "Liquid.Entry.TEntry")
@@ -2341,7 +2351,7 @@ class JitterLayoutTests(unittest.TestCase):
 
         self.app._curve_dragged(SimpleNamespace(y=10000))
         self.app._curve_drag_ended()
-        self.assertEqual(self.app.get_ai_settings().response_curve[2], 0.12)
+        self.assertEqual(self.app.get_ai_settings().response_curve[2], 0.16)
         self.assertEqual(self.app.get_ai_settings().response_curve[0], 0.0)
 
     def test_curve_real_canvas_drag_survives_redraw_until_release(self):

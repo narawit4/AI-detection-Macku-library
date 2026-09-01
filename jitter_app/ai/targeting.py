@@ -14,7 +14,7 @@ AIM_LIMITS: dict[str, tuple[float, float]] = {
 }
 
 RESPONSE_CURVE_X = (0.0, 0.25, 0.5, 0.75, 1.0)
-DEFAULT_RESPONSE_CURVE = (0.0, 0.12, 0.35, 0.68, 1.0)
+DEFAULT_RESPONSE_CURVE = (0.0, 0.16, 0.38, 0.68, 0.95)
 TARGET_AREAS = ("head", "upper_body", "chest")
 
 
@@ -61,10 +61,10 @@ class DetectionAnalysis:
 
 @dataclass(frozen=True)
 class AimSettings:
-    confidence: float = 0.35
+    confidence: float = 0.25
     aim_strength: float = 0.35
-    smoothing: float = 0.65
-    max_step: int = 20
+    smoothing: float = 0.58
+    max_step: int = 18
     response_curve: tuple[float, float, float, float, float] = DEFAULT_RESPONSE_CURVE
     target_area: str = "head"
 
