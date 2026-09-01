@@ -3,7 +3,12 @@ import unittest
 from dataclasses import FrozenInstanceError
 
 from jitter_app.ai.targeting import AimSettings, Detection, TargetSnapshot
-from jitter_app.ai.tracking import TrackerState, observe_detections
+from jitter_app.ai.tracking import (
+    StrictTriggerLockState,
+    TrackerState,
+    observe_detections,
+    observe_strict_trigger_lock,
+)
 
 
 def head_box(center_x, center_y=100, size=10, confidence=0.9):
@@ -452,7 +457,7 @@ class ConservativeTrackingTests(unittest.TestCase):
             Detection(math.nan, 1, 10, 10, 0.9, 7),
             Detection(1, 1, 10, 10, math.inf, 7),
             Detection(1, 1, 10, 10, 0.9, 99),
-            head_box(120, confidence=0.34),
+            head_box(120, confidence=0.24),
         )
         valid = head_box(160, 160)
 
@@ -494,6 +499,349 @@ class ConservativeTrackingTests(unittest.TestCase):
             first.state.pending_count = 99
         with self.assertRaises(FrozenInstanceError):
             first.analysis.target = None
+
+
+class StrictTriggerLockTests(unittest.TestCase):
+    def observe(self, state, detections, sequence, *, epoch=1, settings=None,
+                frame_width=320, frame_height=320, captured_at=None):
+        return observe_strict_trigger_lock(
+            state,
+            detections,
+            settings or AimSettings(),
+            trigger_epoch=epoch,
+            sequence=sequence,
+            captured_at=(
+                sequence / 120 if captured_at is None else captured_at
+            ),
+            frame_width=frame_width,
+            frame_height=frame_height,
+        )
+
+    def test_ambiguous_continuation_latches_lost_until_new_epoch(self):
+        acquired = self.observe(
+            StrictTriggerLockState(), (head_box(120),), 1,
+        )
+        self.assertEqual(acquired.state.mode, "tracking")
+        self.assertEqual(acquired.analysis.target.aim_x, 120)
+
+        lost = self.observe(
+            acquired.state, (head_box(126), head_box(114)), 2,
+        )
+        self.assertEqual(lost.state.mode, "lost")
+        self.assertIsNone(lost.analysis.target)
+        self.assertIsNone(lost.analysis.frame.selected_index)
+
+        reappeared = self.observe(lost.state, (head_box(128),), 3)
+        self.assertEqual(reappeared.state.mode, "lost")
+        self.assertIsNone(reappeared.analysis.target)
+
+        reacquired = self.observe(
+            reappeared.state, (head_box(128),), 4, epoch=2,
+        )
+        self.assertEqual(reacquired.state.mode, "tracking")
+        self.assertEqual(reacquired.analysis.target.aim_x, 128)
+
+    def test_empty_first_frame_consumes_epoch_into_lost(self):
+        result = self.observe(StrictTriggerLockState(), (), 1)
+        self.assertEqual(result.state.mode, "lost")
+        self.assertEqual(result.state.epoch, 1)
+        self.assertIsNone(result.analysis.target)
+        self.assertIsNone(result.analysis.frame.selected_index)
+
+    def test_equal_distance_first_frame_fails_closed_instead_of_detector_order(self):
+        result = self.observe(
+            StrictTriggerLockState(), (head_box(140), head_box(180)), 1,
+        )
+        self.assertEqual(result.state.mode, "lost")
+        self.assertIsNone(result.analysis.target)
+        self.assertIsNone(result.analysis.frame.selected_index)
+        self.assertEqual(len(result.analysis.frame.detections), 2)
+
+    def test_unique_continuation_survives_detector_order_change(self):
+        acquired = self.observe(
+            StrictTriggerLockState(), (head_box(120),), 1,
+        )
+        continued = self.observe(
+            acquired.state, (head_box(220), head_box(122)), 2,
+        )
+        self.assertEqual(continued.state.mode, "tracking")
+        self.assertEqual(continued.analysis.target.aim_x, 122)
+        self.assertEqual(continued.analysis.frame.selected_index, 1)
+
+    def test_one_frame_disappearance_never_recovers_same_epoch(self):
+        acquired = self.observe(
+            StrictTriggerLockState(), (head_box(120),), 1,
+        )
+        missing = self.observe(acquired.state, (), 2)
+        returned = self.observe(missing.state, (head_box(121),), 3)
+        self.assertEqual(missing.state.mode, "lost")
+        self.assertEqual(returned.state.mode, "lost")
+        self.assertIsNone(returned.analysis.target)
+
+    def test_idle_epoch_none_keeps_stateless_overlay_analysis(self):
+        result = self.observe(
+            StrictTriggerLockState(), (head_box(150),), 1, epoch=None,
+        )
+        self.assertEqual(result.state.mode, "idle")
+        self.assertEqual(result.analysis.target.aim_x, 150)
+        self.assertEqual(result.analysis.frame.selected_index, 0)
+
+    def test_acquisition_uses_the_one_unique_nearest_candidate(self):
+        result = self.observe(
+            StrictTriggerLockState(), (head_box(80), head_box(150)), 1,
+        )
+        self.assertEqual(result.state.mode, "tracking")
+        self.assertEqual(result.analysis.target.aim_x, 150)
+        self.assertEqual(result.analysis.frame.selected_index, 1)
+
+    def test_acquisition_considers_heads_and_players_together(self):
+        player = player_box(160, aim_y=160)
+        head = head_box(300, 300)
+        result = self.observe(
+            StrictTriggerLockState(), (head, player), 1,
+        )
+        self.assertEqual(result.state.mode, "tracking")
+        self.assertEqual(result.analysis.target.target_class, "player")
+        self.assertEqual(result.analysis.frame.selected_index, 1)
+
+    def test_exact_and_near_overlapping_continuations_fail_closed(self):
+        for contenders in (
+            (head_box(121), head_box(121)),
+            (head_box(121), head_box(121.001)),
+        ):
+            with self.subTest(contenders=contenders):
+                acquired = self.observe(
+                    StrictTriggerLockState(), (head_box(120),), 1,
+                )
+                result = self.observe(acquired.state, contenders, 2)
+                self.assertEqual(result.state.mode, "lost")
+                self.assertIsNone(result.analysis.target)
+                self.assertIsNone(result.analysis.frame.selected_index)
+
+    def test_state_and_observation_are_deeply_immutable(self):
+        result = self.observe(
+            StrictTriggerLockState(), (head_box(150),), 1,
+        )
+        with self.assertRaises(FrozenInstanceError):
+            result.state.mode = "lost"
+        with self.assertRaises(FrozenInstanceError):
+            result.analysis.frame.selected_index = None
+
+    def test_confidence_change_loses_active_epoch(self):
+        acquired = self.observe(
+            StrictTriggerLockState(), (head_box(120, confidence=.9),), 1,
+            settings=AimSettings(confidence=.25),
+        )
+        changed = self.observe(
+            acquired.state, (head_box(121, confidence=.9),), 2,
+            settings=AimSettings(confidence=.30),
+        )
+        self.assertEqual(changed.state.mode, "lost")
+        self.assertIsNone(changed.analysis.target)
+
+    def test_full_display_uses_native_center_and_canonical_match_radius(self):
+        acquired = self.observe(
+            StrictTriggerLockState(),
+            (head_rectangle(800, 540, 60, 90),),
+            1, frame_width=1920, frame_height=1080,
+        )
+        continued = self.observe(
+            acquired.state,
+            (head_rectangle(830, 540, 60, 90),),
+            2, frame_width=1920, frame_height=1080,
+        )
+        self.assertEqual(continued.state.mode, "tracking")
+        self.assertEqual(continued.analysis.target.frame_width, 1920)
+        self.assertEqual(continued.analysis.target.frame_height, 1080)
+
+    def test_target_area_change_latches_lost(self):
+        acquired = self.observe(
+            StrictTriggerLockState(), (head_box(120),), 1,
+            settings=AimSettings(target_area="head"),
+        )
+        changed = self.observe(
+            acquired.state, (head_box(121),), 2,
+            settings=AimSettings(target_area="chest"),
+        )
+        self.assertEqual(changed.state.mode, "lost")
+        self.assertIsNone(changed.analysis.target)
+
+    def test_frame_geometry_change_latches_lost(self):
+        acquired = self.observe(
+            StrictTriggerLockState(), (head_box(120),), 1,
+        )
+        changed = self.observe(
+            acquired.state, (head_box(240, 200, size=20),), 2,
+            frame_width=640, frame_height=400,
+        )
+        self.assertEqual(changed.state.mode, "lost")
+        self.assertIsNone(changed.analysis.target)
+
+    def test_target_class_change_latches_lost(self):
+        acquired = self.observe(
+            StrictTriggerLockState(), (head_box(120),), 1,
+        )
+        changed = self.observe(
+            acquired.state, (player_box(121, aim_y=100),), 2,
+        )
+        self.assertEqual(changed.state.mode, "lost")
+        self.assertIsNone(changed.analysis.target)
+        self.assertEqual(changed.analysis.frame.detections[0].class_id, 0)
+
+    def test_invalid_and_non_finite_geometry_fail_closed(self):
+        invalid_detections = (
+            Detection(120, 95, 120, 105, .9, 7),
+            Detection(float("nan"), 95, 125, 105, .9, 7),
+            Detection(115, 95, float("inf"), 105, .9, 7),
+        )
+        for detection in invalid_detections:
+            with self.subTest(detection=detection):
+                result = self.observe(
+                    StrictTriggerLockState(), (detection,), 1,
+                )
+                self.assertEqual(result.state.mode, "lost")
+                self.assertIsNone(result.analysis.target)
+                self.assertIsNone(result.analysis.frame.selected_index)
+
+    def test_oversized_finite_geometry_fails_closed_during_acquisition(self):
+        oversized = Detection(0, 0, 1e200, 10, .9, 7)
+
+        result = self.observe(StrictTriggerLockState(), (oversized,), 1)
+
+        self.assertEqual(result.state.mode, "lost")
+        self.assertEqual(result.state.epoch, 1)
+        self.assertIsNone(result.analysis.target)
+        self.assertIsNone(result.analysis.frame.selected_index)
+        self.assertEqual(result.analysis.frame.detections, (oversized,))
+
+    def test_nonfinite_derived_dimensions_fail_closed(self):
+        oversized = Detection(-1e308, -1e308, 1e308, 1e308, .9, 7)
+
+        acquired = self.observe(StrictTriggerLockState(), (oversized,), 1)
+
+        self.assertEqual(acquired.state.mode, "lost")
+        self.assertEqual(acquired.state.epoch, 1)
+        self.assertIsNone(acquired.analysis.target)
+        self.assertIsNone(acquired.analysis.frame.selected_index)
+        self.assertEqual(acquired.analysis.frame.detections, (oversized,))
+
+        tracked = self.observe(
+            StrictTriggerLockState(), (head_box(120),), 1, epoch=2,
+        )
+        continued = self.observe(tracked.state, (oversized,), 2, epoch=2)
+
+        self.assertEqual(continued.state.mode, "lost")
+        self.assertEqual(continued.state.epoch, 2)
+        self.assertIsNone(continued.analysis.target)
+        self.assertIsNone(continued.analysis.frame.selected_index)
+        self.assertEqual(continued.analysis.frame.detections, (oversized,))
+
+    def test_nonfinite_continuation_radius_latches_lost(self):
+        base = Detection(-6e307, -5e-309, 6e307, 5e-309, .9, 7)
+        shifted = Detection(
+            -6e307 + 1e300,
+            -5e-309,
+            6e307 + 1e300,
+            5e-309,
+            .9,
+            7,
+        )
+
+        acquired = self.observe(StrictTriggerLockState(), (base,), 1)
+        continued = self.observe(acquired.state, (shifted,), 2)
+
+        self.assertEqual(acquired.state.mode, "tracking")
+        self.assertEqual(continued.state.mode, "lost")
+        self.assertEqual(continued.state.epoch, 1)
+        self.assertIsNone(continued.analysis.target)
+        self.assertIsNone(continued.analysis.frame.selected_index)
+        self.assertEqual(continued.analysis.frame.detections, (shifted,))
+
+    def test_non_finite_capture_time_fails_closed(self):
+        result = self.observe(
+            StrictTriggerLockState(),
+            (head_box(120),),
+            1,
+            captured_at=float("nan"),
+        )
+        self.assertEqual(result.state.mode, "lost")
+        self.assertIsNone(result.analysis.target)
+
+    def test_area_ratio_boundaries_are_inclusive_and_excess_loses(self):
+        for ratio, expected_mode in (
+            (0.4, "tracking"),
+            (2.5, "tracking"),
+            (0.399, "lost"),
+            (2.501, "lost"),
+        ):
+            with self.subTest(ratio=ratio):
+                acquired = self.observe(
+                    StrictTriggerLockState(),
+                    (head_rectangle(120, 100, 10, 10),),
+                    1,
+                )
+                side = 10 * math.sqrt(ratio)
+                result = self.observe(
+                    acquired.state,
+                    (head_rectangle(121, 100, side, side),),
+                    2,
+                )
+                self.assertEqual(result.state.mode, expected_mode)
+                if expected_mode == "lost":
+                    self.assertIsNone(result.analysis.target)
+
+    def test_canonical_displacement_boundary_scales_to_full_display(self):
+        acquired = self.observe(
+            StrictTriggerLockState(), (head_box(600, 540),), 1,
+            frame_width=1920, frame_height=1080,
+        )
+        exact = self.observe(
+            acquired.state, (head_box(888, 540),), 2,
+            frame_width=1920, frame_height=1080,
+        )
+        self.assertEqual(exact.state.mode, "tracking")
+
+        acquired = self.observe(
+            StrictTriggerLockState(), (head_box(600, 540),), 1,
+            frame_width=1920, frame_height=1080,
+        )
+        outside = self.observe(
+            acquired.state, (head_box(888.001, 540),), 2,
+            frame_width=1920, frame_height=1080,
+        )
+        self.assertEqual(outside.state.mode, "lost")
+
+    def test_full_display_velocity_cap_scales_from_canonical_800_pps(self):
+        acquired = self.observe(
+            StrictTriggerLockState(), (head_box(600, 540),), 1,
+            frame_width=1920, frame_height=1080, captured_at=0.0,
+        )
+        continued = self.observe(
+            acquired.state, (head_box(840, 540),), 2,
+            frame_width=1920, frame_height=1080, captured_at=0.010,
+        )
+        capped = self.observe(
+            continued.state, (head_box(600, 540),), 3,
+            frame_width=1920, frame_height=1080, captured_at=0.020,
+        )
+        self.assertEqual(capped.state.mode, "tracking")
+        self.assertEqual(capped.analysis.target.aim_x, 600)
+
+    def test_prediction_horizon_is_capped_at_one_hundred_milliseconds(self):
+        acquired = self.observe(
+            StrictTriggerLockState(), (head_box(100),), 1,
+            captured_at=0.0,
+        )
+        continued = self.observe(
+            acquired.state, (head_box(140),), 2,
+            captured_at=0.050,
+        )
+        capped = self.observe(
+            continued.state, (head_box(172),), 3,
+            captured_at=0.160,
+        )
+        self.assertEqual(capped.state.mode, "tracking")
+        self.assertEqual(capped.analysis.target.aim_x, 172)
 
 
 if __name__ == "__main__":

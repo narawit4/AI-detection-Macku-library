@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from typing import Any
 from ctypes import wintypes
 
+from jitter_app.motion.engine import DEFAULT_SERVO_HZ
+
 
 @dataclass(frozen=True)
 class RuntimeCadence:
@@ -17,7 +19,7 @@ class RuntimeCadence:
     servo_hz: int
 
 
-FALLBACK_CADENCE = RuntimeCadence(None, 120, 240)
+FALLBACK_CADENCE = RuntimeCadence(None, 120, DEFAULT_SERVO_HZ)
 ENUM_CURRENT_SETTINGS = -1
 
 
@@ -83,7 +85,7 @@ def cadence_from_refresh(raw: Any) -> RuntimeCadence:
     return RuntimeCadence(
         display_hz,
         min(display_hz, 240),
-        max(120, min(480, display_hz * 2)),
+        DEFAULT_SERVO_HZ,
     )
 
 

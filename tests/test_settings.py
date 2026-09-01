@@ -234,6 +234,27 @@ class ConfigStoreTests(unittest.TestCase):
         )
         self.assertEqual(restored, config)
 
+    def test_schema_five_explicit_old_defaults_are_not_migrated(self):
+        old_ai = {
+            "confidence": "0.35",
+            "aim_strength": "0.35",
+            "smoothing": "0.65",
+            "max_step": "20",
+            "response_curve": ["0", "0.12", "0.35", "0.68", "1"],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            path.write_text(
+                json.dumps({"schema_version": 5, "ai": old_ai}),
+                encoding="utf-8",
+            )
+            restored = ConfigStore(path).load().config.ai
+
+        self.assertEqual(
+            restored,
+            AimSettings(0.35, 0.35, 0.65, 20, (0.0, 0.12, 0.35, 0.68, 1.0)),
+        )
+
     def test_schema_five_never_persists_or_restores_runtime_target_area(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.json"
@@ -351,7 +372,7 @@ class ConfigStoreTests(unittest.TestCase):
             "aim_strength": "0.6",
             "smoothing": "0.7",
             "max_step": "30",
-            "response_curve": ["0", "0.12", "0.35", "0.68", "1"],
+            "response_curve": ["0", "0.16", "0.38", "0.68", "0.95"],
         })
         self.assertEqual(restored, config)
 
@@ -462,7 +483,7 @@ class ConfigStoreTests(unittest.TestCase):
                 },
             }), encoding="utf-8")
             config = ConfigStore(path).load().config
-        self.assertEqual(config.ai, AimSettings(0.35, 1.25, 0.65, 30))
+        self.assertEqual(config.ai, AimSettings(0.25, 1.25, 0.58, 30))
 
     def test_invalid_sound_settings_use_safe_defaults_and_clamp_volume(self):
         cases = (

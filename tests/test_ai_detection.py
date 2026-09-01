@@ -6,6 +6,8 @@ import onnxruntime as ort
 from jitter_app.ai.detection import (
     ModelContractError,
     OnnxDetector,
+    build_letterbox_transform,
+    map_detection_to_source,
     model_resource_path,
     parse_output,
     preprocess_frame,
@@ -73,6 +75,128 @@ def valid_raw_output(input_size=640):
 
 
 class DetectionFunctionTests(unittest.TestCase):
+    def test_letterbox_plans_landscape_portrait_and_half_up_odd_padding(self):
+        landscape = build_letterbox_transform(1920, 1080, 320)
+        portrait = build_letterbox_transform(1080, 1920, 320)
+        odd = build_letterbox_transform(640, 361, 320)
+        one_pixel = build_letterbox_transform(100000, 1, 160)
+        ultrawide = build_letterbox_transform(3440, 1440, 320)
+        square = build_letterbox_transform(777, 777, 160)
+
+        self.assertEqual(
+            (landscape.resized_width, landscape.resized_height,
+             landscape.pad_left, landscape.pad_top,
+             landscape.pad_right, landscape.pad_bottom),
+            (320, 180, 0, 70, 0, 70),
+        )
+        self.assertEqual(
+            (portrait.resized_width, portrait.resized_height,
+             portrait.pad_left, portrait.pad_top,
+             portrait.pad_right, portrait.pad_bottom),
+            (180, 320, 70, 0, 70, 0),
+        )
+        self.assertEqual(
+            (odd.resized_width, odd.resized_height,
+             odd.pad_left, odd.pad_top, odd.pad_right, odd.pad_bottom),
+            (320, 181, 0, 69, 0, 70),
+        )
+        self.assertEqual(
+            (one_pixel.resized_width, one_pixel.resized_height,
+             one_pixel.pad_left, one_pixel.pad_top,
+             one_pixel.pad_right, one_pixel.pad_bottom),
+            (160, 1, 0, 79, 0, 80),
+        )
+        self.assertEqual(
+            (ultrawide.resized_width, ultrawide.resized_height,
+             ultrawide.pad_left, ultrawide.pad_top,
+             ultrawide.pad_right, ultrawide.pad_bottom),
+            (320, 134, 0, 93, 0, 93),
+        )
+        self.assertEqual(
+            (square.resized_width, square.resized_height,
+             square.pad_left, square.pad_top,
+             square.pad_right, square.pad_bottom),
+            (160, 160, 0, 0, 0, 0),
+        )
+
+    def test_preprocess_letterboxes_with_exact_114_padding(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        frame[:, :, 0] = 255
+
+        tensor = preprocess_frame(frame, 320)
+
+        self.assertEqual(tensor.shape, (1, 3, 320, 320))
+        np.testing.assert_allclose(tensor[0, :, 0, 0], [114 / 255] * 3)
+        np.testing.assert_allclose(tensor[0, :, 70, 0], [1.0, 0.0, 0.0])
+        np.testing.assert_allclose(tensor[0, :, 249, 319], [1.0, 0.0, 0.0])
+        np.testing.assert_allclose(tensor[0, :, 250, 319], [114 / 255] * 3)
+
+    def test_inverse_letterbox_maps_content_and_rejects_padding_only_boxes(self):
+        transform = build_letterbox_transform(1920, 1080, 320)
+        mapped = map_detection_to_source(
+            Detection(32, 82, 96, 142, 0.9, 7), transform
+        )
+        self.assertEqual(
+            (mapped.x1, mapped.y1, mapped.x2, mapped.y2),
+            (192.0, 72.0, 576.0, 432.0),
+        )
+        self.assertIsNone(map_detection_to_source(
+            Detection(20, 0, 100, 69, 0.9, 7), transform
+        ))
+        crossing = map_detection_to_source(
+            Detection(0, 60, 320, 100, 0.9, 7), transform
+        )
+        self.assertEqual(
+            (crossing.x1, crossing.y1, crossing.x2, crossing.y2),
+            (0.0, 0.0, 1920.0, 180.0),
+        )
+
+    def test_inverse_uses_integer_resized_height_for_odd_padding(self):
+        transform = build_letterbox_transform(640, 361, 320)
+        mapped = map_detection_to_source(
+            Detection(40, 79, 280, 239, 0.9, 7), transform
+        )
+        np.testing.assert_allclose(
+            (mapped.x1, mapped.y1, mapped.x2, mapped.y2),
+            (80.0, 19.94475138121547, 560.0, 339.060773480663),
+            rtol=0,
+            atol=1e-12,
+        )
+
+    def test_landscape_inverse_mapping_is_exact_at_every_model_size(self):
+        cases = (
+            (160, Detection(16, 41, 48, 71, 0.9, 7)),
+            (320, Detection(32, 82, 96, 142, 0.9, 7)),
+            (640, Detection(64, 164, 192, 284, 0.9, 7)),
+        )
+        for input_size, model_box in cases:
+            with self.subTest(input_size=input_size):
+                mapped = map_detection_to_source(
+                    model_box,
+                    build_letterbox_transform(1920, 1080, input_size),
+                )
+                self.assertEqual(
+                    (mapped.x1, mapped.y1, mapped.x2, mapped.y2),
+                    (192.0, 72.0, 576.0, 432.0),
+                )
+
+    def test_portrait_inverse_mapping_is_exact_at_every_model_size(self):
+        cases = (
+            (160, Detection(41, 16, 71, 48, 0.9, 7)),
+            (320, Detection(82, 32, 142, 96, 0.9, 7)),
+            (640, Detection(164, 64, 284, 192, 0.9, 7)),
+        )
+        for input_size, model_box in cases:
+            with self.subTest(input_size=input_size):
+                mapped = map_detection_to_source(
+                    model_box,
+                    build_letterbox_transform(1080, 1920, input_size),
+                )
+                self.assertEqual(
+                    (mapped.x1, mapped.y1, mapped.x2, mapped.y2),
+                    (72.0, 192.0, 432.0, 576.0),
+                )
+
     def test_preprocess_resizes_canonical_frame_to_each_supported_input(self):
         frame = np.zeros((320, 320, 3), dtype=np.uint8)
         frame[0, 0] = (255, 128, 0)
@@ -86,11 +210,11 @@ class DetectionFunctionTests(unittest.TestCase):
                     tensor[0, :, 0, 0], [1.0, 128 / 255, 0.0]
                 )
 
-    def test_output_coordinates_map_from_model_space_to_canonical_space(self):
+    def test_output_coordinates_remain_in_model_space(self):
         cases = (
-            (160, (10, 20, 30, 40), (20.0, 40.0, 60.0, 80.0)),
+            (160, (10, 20, 30, 40), (10.0, 20.0, 30.0, 40.0)),
             (320, (10, 20, 30, 40), (10.0, 20.0, 30.0, 40.0)),
-            (640, (10, 20, 30, 40), (5.0, 10.0, 15.0, 20.0)),
+            (640, (10, 20, 30, 40), (10.0, 20.0, 30.0, 40.0)),
         )
         for input_size, raw_box, expected in cases:
             with self.subTest(input_size=input_size):
@@ -102,7 +226,7 @@ class DetectionFunctionTests(unittest.TestCase):
                     expected,
                 )
 
-    def test_output_scales_before_canonical_clipping_and_empty_rejection(self):
+    def test_output_clips_to_model_space_and_rejects_empty_boxes(self):
         output = np.zeros((1, 300, 6), dtype=np.float32)
         output[0, :2] = (
             (-20, -20, 80, 80, 0.8, 7),
@@ -113,7 +237,7 @@ class DetectionFunctionTests(unittest.TestCase):
         self.assertEqual(
             (detections[0].x1, detections[0].y1,
              detections[0].x2, detections[0].y2),
-            (0.0, 0.0, 40.0, 40.0),
+            (0.0, 0.0, 80.0, 80.0),
         )
 
     def test_preprocess_returns_normalized_nchw_float32(self):
@@ -125,9 +249,11 @@ class DetectionFunctionTests(unittest.TestCase):
         self.assertTrue(tensor.flags.c_contiguous)
         np.testing.assert_allclose(tensor[0, :, 0, 0], [1.0, 128 / 255, 0.0])
 
-    def test_preprocess_rejects_wrong_frame_shape_and_type(self):
-        with self.assertRaisesRegex(ValueError, "RGB 320x320x3"):
+    def test_preprocess_rejects_malformed_frame_shape_and_type(self):
+        with self.assertRaisesRegex(ValueError, "RGB"):
             preprocess_frame(np.zeros((320, 320), dtype=np.uint8))
+        with self.assertRaisesRegex(ValueError, "positive"):
+            preprocess_frame(np.zeros((0, 320, 3), dtype=np.uint8))
         with self.assertRaisesRegex(ValueError, "uint8 pixels"):
             preprocess_frame(np.zeros((320, 320, 3), dtype=np.float32))
 
@@ -168,6 +294,113 @@ class DetectionFunctionTests(unittest.TestCase):
 
 
 class OnnxDetectorTests(unittest.TestCase):
+    def test_legacy_and_raw_detectors_map_the_same_source_box_at_every_size(self):
+        cases = (
+            (160, (16, 41, 48, 71), (32, 56, 32, 30)),
+            (320, (32, 82, 96, 142), (64, 112, 64, 60)),
+            (640, (64, 164, 192, 284), (128, 224, 128, 120)),
+        )
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        for input_size, legacy_box, raw_candidate in cases:
+            with self.subTest(input_size=input_size):
+                legacy_output = np.zeros((1, 300, 6), dtype=np.float32)
+                legacy_output[0, 0] = (*legacy_box, 0.9, 7)
+                raw_output = np.zeros(
+                    (1, 5, RAW_COUNTS[input_size]), dtype=np.float32
+                )
+                raw_output[0, :, 0] = (*raw_candidate, 0.9)
+                legacy_session = Session(
+                    inputs=[NodeArg(
+                        "images", "tensor(float)",
+                        [1, 3, input_size, input_size],
+                    )],
+                    result=legacy_output,
+                )
+                raw_session = Session(
+                    inputs=[NodeArg(
+                        "images", "tensor(float)",
+                        [1, 3, input_size, input_size],
+                    )],
+                    outputs=[NodeArg(
+                        "output0", "tensor(float)",
+                        [1, 5, RAW_COUNTS[input_size]],
+                    )],
+                    result=raw_output,
+                    metadata=RAW_METADATA,
+                )
+                legacy = OnnxDetector(
+                    "legacy.onnx",
+                    session_factory=lambda *_args, **_kwargs: legacy_session,
+                ).detect(frame)
+                raw = OnnxDetector(
+                    "raw.onnx",
+                    session_factory=lambda *_args, **_kwargs: raw_session,
+                ).detect(frame)
+                self.assertEqual(len(legacy), 1)
+                self.assertEqual(len(raw), 1)
+                self.assertEqual(
+                    (legacy[0].x1, legacy[0].y1,
+                     legacy[0].x2, legacy[0].y2),
+                    (192.0, 72.0, 576.0, 432.0),
+                )
+                self.assertEqual(
+                    (raw[0].x1, raw[0].y1, raw[0].x2, raw[0].y2),
+                    (192.0, 72.0, 576.0, 432.0),
+                )
+                self.assertEqual(legacy[0].confidence, raw[0].confidence)
+                self.assertAlmostEqual(legacy[0].confidence, 0.9, places=6)
+                self.assertEqual(legacy[0].class_id, 7)
+                self.assertEqual(raw[0].class_id, 0)
+                self.assertEqual(len(legacy_session.run_calls), 1)
+                self.assertEqual(len(raw_session.run_calls), 1)
+
+    def test_legacy_and_raw_detectors_reject_padding_only_boxes_at_every_size(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        for input_size in (160, 320, 640):
+            with self.subTest(input_size=input_size):
+                transform = build_letterbox_transform(1920, 1080, input_size)
+                legacy_output = np.zeros((1, 300, 6), dtype=np.float32)
+                legacy_output[0, 0] = (
+                    input_size / 4, 0, input_size * 3 / 4,
+                    transform.pad_top, 0.9, 7,
+                )
+                raw_output = np.zeros(
+                    (1, 5, RAW_COUNTS[input_size]), dtype=np.float32
+                )
+                raw_output[0, :, 0] = (
+                    input_size / 2, transform.pad_top / 2,
+                    input_size / 2, transform.pad_top, 0.9,
+                )
+                legacy_session = Session(
+                    inputs=[NodeArg(
+                        "images", "tensor(float)",
+                        [1, 3, input_size, input_size],
+                    )],
+                    result=legacy_output,
+                )
+                raw_session = Session(
+                    inputs=[NodeArg(
+                        "images", "tensor(float)",
+                        [1, 3, input_size, input_size],
+                    )],
+                    outputs=[NodeArg(
+                        "output0", "tensor(float)",
+                        [1, 5, RAW_COUNTS[input_size]],
+                    )],
+                    result=raw_output,
+                    metadata=RAW_METADATA,
+                )
+                legacy = OnnxDetector(
+                    "legacy.onnx",
+                    session_factory=lambda *_args, **_kwargs: legacy_session,
+                ).detect(frame)
+                raw = OnnxDetector(
+                    "raw.onnx",
+                    session_factory=lambda *_args, **_kwargs: raw_session,
+                ).detect(frame)
+                self.assertEqual(legacy, ())
+                self.assertEqual(raw, ())
+
     def test_accepts_exact_raw_contract_for_each_supported_input_size(self):
         for input_size, candidate_count in RAW_COUNTS.items():
             with self.subTest(input_size=input_size):
@@ -361,7 +594,7 @@ class OnnxDetectorTests(unittest.TestCase):
             2,
         )
 
-    def test_raw_player_refinement_stays_in_canonical_zoom_geometry(self):
+    def test_raw_player_refinement_preserves_source_geometry(self):
         base_output = np.zeros((1, 5, 2100), dtype=np.float32)
         base_output[0, :, 0] = (160, 170, 40, 100, 0.90)
         refined_output = np.zeros((1, 5, 2100), dtype=np.float32)
@@ -381,10 +614,11 @@ class OnnxDetectorTests(unittest.TestCase):
             sequence=4, captured_at=20.0,
         )
         session.result = refined_output
+        crop = np.zeros((160, 160, 3), dtype=np.uint8)
         refined = compose_zoom_refinement(
             base,
-            detector.detect(frame),
-            ZoomTransform(80, 80, 160, 2.0),
+            detector.detect(crop),
+            ZoomTransform(80, 80, 160, 160, 320, 320, 2.0),
             AimSettings(target_area="head"),
         )
         self.assertIsNotNone(refined)
@@ -395,6 +629,14 @@ class OnnxDetectorTests(unittest.TestCase):
              refined.frame.detections[0].y2,
              refined.frame.detections[0].class_id),
             (150.0, 120.0, 170.0, 200.0, 0),
+        )
+        self.assertEqual(
+            (refined.target.frame_width, refined.target.frame_height),
+            (320, 320),
+        )
+        self.assertEqual(
+            (refined.frame.frame_width, refined.frame.frame_height),
+            (320, 320),
         )
 
     def test_accepts_only_exact_supported_static_square_input_sizes(self):

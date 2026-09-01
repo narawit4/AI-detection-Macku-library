@@ -579,17 +579,48 @@ class EntryPointTests(unittest.TestCase):
             readme,
         )
 
-    def test_readme_documents_supported_external_sizes_and_fixed_capture(self):
+    def test_readme_documents_supported_sizes_and_both_capture_modes(self):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        padding_contract = "unused letterbox pixels are filled with RGB value 114"
+        features_start = readme.index("## คุณสมบัติหลัก")
+        targeting_start = readme.index("## หลักการเลือกเป้าหมาย AI")
+        features_section = readme[features_start:targeting_start]
+        next_heading = readme.index("\n## ", targeting_start + 1)
+        targeting_section = readme[targeting_start:next_heading]
+        layout_start = readme.index("## โครงสร้าง repository ที่รองรับ")
+        layout_end = readme.index("\n## ", layout_start + 1)
+        layout_section = readme[layout_start:layout_end]
         for contract in (
             "[1,3,160,160]",
             "[1,3,320,320]",
             "[1,3,640,640]",
-            "พื้นที่ capture ยังคง 320×320",
             "128/256",
+            "letterbox แบบรักษาอัตราส่วน",
+            "พิกัด source-screen",
+            "1,000 Hz ซึ่งเป็นอิสระจาก capture และ inference cadence",
+            "`jitter_app/ai/detection.py` owns the integer letterbox canvas",
         ):
             with self.subTest(contract=contract):
                 self.assertIn(contract, readme)
+        for contract in (
+            "Capture Mode",
+            "Center 320",
+            "Full Display",
+            "runtime-only",
+            "320×320",
+            "unused letterbox pixels are filled with RGB value 114",
+        ):
+            with self.subTest(contract=contract):
+                self.assertIn(contract, features_section)
+        self.assertIn(
+            "crosshair center comes from the selected source frame",
+            targeting_section,
+        )
+        self.assertIn(
+            "`jitter_app/ai/capture.py`: owns centered and full-primary regions",
+            layout_section,
+        )
+        self.assertIn(padding_contract, targeting_section)
 
     def test_readme_documents_exact_raw_single_class_contract_without_packaging_it(self):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")

@@ -4,8 +4,9 @@ Jitter เป็นโปรแกรมเดสก์ท็อปสำหร�
 ใช้ควบคุมอุปกรณ์ Makcu USB โดยรวมความสามารถสองส่วนที่เปิดใช้งานแยกกันได้:
 
 - `Jitter` สร้างการขยับเมาส์สองมิติแบบ paired pulse ที่ปรับแต่งได้
-- `AI Aim` ตรวจจับผู้เล่นและศีรษะจากภาพกลางหน้าจอ แล้วขยับเมาส์ไปยัง
-  detection ที่ใกล้ crosshair ที่สุดในเฟรมปัจจุบัน
+- `AI Aim` ตรวจจับผู้เล่นและศีรษะจากภาพกลางหน้าจอ: นอก Trigger epoch ที่เข้าเกณฑ์
+  ใช้ detection ที่ใกล้ crosshair ที่สุดสำหรับ Overlay และการเริ่มเลือกเป้าหมาย;
+  ใน epoch จะติดตามต่อเฉพาะกล่อง base ที่ต่อเนื่องได้แบบ unique มิฉะนั้น latch `LOST`
 
 ทั้งสองแหล่งการเคลื่อนไหวสามารถใช้เดี่ยว ๆ หรือเปิดพร้อมกันได้ เมื่อเปิดพร้อมกัน
 โปรแกรมจะรวม delta ของ Jitter และ AI Aim ก่อนส่งไปยัง Makcu หาก AI Aim
@@ -50,29 +51,36 @@ Jitter เป็นโปรแกรมเดสก์ท็อปสำหร�
 - มี `Test 3s` สำหรับทดสอบแหล่งการเคลื่อนไหวที่เลือกเป็นเวลา 3 วินาที
 - มี global hotkey ค่าเริ่มต้น `-` สำหรับสลับ Master หนึ่งครั้งต่อการกด
 - ใช้ ONNX Runtime DirectML เป็น provider หลัก และมี CPU fallback
-- จับภาพ RGB ขนาดคงที่ 320×320 พิกเซลจากกึ่งกลางหน้าจอด้วย DXCam
-- เลือก detection ใกล้ crosshair ที่สุดจาก head และ player รวมกันทุกเฟรม
+- `Capture Mode` เป็น runtime-only: `Center 320` คือค่าเริ่มต้นและจับภาพจริงเป็นสี่เหลี่ยม 320×320 ตรงกลางจอหลัก ส่วน `Full Display` จับภาพจอหลักทั้งหมดที่ native resolution; ใช้ได้เพียงหนึ่ง mode/AI generation ต่อครั้ง แล้ว letterbox base frame แบบรักษาอัตราส่วนไปยัง model input สี่เหลี่ยม 160, 320 หรือ 640 โดย unused letterbox pixels are filled with RGB value 114 และ detection จะ map กลับเป็นพิกัด source-screen
+- นอก Trigger epoch ที่เข้าเกณฑ์ เลือก detection ที่ใกล้ crosshair ที่สุดจาก head
+  และ player รวมกันสำหรับ Overlay และการเริ่มเลือกเป้าหมาย; ใน epoch ใช้
+  Strict Trigger Lock แบบ fail-closed และ latch `LOST` เมื่อไม่มีหรือมี
+  continuation ที่ plausible มากกว่าหนึ่งกล่อง
 - มี response curve 5 จุด, time-based smoothing และ Max Step
-- ปรับ capture/servo cadence ตาม refresh rate ของจอหลักโดยอัตโนมัติ
+- ปรับ capture cadence ตาม refresh rate ของจอหลัก (สูงสุด 240 FPS) และใช้ motion servo เป้าหมายคงที่ 1,000 Hz ซึ่งเป็นอิสระจาก capture และ inference cadence; อัตราที่ส่งถึง USB/HID จริงขึ้นกับ Makcu, USB และ scheduling ของ Windows
 - มี Adaptive Zoom แบบ 1.0×, 1.5× และ 2.0× โดยไม่ขยายภาพบนหน้าจอ
-- มี Overlay กล่อง detection แบบ click-through และไม่ถูกจับกลับเข้า inference
+- มี Overlay กล่อง detection พร้อม AI Runtime HUD แบบ click-through และไม่ถูกจับกลับเข้า inference
 - เลือกโมเดล `.onnx` ภายนอกได้เฉพาะ runtime โดยไม่บันทึก path ลง config
 
 ## หลักการเลือกเป้าหมาย AI
 
-AI Aim ใช้ภาพขนาด 320×320 พิกเซล และถือว่าจุด crosshair อยู่ที่
-`(160, 160)` ทุกเฟรมมีขั้นตอนดังนี้:
+AI Aim ใช้ source frame ของ `Capture Mode` ที่เลือก: `Center 320` ใช้สี่เหลี่ยม
+320×320 ตรงกลางจอหลัก ส่วน `Full Display` ใช้จอหลักทั้งหมดที่ native resolution
+แล้ว letterbox แบบรักษาอัตราส่วนเข้าสู่ model input สี่เหลี่ยม 160, 320 หรือ 640
+ที่กำลังใช้งาน โดย unused letterbox pixels are filled with RGB value 114 พิกัด
+detection จะถูก map กลับเป็น source-screen ก่อนเลือกเป้าหมาย; the crosshair center comes from the selected source frame. canonical/model-space 320 ใช้เฉพาะ policy การตอบสนองหลัง map แล้ว ไม่ใช่ capture หรือ overlay geometry.
 
-1. รับ detection จากโมเดล ONNX
-2. เก็บเฉพาะ class ที่รองรับและมี confidence ถึงค่าที่กำหนด
-3. สร้าง aim point ของ head และ player ทุกตัว
-4. รวม head และ player ไว้ในรายการเดียวกัน
-5. คำนวณระยะเส้นตรงจาก aim point ไปยัง `(160, 160)`
-6. เลือก aim point ที่มีระยะน้อยที่สุดและเผยแพร่ทันทีในเฟรมนั้น
+นอก raw-Trigger epoch ที่เข้าเกณฑ์ ระบบรับ detection จากโมเดล ONNX, เก็บเฉพาะ
+class ที่รองรับและมี confidence ถึงค่าที่กำหนด, สร้าง aim point ของ head และ player
+และเลือก aim point ที่ใกล้จุดกึ่งกลางของ source frame ที่สุดสำหรับ Overlay และการ
+เริ่มเลือกเป้าหมาย.
 
-ระบบไม่ให้สิทธิ์ head มากกว่า player และไม่ยึดตัวที่เลือกจากเฟรมก่อนหน้า
-จึงสามารถสลับไปยัง detection ใหม่ที่ใกล้ crosshair กว่าได้ทันที หากสองจุดมี
-ระยะเท่ากันพอดี จะใช้ลำดับ output จาก detector เป็นตัวตัดสิน
+ใน raw-Trigger epoch ที่เข้าเกณฑ์ ระบบทำการเริ่มเลือกได้เพียงครั้งเดียว แล้วติดตาม
+ต่อเฉพาะกล่อง base ที่เป็น continuation เดียวซึ่ง class เดียวกันและ plausible ทาง
+geometry. หากไม่พบ continuation หรือพบมากกว่าหนึ่งกล่อง ระบบจะ latch `LOST` และ
+ไม่ส่ง AI movement หรือเลือกกล่องสำหรับ Overlay ตลอดการกดนั้น; ต้องปล่อยแล้วกด
+Trigger ใหม่จึงเริ่มเลือกได้อีกครั้ง และการเปลี่ยน Modifier ไม่สร้าง epoch ใหม่.
+การจับคู่ใช้ class และ geometry ของกล่องตรวจจับเท่านั้น จึงไม่ใช่การยืนยัน identity.
 
 โมเดลที่รองรับใช้ class ดังนี้:
 
@@ -94,7 +102,7 @@ Target Area มีสามระดับและเป็นสถานะ r
 - Windows 10 หรือใหม่กว่า
 - Python 3.11 ขึ้นไป พร้อม Tkinter
 - อุปกรณ์ Makcu ที่รองรับและไดรเวอร์ USB
-- จอภาพที่มีความละเอียดเพียงพอสำหรับพื้นที่จับภาพกึ่งกลาง 320×320
+- จอภาพหลักที่ DXCam สามารถจับภาพทั้งจอได้ที่ native resolution
 - GPU/ระบบที่รองรับ DirectML สำหรับ inference ที่แนะนำ
 - หาก DirectML ใช้งานไม่ได้ โปรแกรมสามารถ fallback ไป CPU ได้
 
@@ -140,6 +148,7 @@ python main.py
 - `Master` จะอยู่ในสถานะปิด
 - `Overlay` จะอยู่ในสถานะปิด
 - โมเดลเริ่มต้นคือ `models/all_games_320.onnx`
+- `Capture Mode` เริ่มต้นเป็น `Center 320` เสมอ
 - global hotkey เริ่มต้นคือ `-`
 
 ## ขั้นตอนใช้งานแบบย่อ
@@ -178,16 +187,26 @@ Presets:
 
 | ตัวควบคุม | ช่วง | ค่าเริ่มต้น | ความหมาย |
 |---|---:|---:|---|
-| `Confidence` | 0.05–0.95 | 0.35 | confidence ขั้นต่ำของ detection |
+| `Confidence` | 0.05–0.95 | 0.25 | confidence ขั้นต่ำของ detection |
 | `Aim Strength` | 0.05–2.00 | 0.35 | ตัวคูณความเร็วจาก response curve |
-| `Smoothing` | 0.00–0.95 | 0.65 | ความนุ่มของการเปลี่ยนความเร็วตามเวลา |
-| `Max Step` | 1–127 | 20 | delta สูงสุดที่รายงานต่อรอบ servo |
+| `Smoothing` | 0.00–0.95 | 0.58 | ความนุ่มของการเปลี่ยนความเร็วตามเวลา |
+| `Max Step` | 1–127 | 18 | delta สูงสุดที่รายงานต่อรอบ servo |
 | `Target Area` | Head/Upper Body/Chest | Head | ระดับแนวตั้งของ aim point |
+| `Capture Mode` | Center 320/Full Display | Center 320 | ขอบเขตการจับภาพ AI แบบ runtime-only |
 
 AI Aim ใช้ time-based servo microsteps เพื่อให้การขยับระหว่างเฟรม inference
 ต่อเนื่องขึ้น เป้าหมายที่ยังใช้ไม่หมดจะหมดอายุเมื่อผ่าน 150 ms เพื่อไม่ให้ส่ง
 ตำแหน่งเก่าค้างอยู่ การ clamp, acceleration limit และ fractional accumulation
 ยังคงทำงาน และ movement ส่วนเกินจะถูกทิ้งแทนการสะสมคิว
+
+### Trigger Lock
+
+`raw Trigger` คือปุ่ม Trigger ที่ตั้งค่าไว้โดยไม่รวม Modifier. ในการกด raw
+Trigger ที่เข้าเกณฑ์แต่ละครั้ง AI Aim จะเลือกได้เพียงเป้าหมายเดียวจาก base
+frame; หากเป้าหมายหายไปหรือมีความกำกวม AI assistance จะหยุดตลอดการกดครั้งนั้น
+และจะเลือกใหม่ได้เมื่อปล่อยแล้วกด Trigger อีกครั้งเท่านั้น. การปล่อยหรือกด
+Modifier ใหม่เพียงอย่างเดียวจะไม่เลือกเป้าหมายใหม่. การจับคู่ใช้เฉพาะ class และ
+geometry ของกล่องตรวจจับ จึงไม่ใช่การระบุใบหน้าหรือบุคคล.
 
 ## Response Curve
 
@@ -196,7 +215,7 @@ Response Curve แปลงระยะจาก crosshair เป็นควา
 
 ```text
 ระยะ:       0%   25%   50%   75%   100%
-ค่าเริ่มต้น: 0%   12%   35%   68%   100%
+ค่าเริ่มต้น: 0%   16%   38%   68%   95%
 ```
 
 - จุดแรกถูกตรึงที่ศูนย์
@@ -215,7 +234,7 @@ base pass แบบเต็มพื้นที่ 1.0× ก่อนเสม
 แล้วเท่านั้นจึงมีสิทธิ์รับ refinement pass เพิ่มในเฟรมเดียวกัน
 
 - `1.0×`: base inference เต็มเฟรม
-- `1.5×`: refinement ที่กว้างกว่า ใช้กับเป้าหมายใหม่หรือเป้าหมายที่ยังไม่นิ่ง
+- `1.5×`: refinement ที่กว้างกว่า ใช้กับ strict locked base target ใน Trigger epoch
 - `2.0×`: refinement ที่ละเอียดขึ้นหลังยืนยันความนิ่งและผ่าน cooldown 100 ms
 
 refinement ทำงานเฉพาะขณะเชื่อมต่อ Makcu, เปิด Master, เลือก AI Aim และกด
@@ -225,6 +244,12 @@ Trigger/Modifier ครบในการเคลื่อนไหวปกต
 หาก refinement ไม่สำเร็จ โปรแกรมจะใช้ผล 1.0× ของเฟรมเดียวกันต่อไป ไม่ถือ
 target เก่ามาใช้ และไม่เพิ่ม inference call เกินที่กำหนด กล่อง refinement
 จะสัมพันธ์กับ base target ที่ถูกเลือกไว้เพื่อไม่ให้ซูมไปหยิบวัตถุข้างเคียง
+ใน Trigger epoch จะใช้ได้เฉพาะ strict locked base target; ผล refinement มีผลกับ
+กล่องของเฟรมปัจจุบันเท่านั้น และไม่เปลี่ยน state การจับคู่สำหรับ base frame ถัดไป
+
+base path ใช้ inference หนึ่งครั้งต่อ processed frame และ Adaptive Zoom ที่มีสิทธิ์
+อาจเพิ่ม refinement call ได้อีกหนึ่งครั้งในเฟรมเดียวกัน การ crop สำหรับ refinement
+รักษา native aspect ของ source frame และพิกัดผลลัพธ์จะ map กลับเป็น source-screen
 
 Adaptive Zoom ไม่ได้ขยายภาพที่ผู้ใช้เห็น และไม่สามารถค้นหาเป้าหมายที่ base pass
 ตรวจไม่พบ ค่า `ZOOM` และสถานะความนิ่งทั้งหมดเป็น runtime state
@@ -238,14 +263,25 @@ models/all_games_320.onnx
 ```
 
 
-พื้นที่ capture ยังคง 320×320 สำหรับทุกโมเดล เช่นเดียวกับ Overlay, FOV, targeting และ movement
-`jitter_app/ai/resize.py` เป็น shared primitive สำหรับ resize ภาพ RGB เท่านั้น ส่วน detector จะ scale
-ผลลัพธ์กลับมาเป็นพิกัด 320×320 ก่อนเผยแพร่ โมเดล 640 จึงเป็นการ upscale
-พื้นที่จริง 320×320 เดิม ไม่ใช่การขยายพื้นที่ที่จับภาพ โมเดล 160 อาจใช้ inference น้อยลง,
-320 เป็นจุดสมดุลเริ่มต้น และ 640 อาจใช้เวลามากขึ้น ทั้งหมดนี้ไม่รับประกัน FPS หรือความแม่นยำ
+`Center 320` จับภาพจริงเป็นพื้นที่ตรงกลางจอหลักขนาด 320×320 และเป็นค่าเริ่มต้น
+ทุก launch; `Full Display` จับภาพจอหลักทั้งหมดที่ native resolution. ทั้งสองเป็น
+`Capture Mode` แบบ runtime-only และมีเพียงหนึ่ง mode/AI generation ต่อครั้ง
+`jitter_app/ai/detection.py` owns the integer letterbox canvas สำหรับ model input
+สี่เหลี่ยม 160×160, 320×320 หรือ 640×640 โดยใช้ `jitter_app/ai/resize.py` เฉพาะ
+deterministic rectangular bilinear RGB resizing เท่านั้น detector decode ทั้ง legacy และ raw
+ใน model space แล้ว inverse map ผลลัพธ์กลับเป็นพิกัด source-screen ก่อนเผยแพร่ FOV,
+targeting และ Overlay; canonical 320 ใช้เฉพาะ threshold policy ที่ไม่ขึ้นกับความละเอียด
+โมเดล 160 อาจใช้ inference น้อยลง, 320 เป็นจุดสมดุลเริ่มต้น และ 640 อาจใช้เวลามากขึ้น
+ทั้งหมดนี้ไม่รับประกัน FPS หรือความแม่นยำ
 
-โมเดลเริ่มต้นเมื่อเปิดโปรแกรมยังคงเป็น bundled `models/all_games_320.onnx` เสมอ path และขนาดของ
-โมเดลภายนอกเป็น runtime-only: ไม่ถูกบันทึกลง config, copy, หรือ package ไปกับ release
+โมเดล bundled 320 อาจสูญเสียรายละเอียดของเป้าหมายขนาดเล็กเมื่อ `Full Display`
+ประมวลผลพื้นที่จอ wide-screen ทั้งหมด โมเดลภายนอก 640 ที่ compatible ช่วยเพิ่ม
+model-input detail ได้ แต่เป็น runtime-only เท่านั้น และไม่มี capture geometry ใดถูก
+บันทึกถาวร
+
+โมเดลเริ่มต้นเมื่อเปิดโปรแกรมยังคงเป็น bundled `models/all_games_320.onnx` เสมอ และ
+`Capture Mode` กลับเป็น `Center 320`; path และขนาดของโมเดลภายนอกเป็น runtime-only:
+ไม่ถูกบันทึกลง config, copy, หรือ package ไปกับ release
 
 แถว `MODEL` จะแสดง `Default · all_games_320.onnx · 320×320` ปุ่ม `Browse...` ใช้เลือก
 ไฟล์ `.onnx` ภายนอกสำหรับ process ปัจจุบัน และ `Use Default` ใช้กลับไปโมเดลหลัก
@@ -262,7 +298,9 @@ models/all_games_320.onnx
 การคำนวณ NMS ใช้ NumPy ภายในโปรแกรม ด้วย confidence ขั้นต่ำ `0.05`, IoU `0.45` และส่งออกไม่เกิน `300` กล่องต่อเฟรม
 
 ระบบ reject `[1,K,5]`, raw แบบหลายคลาส, tensor แบบ dynamic/rectangular, จำนวน candidate ที่ไม่ใช่จำนวนที่ระบุ และ metadata ที่ขาดหรือ malformed
-`jitter_app/ai/yolo.py` เป็น pure NumPy decoder สำหรับ raw และ downstream ยังใช้ Detection แบบเดิมและพิกัด canonical 320×320
+`jitter_app/ai/yolo.py` เป็น pure NumPy decoder สำหรับ raw และ downstream ยังใช้
+contract `Detection` แบบเดิม: decoder ทำงานใน model space ก่อน inverse letterbox
+map เพื่อเผยแพร่พิกัด source-screen
 โมเดลภายนอกเป็น runtime-only และจะไม่ถูกบันทึก, copy, download หรือ package; มีเฉพาะ `models/all_games_320.onnx` ที่ถูก bundle
 
 โปรแกรมตรวจ contract นอก Tk UI thread และพัก AI ระหว่างสลับโมเดล เมื่อโมเดลใหม่
@@ -292,15 +330,27 @@ path ของโมเดลภายนอกและไฟล์โมเด
 
 ## Overlay
 
-Overlay เป็นหน้าต่าง detection ขนาด 320×320 ที่กึ่งกลางจอ:
+Overlay เป็นหน้าต่างโปร่งใสเต็มขนาดจอหลัก โดยกล่อง detection ที่เป็นพิกัด
+source-screen จะถูก project ทับบน canvas ของจอหลักทั้งหมด:
 
 - เริ่มต้นปิดและทำงานแยกจากการเลือก AI Aim
 - click-through จึงไม่ขวางการคลิก
 - ถูก exclude จาก capture เพื่อไม่ให้เห็นกล่องของตัวเองใน inference
-- เลือก `Box Color` ได้
-- ปุ่ม `Head Boxes` ซ่อน/แสดงเฉพาะกล่อง head บน Overlay
+- HUD แสดง FPS, provider, zoom และสถานะ lock เป็น `HEAD`, `PLAYER` หรือ `NONE`
+- หากเฟรม detection เก่ากว่า 150 ms สถานะ lock จะกลับเป็น `NONE`
+- ส่วน `OVERLAY CUSTOM` ในหน้า Motion ใช้ปรับ Overlay แบบสดขณะรัน
+- เลือก `Box Color`, เปิด/ปิดกล่อง Head และ Player แยกกัน และปรับความหนากรอบ `1–8`
+- Label เลือกได้ระหว่างปิด, ชื่อคลาส หรือชื่อคลาสพร้อม confidence
+- HUD เปิด/ปิดได้ เลือกมุมทั้ง 4 มุม ตั้งระยะ X/Y จากขอบจอ และปรับขนาดตัวอักษร `8–24`
+- เลือกสี HUD แยกจากสีกรอบ และเปิด/ปิด FPS, Provider, Zoom และ Lock แยกกันได้
+- `Reset Overlay` คืนค่าเริ่มต้นทั้งหมด โดยตำแหน่ง HUD จะถูกจำกัดไม่ให้อยู่นอกจอ
+- ตัวเลือกใหม่เป็น runtime-only และเริ่มจากค่า default ทุกครั้งที่เปิดโปรแกรม ส่วน `Box Color` กับ `Head Boxes` ยังบันทึกตาม schema 5
 - การซ่อนกล่อง head ไม่ได้ตัด head ออกจาก target selection
 - Overlay-only สามารถเรียก inference ได้โดยไม่เปิด AI Aim สำหรับ movement
+
+ใน `Center 320` Overlay แปลพิกัดผ่าน viewport 320×320 ที่จับภาพจริงตรงกลางจอ
+ส่วน `Full Display` ใช้ viewport เต็มจอ; ทั้งสองยังแสดงบน Overlay เต็มจอเดียวกัน
+และ HUD อยู่ที่มุมจอตามที่ตั้งไว้
 
 เมื่อเกิด AI runtime error โปรแกรมจะซ่อน Overlay และยกเลิกการเลือก AI Aim
 หากยังเลือก Jitter และ Master เปิดอยู่ Jitter จะทำงานต่อผ่าน gate เดิม แต่ถ้ามี
@@ -310,7 +360,7 @@ AI Aim อย่างเดียว โปรแกรมจะปิด Maste
 
 - `Master`: arm แหล่งการเคลื่อนไหวที่เลือก
 - Global hotkey `-`: สลับ Master หนึ่งครั้งต่อการกด
-- `Test 3s`: ใช้ engine จริงของแหล่งที่เลือกตอนเริ่ม test และข้าม Trigger ชั่วคราว
+- `Test 3s`: ใช้ engine จริงของแหล่งและ `Capture Mode` ที่เลือกตอนเริ่ม test, ถือ mode ไว้ตลอด test และข้าม Trigger ชั่วคราว
 - `STOP`: ยกเลิก movement, test, Overlay และ inference demand ทันที
 
 เหตุการณ์ต่อไปนี้จะส่งสัญญาณหยุดโดยไม่รอ movement interval ปกติ:
@@ -323,6 +373,15 @@ AI Aim อย่างเดียว โปรแกรมจะปิด Maste
 - ปิดโปรแกรม
 
 การปิดหน้าต่างคือการออกจากโปรแกรม ไม่มี system tray
+
+เมื่อสลับ `Capture Mode` แบบสด ระบบจะล้าง target/detection เก่าและแทนที่เฉพาะ AI
+generation โดยคง Master, source selection, Jitter และ Overlay ที่ทำงานสำเร็จไว้
+generation ใหม่จะเริ่มหลัง capture/model resources ของ generation เก่าถูก retire จริง
+ตามเงื่อนไขแล้วเท่านั้น จึงไม่มีการ start ซ้อนทันที. Model candidate และ rollback ใช้
+`Capture Mode` ที่เลือกอยู่; `STOP` หรือ AI error ไม่เปลี่ยน runtime selection นี้
+
+การสลับ mode หรือ model จะใช้ไม่ได้ระหว่าง `Test 3s` และช่วง transition ที่ป้องกันไว้
+ไม่มี config schema field, dependency, bundled model หรือ packaging change เพิ่มขึ้น
 
 ## ไฟล์ตั้งค่าและข้อมูลผู้ใช้
 
@@ -343,8 +402,8 @@ Schema 5 บันทึกค่าที่ผ่าน validation รวม�
 - global hotkey และการตั้งค่าเสียง
 
 สิ่งที่ไม่ถูกบันทึก ได้แก่ source selection, Master, Overlay visibility,
-Target Area, model path ภายนอก, target/snapshot, FPS, provider, display cadence,
-servo cadence และ zoom status
+Target Area, `Capture Mode`, model path ภายนอก, target/snapshot, FPS, provider,
+display cadence, servo cadence และ zoom status
 
 หากพบ schema 6 หรือใหม่กว่าซึ่งโปรแกรมรุ่นนี้ไม่รองรับ โปรแกรมจะใช้ค่า default
 ในหน่วยความจำ ปิดการ save และไม่แก้ไฟล์ต้นฉบับ
@@ -369,11 +428,14 @@ servo cadence และ zoom status
 - Confidence ไม่สูงจน detection ถูกตัดทิ้งทั้งหมด
 - Target Area ตรงกับ class ที่โมเดลตรวจได้
 
-### AI สลับไปอีกตัวเมื่อเป้าหมายอยู่ใกล้กัน
+### AI assistance หยุดเมื่อเป้าหมายอยู่ใกล้กัน
 
-นี่เป็นพฤติกรรมที่ออกแบบไว้ ระบบเลือก detection ที่ใกล้ crosshair ที่สุดใหม่
-ทุกเฟรมและไม่จำ identity จากเฟรมก่อน หากต้องการให้ตัวใดถูกเลือก ให้วาง crosshair
-ให้ aim point ของตัวนั้นใกล้ศูนย์กลางกว่า
+ระหว่าง raw-Trigger epoch ที่เข้าเกณฑ์ นี่เป็นพฤติกรรมที่ออกแบบไว้: หากไม่พบ
+continuation ที่ plausible หรือพบมากกว่าหนึ่งกล่อง Strict Trigger Lock จะ latch
+`LOST` และหยุด AI assistance ตลอดการกดนั้น. ปล่อยแล้วกด Trigger ใหม่เพื่อเริ่ม
+เลือกใหม่; การปล่อยหรือกด Modifier ใหม่เพียงอย่างเดียวไม่เลือกเป้าหมายใหม่.
+นอก epoch ระบบยังแสดง detection ที่ใกล้ crosshair ที่สุดสำหรับ Overlay และการเริ่ม
+เลือกเป้าหมาย โดยการจับคู่ไม่ใช่การยืนยัน identity ของบุคคล.
 
 ### เลือกโมเดลแล้วถูก Reject
 
@@ -407,15 +469,15 @@ Overlay ถูกออกแบบให้ click-through และ capture-exc
 - `jitter_app/__init__.py`
 - `jitter_app/resources.py`
 - `jitter_app/ai/__init__.py`
-- `jitter_app/ai/capture.py`
-- `jitter_app/ai/detection.py`
+- `jitter_app/ai/capture.py`: owns centered and full-primary regions สำหรับ DXCam capture (`Center 320` และ `Full Display`)
+- `jitter_app/ai/detection.py`: integer letterbox transform/canvas, legacy และ raw decoder boundaries, และ inverse mapping จาก model space กลับเป็น source-screen
 - `jitter_app/ai/model_selection.py`
 - `jitter_app/ai/service.py`
-- `jitter_app/ai/targeting.py`
+- `jitter_app/ai/targeting.py`: เลือกและเคลื่อนสู่ target ใน source-screen geometry โดย normalize เพื่อ response policy เท่านั้น
 - `jitter_app/ai/tracking.py`
-- `jitter_app/ai/resize.py`
+- `jitter_app/ai/resize.py`: deterministic rectangular bilinear RGB resizing only
 - `jitter_app/ai/yolo.py`
-- `jitter_app/ai/zoom.py`
+- `jitter_app/ai/zoom.py`: native-aspect Adaptive Zoom geometry และ same-frame refinement composition
 - `jitter_app/motion/__init__.py`
 - `jitter_app/motion/engine.py`
 - `jitter_app/motion/combined.py`
@@ -426,7 +488,7 @@ Overlay ถูกออกแบบให้ click-through และ capture-exc
 - `jitter_app/presentation/__init__.py`
 - `jitter_app/presentation/ui.py`
 - `jitter_app/presentation/widgets.py`
-- `jitter_app/presentation/overlay.py`
+- `jitter_app/presentation/overlay.py`: overlay เต็มจอหลักที่ project detection source-screen ไปยัง canvas
 - `jitter_app/presentation/sound.py`
 - `jitter_app/config/__init__.py`
 - `jitter_app/config/store.py`

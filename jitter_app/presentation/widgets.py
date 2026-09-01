@@ -4,6 +4,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from functools import partial
 import math
 import tkinter as tk
+from tkinter import ttk
 from typing import Callable, Mapping
 
 
@@ -75,6 +76,98 @@ def _draw_rounded_box(
         splinesteps=24,
         tags=tags,
     )
+
+
+class CollapsibleSection(ttk.Frame):
+    """One independently collapsible, keyboard-accessible dashboard section."""
+
+    def __init__(
+        self,
+        parent,
+        *,
+        number: int,
+        title: str,
+        summary: tk.StringVar,
+        expanded: bool = False,
+        on_toggle: Callable[[bool], None] | None = None,
+    ) -> None:
+        if int(number) < 1:
+            raise ValueError("section number must be positive")
+        if not isinstance(title, str) or not title.strip():
+            raise ValueError("section title must be non-empty")
+        super().__init__(parent, style="Liquid.SettingsCard.TFrame")
+        self.number = int(number)
+        self.title = title.strip().upper()
+        self.summary = summary
+        self.on_toggle = on_toggle
+        self._expanded = not bool(expanded)
+        self._summary_trace_id = self.summary.trace_add(
+            "write", self._summary_changed
+        )
+
+        self.columnconfigure(0, weight=1)
+        self.header_button = ttk.Button(
+            self,
+            text="",
+            command=self.toggle,
+            takefocus=True,
+            style="Liquid.Section.TButton",
+        )
+        self.header_button.grid(row=0, column=0, sticky="ew")
+        self.header_button.bind("<Return>", self._key_toggle)
+        self.header_button.bind("<space>", self._key_toggle)
+        self.body = ttk.Frame(
+            self,
+            style="Liquid.SectionBody.TFrame",
+            padding=(10, 9),
+        )
+        self.body.grid(row=1, column=0, sticky="ew")
+        self.bind("<Destroy>", self._destroyed, add="+")
+        self.set_expanded(expanded, notify=False)
+
+    @property
+    def expanded(self) -> bool:
+        return self._expanded
+
+    def set_expanded(self, expanded: bool, *, notify: bool = True) -> None:
+        expanded = bool(expanded)
+        if expanded == self._expanded:
+            return
+        self._expanded = expanded
+        if expanded:
+            self.body.grid()
+        else:
+            self.body.grid_remove()
+        self._refresh_header()
+        if notify and self.on_toggle is not None:
+            self.on_toggle(expanded)
+
+    def toggle(self) -> None:
+        self.set_expanded(not self._expanded)
+
+    def _key_toggle(self, _event=None) -> str:
+        self.toggle()
+        return "break"
+
+    def _summary_changed(self, *_args) -> None:
+        self._refresh_header()
+
+    def _refresh_header(self) -> None:
+        marker = "\u25b2" if self._expanded else "\u25bc"
+        summary = " ".join(str(self.summary.get()).split())
+        self.header_button.configure(
+            text=f"{self.number:02d}   {self.title}   {summary}   {marker}"
+        )
+
+    def _destroyed(self, event) -> None:
+        if event.widget is not self or self._summary_trace_id is None:
+            return
+        trace_id = self._summary_trace_id
+        self._summary_trace_id = None
+        try:
+            self.summary.trace_remove("write", trace_id)
+        except tk.TclError:
+            pass
 
 
 class LiquidNavigation(tk.Canvas):

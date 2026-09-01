@@ -10,6 +10,7 @@ from .targeting import (
     DetectionAnalysis,
     DetectionFrameSnapshot,
     TargetSnapshot,
+    analyze_detections,
     detection_aim_point,
     validated_target_area,
 )
@@ -56,6 +57,28 @@ class TrackingObservation:
     state: TrackerState
     analysis: DetectionAnalysis
     stability_target: TargetSnapshot | None
+
+
+STRICT_LOCK_IDLE = "idle"
+STRICT_LOCK_TRACKING = "tracking"
+STRICT_LOCK_LOST = "lost"
+
+
+@dataclass(frozen=True)
+class StrictTriggerLockState:
+    epoch: int | None = None
+    mode: str = STRICT_LOCK_IDLE
+    confirmed_detection: Detection | None = None
+    confirmed_target: TargetSnapshot | None = None
+    preceding_target: TargetSnapshot | None = None
+    confidence: float | None = None
+    target_area: str = "head"
+
+
+@dataclass(frozen=True)
+class StrictTriggerLockObservation:
+    state: StrictTriggerLockState
+    analysis: DetectionAnalysis
 
 
 def _box_area(detection: Detection) -> float:
@@ -584,3 +607,389 @@ def observe_detections(
         observation,
         state=replace(observation.state, target_area=target_area),
     )
+
+
+def _strict_without_target(analysis: DetectionAnalysis) -> DetectionAnalysis:
+    return DetectionAnalysis(None, replace(analysis.frame, selected_index=None))
+
+
+def _strict_with_candidate(
+    analysis: DetectionAnalysis,
+    candidate: _Candidate,
+) -> DetectionAnalysis:
+    return DetectionAnalysis(
+        candidate.target,
+        replace(analysis.frame, selected_index=candidate.index),
+    )
+
+
+def _strict_is_finite(*values: float) -> bool:
+    try:
+        return all(math.isfinite(value) for value in values)
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
+def _strict_box_geometry(detection: Detection) -> tuple[float, float, float] | None:
+    if not _strict_is_finite(
+        detection.x1,
+        detection.y1,
+        detection.x2,
+        detection.y2,
+        detection.confidence,
+    ):
+        return None
+    width = detection.x2 - detection.x1
+    height = detection.y2 - detection.y1
+    area = width * height
+    if (
+        not _strict_is_finite(width, height, area)
+        or width <= 0.0
+        or height <= 0.0
+        or area <= 0.0
+    ):
+        return None
+    return width, height, area
+
+
+def _strict_scale(frame_width: int, frame_height: int) -> float | None:
+    try:
+        scale = max(frame_width, frame_height) / 320.0
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return scale if _strict_is_finite(scale) and scale > 0.0 else None
+
+
+def _strict_distance(
+    first_x: float,
+    first_y: float,
+    second_x: float,
+    second_y: float,
+) -> float | None:
+    delta_x = first_x - second_x
+    delta_y = first_y - second_y
+    if not _strict_is_finite(delta_x, delta_y):
+        return None
+    distance = math.hypot(delta_x, delta_y)
+    return distance if _strict_is_finite(distance) else None
+
+
+def _strict_intersection_over_union(
+    first: Detection,
+    first_area: float,
+    second: Detection,
+    second_area: float,
+) -> float | None:
+    width = min(first.x2, second.x2) - max(first.x1, second.x1)
+    height = min(first.y2, second.y2) - max(first.y1, second.y1)
+    width = max(0.0, width)
+    height = max(0.0, height)
+    intersection = width * height
+    union = first_area + second_area - intersection
+    if not _strict_is_finite(width, height, intersection, union) or union <= 0.0:
+        return None
+    iou = intersection / union
+    return iou if _strict_is_finite(iou) and 0.0 <= iou <= 1.0 else None
+
+
+def _strict_candidates(
+    analysis: DetectionAnalysis,
+    settings: AimSettings,
+) -> tuple[_Candidate, ...]:
+    frame = analysis.frame
+    if not _strict_is_finite(frame.captured_at) or frame.captured_at < 0.0:
+        return ()
+    candidates = []
+    for index, detection in enumerate(frame.detections):
+        if _strict_box_geometry(detection) is None:
+            continue
+        point = detection_aim_point(detection, settings.target_area)
+        if point is None or not _strict_is_finite(point[1], point[2]):
+            continue
+        target_class, aim_x, aim_y = point
+        candidates.append(
+            _Candidate(
+                index,
+                detection,
+                TargetSnapshot(
+                    frame.sequence,
+                    frame.captured_at,
+                    target_class,
+                    aim_x,
+                    aim_y,
+                    frame.frame_width,
+                    frame.frame_height,
+                ),
+            )
+        )
+    return tuple(candidates)
+
+
+def _strict_unique_initial_candidate(
+    candidates: tuple[_Candidate, ...],
+    frame_width: int,
+    frame_height: int,
+) -> _Candidate | None:
+    if not candidates:
+        return None
+    center_x = frame_width / 2.0
+    center_y = frame_height / 2.0
+    distances = tuple(
+        _strict_squared_distance(
+            candidate.target.aim_x,
+            candidate.target.aim_y,
+            center_x,
+            center_y,
+        )
+        for candidate in candidates
+    )
+    candidates = tuple(
+        candidate
+        for candidate, distance in zip(candidates, distances)
+        if distance is not None
+    )
+    distances = tuple(distance for distance in distances if distance is not None)
+    if not candidates:
+        return None
+    closest = min(distances)
+    if distances.count(closest) != 1:
+        return None
+    return candidates[distances.index(closest)]
+
+
+def _strict_squared_distance(
+    first_x: float,
+    first_y: float,
+    second_x: float,
+    second_y: float,
+) -> float | None:
+    delta_x = first_x - second_x
+    delta_y = first_y - second_y
+    if not _strict_is_finite(delta_x, delta_y):
+        return None
+    distance_squared = delta_x * delta_x + delta_y * delta_y
+    return distance_squared if _strict_is_finite(distance_squared) else None
+
+
+def _strict_prediction(
+    state: StrictTriggerLockState,
+    captured_at: float,
+    scale: float,
+) -> tuple[float, float] | None:
+    confirmed = state.confirmed_target
+    preceding = state.preceding_target
+    if (
+        confirmed is None
+        or not _strict_is_finite(
+            captured_at,
+            scale,
+            confirmed.captured_at,
+            confirmed.aim_x,
+            confirmed.aim_y,
+        )
+        or captured_at < 0.0
+        or scale <= 0.0
+    ):
+        return None
+    if preceding is None:
+        return confirmed.aim_x, confirmed.aim_y
+    if not _strict_is_finite(
+        preceding.captured_at, preceding.aim_x, preceding.aim_y,
+    ):
+        return None
+    sample_dt = confirmed.captured_at - preceding.captured_at
+    capture_delta = captured_at - confirmed.captured_at
+    if not _strict_is_finite(sample_dt, capture_delta):
+        return None
+    if sample_dt <= 0.0:
+        return confirmed.aim_x, confirmed.aim_y
+    velocity_x = (confirmed.aim_x - preceding.aim_x) / sample_dt
+    velocity_y = (confirmed.aim_y - preceding.aim_y) / sample_dt
+    if not _strict_is_finite(velocity_x, velocity_y):
+        return None
+    speed = math.hypot(velocity_x, velocity_y)
+    maximum_speed = MAX_VELOCITY_PPS * scale
+    if not _strict_is_finite(speed, maximum_speed) or maximum_speed <= 0.0:
+        return None
+    if speed > maximum_speed:
+        velocity_scale = maximum_speed / speed
+        velocity_x *= velocity_scale
+        velocity_y *= velocity_scale
+    if not _strict_is_finite(velocity_x, velocity_y):
+        return None
+    horizon = max(0.0, min(MAX_PREDICTION_S, capture_delta))
+    predicted_x = confirmed.aim_x + velocity_x * horizon
+    predicted_y = confirmed.aim_y + velocity_y * horizon
+    if not _strict_is_finite(horizon, predicted_x, predicted_y):
+        return None
+    return predicted_x, predicted_y
+
+
+def _strict_plausible_candidates(
+    state: StrictTriggerLockState,
+    candidates: tuple[_Candidate, ...],
+    captured_at: float,
+) -> tuple[_Candidate, ...]:
+    confirmed_detection = state.confirmed_detection
+    confirmed_target = state.confirmed_target
+    if (
+        confirmed_detection is None
+        or confirmed_target is None
+    ):
+        return ()
+    geometry = _strict_box_geometry(confirmed_detection)
+    if geometry is None:
+        return ()
+    width, height, confirmed_area = geometry
+    scale = _strict_scale(
+        confirmed_target.frame_width,
+        confirmed_target.frame_height,
+    )
+    if scale is None:
+        return ()
+    prediction = _strict_prediction(state, captured_at, scale)
+    if prediction is None:
+        return ()
+    diagonal = math.hypot(width, height)
+    radius = max(MIN_PLAUSIBILITY_RADIUS_PX * scale, BOX_DIAGONAL_RADIUS_SCALE * diagonal)
+    if not _strict_is_finite(diagonal, radius) or diagonal <= 0.0 or radius <= 0.0:
+        return ()
+    plausible = []
+    for candidate in candidates:
+        if candidate.target.target_class != confirmed_target.target_class:
+            continue
+        candidate_geometry = _strict_box_geometry(candidate.detection)
+        if candidate_geometry is None:
+            continue
+        _, _, candidate_area = candidate_geometry
+        area_ratio = candidate_area / confirmed_area
+        if (
+            not _strict_is_finite(area_ratio)
+            or not MIN_AREA_RATIO <= area_ratio <= MAX_AREA_RATIO
+        ):
+            continue
+        distance = _strict_distance(
+            candidate.target.aim_x,
+            candidate.target.aim_y,
+            prediction[0],
+            prediction[1],
+        )
+        if distance is None or distance > radius:
+            continue
+        distance_ratio = distance / radius
+        iou = _strict_intersection_over_union(
+            confirmed_detection,
+            confirmed_area,
+            candidate.detection,
+            candidate_area,
+        )
+        area_delta = abs(math.log(area_ratio))
+        if (
+            not _strict_is_finite(distance_ratio, area_delta)
+            or iou is None
+        ):
+            continue
+        score = (
+            0.60 * distance_ratio
+            + 0.25 * (1.0 - iou)
+            + 0.15 * min(1.0, area_delta)
+        )
+        if _strict_is_finite(score) and score <= 1.0 - AMBIGUITY_MARGIN:
+            plausible.append(candidate)
+    return tuple(plausible)
+
+
+def observe_strict_trigger_lock(
+    state: StrictTriggerLockState,
+    detections: Iterable[Detection],
+    settings: AimSettings,
+    *,
+    trigger_epoch: int | None,
+    sequence: int,
+    captured_at: float,
+    frame_width: int = 320,
+    frame_height: int = 320,
+    output_width: int | None = None,
+    output_height: int | None = None,
+    capture_left: int = 0,
+    capture_top: int = 0,
+) -> StrictTriggerLockObservation:
+    """Publish one unambiguous target per Trigger epoch, or latch lost."""
+    base = analyze_detections(
+        detections,
+        settings,
+        sequence=sequence,
+        captured_at=captured_at,
+        frame_width=frame_width,
+        frame_height=frame_height,
+        output_width=output_width,
+        output_height=output_height,
+        capture_left=capture_left,
+        capture_top=capture_top,
+    )
+    area = validated_target_area(settings.target_area)
+    if trigger_epoch is None:
+        return StrictTriggerLockObservation(StrictTriggerLockState(), base)
+    if type(trigger_epoch) is not int or trigger_epoch <= 0:
+        lost = StrictTriggerLockState(epoch=None, mode=STRICT_LOCK_LOST)
+        return StrictTriggerLockObservation(lost, _strict_without_target(base))
+    if state.epoch != trigger_epoch:
+        candidate = _strict_unique_initial_candidate(
+            _strict_candidates(base, settings),
+            base.frame.frame_width,
+            base.frame.frame_height,
+        )
+        if candidate is None:
+            lost = StrictTriggerLockState(
+                epoch=trigger_epoch,
+                mode=STRICT_LOCK_LOST,
+                confidence=settings.confidence,
+                target_area=area,
+            )
+            return StrictTriggerLockObservation(lost, _strict_without_target(base))
+        tracking = StrictTriggerLockState(
+            epoch=trigger_epoch,
+            mode=STRICT_LOCK_TRACKING,
+            confirmed_detection=candidate.detection,
+            confirmed_target=candidate.target,
+            confidence=settings.confidence,
+            target_area=area,
+        )
+        return StrictTriggerLockObservation(tracking, _strict_with_candidate(base, candidate))
+    if state.mode == STRICT_LOCK_LOST:
+        return StrictTriggerLockObservation(state, _strict_without_target(base))
+    if (
+        state.mode != STRICT_LOCK_TRACKING
+        or state.confidence != settings.confidence
+        or state.target_area != area
+        or state.confirmed_target is None
+        or (
+            state.confirmed_target.frame_width,
+            state.confirmed_target.frame_height,
+        ) != (base.frame.frame_width, base.frame.frame_height)
+    ):
+        return StrictTriggerLockObservation(
+            replace(state, mode=STRICT_LOCK_LOST),
+            _strict_without_target(base),
+        )
+    plausible = _strict_plausible_candidates(
+        state,
+        _strict_candidates(base, settings),
+        captured_at,
+    )
+    if len(plausible) != 1:
+        return StrictTriggerLockObservation(
+            replace(state, mode=STRICT_LOCK_LOST),
+            _strict_without_target(base),
+        )
+    candidate = plausible[0]
+    next_state = StrictTriggerLockState(
+        epoch=trigger_epoch,
+        mode=STRICT_LOCK_TRACKING,
+        confirmed_detection=candidate.detection,
+        confirmed_target=candidate.target,
+        preceding_target=state.confirmed_target,
+        confidence=settings.confidence,
+        target_area=area,
+    )
+    return StrictTriggerLockObservation(next_state, _strict_with_candidate(base, candidate))

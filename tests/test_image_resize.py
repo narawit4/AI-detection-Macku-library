@@ -4,10 +4,59 @@ import unittest
 import numpy as np
 
 import jitter_app.ai.resize as image_resize
-from jitter_app.ai.resize import resize_rgb_bilinear
+from jitter_app.ai.resize import resize_rgb_bilinear, resize_rgb_bilinear_to
 
 
 class RgbResizeTests(unittest.TestCase):
+    def test_rectangular_resize_has_exact_shape_pixels_and_ownership(self):
+        source = np.array(
+            [
+                [[0, 0, 0], [100, 100, 100]],
+                [[200, 200, 200], [255, 255, 255]],
+            ],
+            dtype=np.uint8,
+        )
+
+        resized = resize_rgb_bilinear_to(source, 3, 2)
+
+        self.assertEqual(resized.shape, (2, 3, 3))
+        self.assertEqual(
+            resized[:, :, 0].tolist(),
+            [[0, 50, 100], [200, 228, 255]],
+        )
+        self.assertEqual(resized.dtype, np.uint8)
+        self.assertTrue(resized.flags.c_contiguous)
+        self.assertTrue(resized.flags.owndata)
+        self.assertFalse(np.shares_memory(resized, source))
+
+        vertical = resize_rgb_bilinear_to(source, 2, 3)
+        self.assertEqual(
+            vertical[:, :, 0].tolist(),
+            [[0, 100], [100, 178], [200, 255]],
+        )
+
+    def test_rectangular_resize_rejects_each_invalid_dimension(self):
+        source = np.zeros((2, 2, 3), dtype=np.uint8)
+        for width, height in (
+            (True, 2), (2, False), (0, 2), (2, 0),
+            (-1, 2), (2, -1), (1.5, 2), (2, 1.5),
+            (None, 2), (2, None), ("320", 2), (2, "320"),
+        ):
+            with self.subTest(width=width, height=height):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "^Output size must be a positive integer$",
+                ):
+                    resize_rgb_bilinear_to(source, width, height)
+
+    def test_rectangular_plan_cache_keys_both_output_dimensions(self):
+        image_resize._resize_plan.cache_clear()
+        first = image_resize._resize_plan(2, 2, 2, 3)
+        second = image_resize._resize_plan(2, 2, 2, 3)
+        different = image_resize._resize_plan(2, 2, 3, 2)
+        self.assertIs(first, second)
+        self.assertIsNot(first, different)
+
     def test_reuses_immutable_cached_coordinate_plan(self):
         image_resize._resize_plan.cache_clear()
         first = image_resize._resize_plan(160, 160, 320)

@@ -1,11 +1,17 @@
 import gc
 import tkinter as tk
+from tkinter import ttk
 import unittest
 import weakref
 from types import SimpleNamespace
 
 import jitter_app.presentation.widgets as liquid_widgets
-from jitter_app.presentation.widgets import LiquidIconButton, LiquidNavigation, LiquidSlider
+from jitter_app.presentation.widgets import (
+    CollapsibleSection,
+    LiquidIconButton,
+    LiquidNavigation,
+    LiquidSlider,
+)
 
 
 DARK_ICON_PALETTE = {
@@ -63,6 +69,114 @@ class _SliderTestCase(unittest.TestCase):
         slider.pack()
         self.root.update_idletasks()
         return slider
+
+
+class CollapsibleSectionValidationTests(unittest.TestCase):
+    def setUp(self):
+        self.root = tk.Tk()
+        self.root.withdraw()
+        self.summary = tk.StringVar(self.root, "Ready")
+
+    def tearDown(self):
+        destroy_tk_test_root(self, "summary")
+
+    def test_rejects_non_positive_section_number(self):
+        with self.assertRaisesRegex(ValueError, "section number"):
+            liquid_widgets.CollapsibleSection(
+                self.root,
+                number=0,
+                title="Control",
+                summary=self.summary,
+            )
+
+    def test_rejects_blank_section_title(self):
+        with self.assertRaisesRegex(ValueError, "section title"):
+            liquid_widgets.CollapsibleSection(
+                self.root,
+                number=1,
+                title="   ",
+                summary=self.summary,
+            )
+
+
+class CollapsibleSectionTests(unittest.TestCase):
+    def setUp(self):
+        self.root = tk.Tk()
+        self.root.withdraw()
+        self.summary = tk.StringVar(self.root, "Ready")
+        self.events = []
+        self.section = CollapsibleSection(
+            self.root,
+            number=1,
+            title="Control",
+            summary=self.summary,
+            expanded=True,
+            on_toggle=self.events.append,
+        )
+        self.section.pack(fill="x")
+        self.root.update_idletasks()
+
+    def tearDown(self):
+        destroy_tk_test_root(self, "section", "summary")
+
+    def test_initial_state_exposes_one_focusable_full_width_header(self):
+        self.assertTrue(self.section.expanded)
+        self.assertIsInstance(self.section.header_button, ttk.Button)
+        self.assertEqual(str(self.section.header_button.cget("takefocus")), "1")
+        self.assertEqual(self.section.body.winfo_manager(), "grid")
+        self.assertIn("01", self.section.header_button.cget("text"))
+        self.assertIn("CONTROL", self.section.header_button.cget("text"))
+        self.assertIn("Ready", self.section.header_button.cget("text"))
+
+    def test_set_expanded_is_idempotent_and_notifies_only_on_change(self):
+        self.section.set_expanded(True)
+        self.assertEqual(self.events, [])
+        self.section.set_expanded(False)
+        self.assertFalse(self.section.expanded)
+        self.assertEqual(self.section.body.winfo_manager(), "")
+        self.assertEqual(self.events, [False])
+        self.section.set_expanded(False)
+        self.assertEqual(self.events, [False])
+
+    def test_return_and_space_toggle_exactly_once(self):
+        self.root.deiconify()
+        self.root.update()
+        self.section.header_button.focus_force()
+        self.section.header_button.event_generate("<Return>")
+        self.root.update()
+        self.assertFalse(self.section.expanded)
+        self.section.header_button.event_generate("<space>")
+        self.root.update()
+        self.assertTrue(self.section.expanded)
+        self.assertEqual(self.events, [False, True])
+
+    def test_summary_variable_refreshes_header_without_changing_state(self):
+        self.summary.set("Jitter | Left | Balanced")
+        self.root.update_idletasks()
+        self.assertIn(
+            "Jitter | Left | Balanced",
+            self.section.header_button.cget("text"),
+        )
+        self.assertTrue(self.section.expanded)
+
+    def test_two_sections_expand_independently(self):
+        second = CollapsibleSection(
+            self.root,
+            number=2,
+            title="Jitter",
+            summary=tk.StringVar(self.root, "2 px | 60 Hz | Smooth"),
+        )
+        second.pack(fill="x")
+        second.set_expanded(True)
+        self.assertTrue(self.section.expanded)
+        self.assertTrue(second.expanded)
+
+    def test_destroy_removes_the_summary_trace(self):
+        before = len(self.summary.trace_info())
+        self.section.destroy()
+        self.root.update_idletasks()
+        self.assertEqual(len(self.summary.trace_info()), before - 1)
+        self.section = None
 
 
 class LiquidSliderValueTests(_SliderTestCase):

@@ -17,6 +17,11 @@ from tkinter import colorchooser, filedialog, ttk
 import tokenize
 from typing import Any, Callable, Mapping
 
+from jitter_app.ai.capture import (
+    CENTER_320,
+    FULL_DISPLAY,
+    validated_capture_mode,
+)
 from jitter_app.ai.service import AiEvent, AiService
 from jitter_app.ai.model_selection import (
     ModelChoice,
@@ -49,9 +54,14 @@ from jitter_app.motion.engine import (
     motion_settings_to_mapping,
 )
 from jitter_app.config.store import AppConfig, ConfigStore, normalize_overlay_color
-from .widgets import LiquidIconButton, LiquidNavigation, LiquidSlider
+from .widgets import CollapsibleSection, LiquidSlider
 from .sound import ToggleSoundPlayer
-from .overlay import DetectionOverlay, OverlaySetupError
+from .overlay import (
+    MAX_FRAME_AGE_S,
+    DetectionOverlay,
+    OverlaySetupError,
+    OverlayStyle,
+)
 from jitter_app.resources import sound_directory
 
 
@@ -84,6 +94,14 @@ _AI_CONTROL_SPECS = {
     "smoothing": ("Smoothing", 0.0, 0.95, 0.01),
     "max_step": ("Max Step", 1.0, 127.0, 1.0),
 }
+
+
+def _overlay_poll_interval_ms(capture_fps: int) -> int:
+    if type(capture_fps) is not int or capture_fps <= 0:
+        capture_fps = 120
+    return max(1, int(1000 / min(capture_fps, 240)))
+
+
 _TARGET_AREA_LABELS = {
     "head": "Head",
     "upper_body": "Upper Body",
@@ -91,6 +109,13 @@ _TARGET_AREA_LABELS = {
 }
 _TARGET_AREA_VALUES = {
     label: value for value, label in _TARGET_AREA_LABELS.items()
+}
+_CAPTURE_MODE_LABELS = {
+    CENTER_320: "Center 320",
+    FULL_DISPLAY: "Full Display",
+}
+_CAPTURE_MODE_VALUES = {
+    label: value for value, label in _CAPTURE_MODE_LABELS.items()
 }
 
 
@@ -110,6 +135,25 @@ class _ModelSwitch:
     previous: ModelChoice
     phase: str
     failure: str | None = None
+
+
+@dataclass(frozen=True)
+class _DeferredAiStart:
+    context: str
+    model_choice: ModelChoice
+    capture_mode: str
+    lifecycle_epoch: int
+    kind: str
+    test_generation: int | None = None
+
+
+@dataclass(frozen=True)
+class _ActiveAiLifecycle:
+    request: _DeferredAiStart
+    generation: Any
+    event_epoch: int
+    model_token: int | None = None
+
 
 DARK_PALETTE = {
     "window": "#0D1420", "surface": "#172232", "raised": "#202F43",
@@ -164,6 +208,17 @@ def _motion_summary_text(settings: MotionSettings) -> str:
         f"{_display_value(settings.pulse_size_px)} px paired pulse at "
         f"{_display_value(settings.pulse_rate_hz)} Hz | {settings.ramp_mode}"
     )
+
+
+def _compact_section_summary(*parts: object, limit: int = 72) -> str:
+    text = " | ".join(
+        " ".join(str(part).split())
+        for part in parts
+        if str(part).strip()
+    )
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)].rstrip() + "..."
 
 
 def _first_serialized_diagnostic(text: str) -> Any:
@@ -250,6 +305,10 @@ class JitterApp(tk.Tk):
         self.resizable(False, False)
         self.protocol("WM_DELETE_WINDOW", self.close_app)
         self.runtime_cadence = runtime_cadence or detect_runtime_cadence()
+        self._overlay_poll_delay_ms = _overlay_poll_interval_ms(
+            self.runtime_cadence.capture_fps
+        )
+        self._last_overlay_render_key = None
 
         self.config_store = config_store or ConfigStore()
         self.load_outcome = self.config_store.load()
@@ -288,6 +347,13 @@ class JitterApp(tk.Tk):
         self.overlay_visible = False
         self.overlay_color = self.config.overlay_color
         self.overlay_head_visible = self.config.overlay_head_visible
+        self.overlay_player_visible = True
+        self.overlay_hud_visible = True
+        self.overlay_hud_color = self.overlay_color
+        self.overlay_hud_show_fps = True
+        self.overlay_hud_show_provider = True
+        self.overlay_hud_show_zoom = True
+        self.overlay_hud_show_lock = True
         self._color_chooser = colorchooser.askcolor
         self._clock = clock
         self._motion_mode: str | None = None
@@ -303,6 +369,12 @@ class JitterApp(tk.Tk):
         self._ai_ready = False
         self._ai_provider: str | None = None
         self._ai_runtime_active = False
+        self._capture_mode = CENTER_320
+        self._capture_mode_switching = False
+        self._capture_restart_pending = False
+        self._model_start_pending: tuple[str, int] | None = None
+        self._deferred_ai_start: _DeferredAiStart | None = None
+        self._active_ai_lifecycle: _ActiveAiLifecycle | None = None
         self._model_choice = bundled_model_choice()
         self._model_switch_token = 0
         self._model_switch: _ModelSwitch | None = None
@@ -319,6 +391,10 @@ class JitterApp(tk.Tk):
             else replace(self.config.ai, target_area="head")
         )
         self._adaptive_zoom_gate = False
+        self._trigger_lock_counter = 0
+        self._trigger_lock_epoch: int | None = None
+        self._trigger_lock_owner: str | None = None
+        self._physical_buttons_down: set[str] = set()
         self._hotkey_vk = int(self.config.hotkey_vk)
 
         self._configure_styles()
@@ -504,10 +580,49 @@ class JitterApp(tk.Tk):
              disabled_background, p["border"]),
             focus=(p["surface"], p["accent"]),
         )
+        section_element = self._install_rounded_element(
+            style,
+            "Section",
+            (
+                p["surface"], p["raised"], p["surface"],
+                disabled_background, p["border"],
+            ),
+            focus=(p["surface"], p["accent"]),
+        )
+        button_layout = lambda element: [
+            (element, {
+                "sticky": "nsew",
+                "children": [("Button.padding", {
+                    "sticky": "nsew",
+                    "children": [("Button.label", {"sticky": "nsew"})],
+                })],
+            }),
+        ]
 
         style.configure("Liquid.App.TFrame", background=p["window"])
         style.configure("Liquid.Surface.TFrame", background=p["surface"],
                         bordercolor=p["border"], relief="flat", borderwidth=0)
+        style.configure(
+            "Liquid.Section.TButton",
+            background=p["surface"],
+            foreground=p["text"],
+            bordercolor=p["border"],
+            font=(FONT_FAMILY, 10, "bold"),
+            padding=(10, 8),
+            anchor="w",
+        )
+        style.map(
+            "Liquid.Section.TButton",
+            background=[("pressed", p["surface"]), ("active", p["raised"])],
+            foreground=[("disabled", disabled_text)],
+        )
+        style.configure(
+            "Liquid.SectionBody.TFrame",
+            background=p["surface"],
+            bordercolor=p["border"],
+            relief="flat",
+            borderwidth=0,
+        )
         style.configure("Liquid.Title.TLabel", background=p["surface"],
                         foreground=p["text"], font=TITLE_FONT)
         style.configure("Liquid.Subtitle.TLabel", background=p["surface"],
@@ -778,15 +893,7 @@ class JitterApp(tk.Tk):
             darkcolor=p["raised"],
             lightcolor=p["raised"],
         )
-        button_layout = lambda element: [
-            (element, {
-                "sticky": "nsew",
-                "children": [("Button.padding", {
-                    "sticky": "nsew",
-                    "children": [("Button.label", {"sticky": "nsew"})],
-                })],
-            }),
-        ]
+        style.layout("Liquid.Section.TButton", button_layout(section_element))
         style.layout("Liquid.Primary.TButton", button_layout(primary_element))
         style.layout("Liquid.Secondary.TButton", button_layout(secondary_element))
         style.layout(
@@ -878,6 +985,10 @@ class JitterApp(tk.Tk):
             self,
             _TARGET_AREA_LABELS["head"],
         )
+        self.capture_mode_var = tk.StringVar(
+            self,
+            _CAPTURE_MODE_LABELS[CENTER_320],
+        )
         response_curve = validated_response_curve(self.config.ai.response_curve)
         self.ai_curve_vars = {
             index: tk.StringVar(
@@ -885,9 +996,23 @@ class JitterApp(tk.Tk):
             )
             for index in range(1, 5)
         }
+        self.overlay_box_width_var = tk.StringVar(self, "2")
+        self.overlay_label_mode_var = tk.StringVar(self, "Off")
+        self.overlay_hud_corner_var = tk.StringVar(self, "Top Left")
+        self.overlay_hud_offset_x_var = tk.StringVar(self, "8")
+        self.overlay_hud_offset_y_var = tk.StringVar(self, "8")
+        self.overlay_hud_font_size_var = tk.StringVar(self, "10")
+        self._overlay_box_width_bounds = (1, 8)
+        self._overlay_hud_offset_x_bounds = (0, 500)
+        self._overlay_hud_offset_y_bounds = (0, 500)
+        self._overlay_hud_font_size_bounds = (8, 24)
         self.motion_summary_var = tk.StringVar(
             self, _motion_summary_text(self._motion_snapshot)
         )
+        self.control_section_summary_var = tk.StringVar(self, "No sources")
+        self.ai_section_summary_var = tk.StringVar(self, "Default model")
+        self.overlay_section_summary_var = tk.StringVar(self, "Overlay Off")
+        self.settings_section_summary_var = tk.StringVar(self, "Sound On")
         self.motion_snapshot_size_var = tk.StringVar(
             self, _display_value(self._motion_snapshot.pulse_size_px)
         )
@@ -924,107 +1049,44 @@ class JitterApp(tk.Tk):
             takefocus=False,
         )
         self.shell.pack(fill="both", expand=True)
-        self.shell.columnconfigure(0, weight=0, minsize=176)
-        self.shell.columnconfigure(1, weight=1)
         self.shell.rowconfigure(0, weight=1)
+        self.shell.columnconfigure(0, weight=1)
         self.shell.bind("<Configure>", self._redraw_shell_art, add="+")
-
-        self.navigation_rail = ttk.Frame(
-            self.shell,
-            width=176,
-            style="Liquid.Surface.TFrame",
-            padding=(12, 14),
-        )
-        self.navigation_rail.grid(
-            row=0, column=0, sticky="ns", padx=(12, 8), pady=12
-        )
-        self.navigation_rail.grid_propagate(False)
-
-        self.rail_identity = ttk.Frame(
-            self.navigation_rail, style="Liquid.Surface.TFrame"
-        )
-        self.rail_identity.pack(side="top", fill="x")
-        # Preserve the established identity seam for existing integrations.
-        self.identity_frame = self.rail_identity
-        self._build_identity()
-
-        self.navigation_frame = ttk.Frame(
-            self.navigation_rail, style="Liquid.Surface.TFrame"
-        )
-        self.navigation_frame.pack(side="top", fill="x", pady=(18, 0))
-        self.nav = LiquidNavigation(
-            self.navigation_frame,
-            labels=("Control", "Motion", "Settings"),
-            command=self.select_page,
-            palette=self._navigation_palette(),
-            orientation="vertical",
-            width=152,
-            height=168,
-        )
-        self.nav.pack(fill="x")
-        self._build_navigation_actions()
-
         self.console_workspace = ttk.Frame(
-            self.shell, style="Liquid.App.TFrame"
+            self.shell, style="Liquid.App.TFrame", padding=(12, 10)
         )
-        self.console_workspace.grid(
-            row=0, column=1, sticky="nsew", padx=(8, 14), pady=(12, 10)
-        )
+        self.console_workspace.grid(row=0, column=0, sticky="nsew")
         self.console_workspace.columnconfigure(0, weight=1)
-        self.console_workspace.rowconfigure(0, weight=1)
+        self.console_workspace.rowconfigure(1, weight=1)
 
-        self.page_host = ttk.Frame(
-            self.console_workspace, style="Liquid.App.TFrame"
-        )
-        self.page_host.grid(row=0, column=0, sticky="nsew")
-        self.page_host.rowconfigure(0, weight=1)
-        self.page_host.columnconfigure(0, weight=1)
-        self.control_page = ttk.Frame(self.page_host, style="Liquid.App.TFrame")
-        self.motion_page = ttk.Frame(self.page_host, style="Liquid.App.TFrame")
-        self.settings_page = ttk.Frame(self.page_host, style="Liquid.App.TFrame")
-        self.pages = (
-            self.control_page, self.motion_page, self.settings_page,
-        )
-        for page in self.pages:
-            page.grid(row=0, column=0, sticky="nsew")
-
-        self._build_trigger_card()
-        self._build_quick_card()
-        self._build_settings_page()
-        self._apply_combobox_popup_palette()
-        self.select_page(0)
-        self._build_main_control_card()
+        self._build_topbar()
+        self._build_dashboard()
         self._build_footer()
-        for panel in (
-            self.navigation_rail,
-            self.page_host,
-            self.runtime_frame,
-        ):
+        self._build_main_control_card()
+        self._apply_combobox_popup_palette()
+        for panel in (self.topbar_frame, self.dashboard_frame, self.runtime_frame):
             panel.bind("<Configure>", self._redraw_shell_art, add="+")
         self._redraw_shell_art()
 
-    def _build_identity(self) -> None:
-        identity_copy = ttk.Frame(
-            self.identity_frame, style="Liquid.Surface.TFrame"
+    def _build_topbar(self) -> None:
+        self.topbar_frame = ttk.Frame(
+            self.console_workspace,
+            style="Liquid.Surface.TFrame",
+            padding=(12, 8),
         )
-        identity_copy.pack(side="top", fill="x")
+        self.topbar_frame.grid(row=0, column=0, sticky="ew")
+        self.topbar_frame.columnconfigure(0, weight=1)
+        self.identity_frame = ttk.Frame(
+            self.topbar_frame, style="Liquid.Surface.TFrame"
+        )
+        self.identity_frame.grid(row=0, column=0, sticky="w")
         ttk.Label(
-            identity_copy, text="Jitter", style="Liquid.Title.TLabel"
+            self.identity_frame, text="JITTER", style="Liquid.Title.TLabel"
         ).pack(anchor="w")
-        ttk.Label(
-            identity_copy,
-            text="MAKCU MOTION",
-            style="Liquid.Subtitle.TLabel",
-        ).pack(anchor="w", pady=(1, 0))
         connection_row = ttk.Frame(
-            self.identity_frame, style="Liquid.Surface.TFrame"
+            self.topbar_frame, style="Liquid.Surface.TFrame"
         )
-        connection_row.pack(side="top", fill="x", pady=(14, 0))
-        self.connection_label = ttk.Label(
-            connection_row,
-            textvariable=self.connection_status_var,
-            style="Liquid.StatusDisconnected.TLabel",
-        )
+        connection_row.grid(row=0, column=1, sticky="e")
         self.connection_indicator = tk.Canvas(
             connection_row,
             width=18,
@@ -1035,39 +1097,99 @@ class JitterApp(tk.Tk):
             takefocus=False,
         )
         self.connection_indicator.pack(side="left", padx=(0, 5), pady=(1, 0))
+        self.connection_label = ttk.Label(
+            connection_row,
+            textvariable=self.connection_status_var,
+            style="Liquid.StatusDisconnected.TLabel",
+        )
         self.connection_label.pack(side="left")
         self._redraw_connection_indicator()
+
+    def _build_dashboard(self) -> None:
+        self.dashboard_frame = ttk.Frame(
+            self.console_workspace, style="Liquid.App.TFrame"
+        )
+        self.dashboard_frame.grid(row=1, column=0, sticky="nsew", pady=(8, 6))
+        self.dashboard_frame.columnconfigure(0, weight=1)
+        self.dashboard_frame.rowconfigure(0, weight=1)
+        self.dashboard_scroll_canvas = tk.Canvas(
+            self.dashboard_frame, background=self._palette["window"],
+            highlightthickness=0, borderwidth=0, takefocus=False,
+        )
+        self.dashboard_scroll_canvas.grid(row=0, column=0, sticky="nsew")
+        self.dashboard_scrollbar = ttk.Scrollbar(
+            self.dashboard_frame, orient="vertical",
+            style="Liquid.Vertical.TScrollbar",
+            command=self.dashboard_scroll_canvas.yview,
+        )
+        self.dashboard_scrollbar.grid(row=0, column=1, sticky="ns", padx=(6, 0))
+        self.dashboard_scroll_canvas.configure(
+            yscrollcommand=self.dashboard_scrollbar.set
+        )
+        self.dashboard_content = ttk.Frame(
+            self.dashboard_scroll_canvas, style="Liquid.App.TFrame"
+        )
+        self.dashboard_content.columnconfigure(0, weight=1)
+        self._dashboard_scroll_window = self.dashboard_scroll_canvas.create_window(
+            (0, 0), window=self.dashboard_content, anchor="nw"
+        )
+        self.dashboard_content.bind(
+            "<Configure>", self._refresh_dashboard_scrollregion, add="+"
+        )
+        self.dashboard_scroll_canvas.bind(
+            "<Configure>", self._resize_dashboard_content, add="+"
+        )
+        self.bind("<MouseWheel>", self._scroll_dashboard, add="+")
+        definitions = (
+            ("control_section", 1, "Control", self.control_section_summary_var, True),
+            ("jitter_section", 2, "Jitter", self.motion_summary_var, False),
+            ("ai_section", 3, "AI Aim", self.ai_section_summary_var, False),
+            ("overlay_section", 4, "Overlay", self.overlay_section_summary_var, False),
+            ("settings_section", 5, "Settings", self.settings_section_summary_var, False),
+        )
+        sections = []
+        for row, (attribute, number, title, summary, expanded) in enumerate(definitions):
+            section = CollapsibleSection(
+                self.dashboard_content, number=number, title=title,
+                summary=summary, expanded=expanded,
+            )
+            section.grid(row=row, column=0, sticky="ew", pady=(0, 7))
+            setattr(self, attribute, section)
+            sections.append(section)
+        self.sections = tuple(sections)
+        self._build_control_section(self.control_section.body)
+        self._build_jitter_section(self.jitter_section.body)
+        self._build_ai_section(self.ai_section.body)
+        self._build_overlay_section(self.overlay_section.body)
+        self._build_settings_section(self.settings_section.body)
+        self._refresh_section_summaries()
 
     def toggle_theme(self) -> None:
         self._theme = "light" if self._theme == "dark" else "dark"
         self.theme_var.set(self._theme)
         self._configure_styles()
         self.configure(background=self._palette["window"])
+        if self._overlay_customizer_exists():
+            self.overlay_custom_window.configure(
+                background=self._palette["window"]
+            )
         self.shell.configure(background=self._palette["window"])
-        self.motion_scroll_canvas.configure(background=self._palette["window"])
+        self.dashboard_scroll_canvas.configure(background=self._palette["window"])
         self._redraw_shell_art()
         self._redraw_connection_indicator()
         self._redraw_ai_curve()
-        self.nav.set_palette(self._navigation_palette())
-        self.theme_button.icon = "☀" if self._theme == "dark" else "☾"
-        self.theme_tooltip_text = (
-            "Switch to Light Mode" if self._theme == "dark"
-            else "Switch to Dark Mode"
+        self.theme_button.configure(
+            text=(
+                "Switch to Light Mode"
+                if self._theme == "dark"
+                else "Switch to Dark Mode"
+            )
         )
-        self.theme_button.accessible_name = self.theme_tooltip_text
-        self._hide_theme_tooltip()
         self._apply_combobox_popup_palette()
-        icon_palette = self._icon_palette()
-        for button in (
-            self.reconnect_button,
-            self.test_button,
-            self.theme_button,
-        ):
-            button.set_palette(icon_palette)
         slider_palette = self._slider_palette()
         for widget in self.winfo_children():
             self._apply_slider_palette(widget, slider_palette)
-        for name in (
+        surface_slider_names = (
             "sound_volume_scale",
             "pulse_size_px_scale",
             "pulse_rate_hz_scale",
@@ -1075,12 +1197,21 @@ class JitterApp(tk.Tk):
             "ai_aim_strength_scale",
             "ai_smoothing_scale",
             "ai_max_step_scale",
-        ):
+        )
+        if self._overlay_customizer_exists():
+            surface_slider_names += (
+                "overlay_box_width_scale",
+                "overlay_hud_offset_x_scale",
+                "overlay_hud_offset_y_scale",
+                "overlay_hud_font_size_scale",
+            )
+        for name in surface_slider_names:
             surface_slider = getattr(self, name, None)
             if surface_slider is not None:
                 surface_slider.set_palette(
                     self._slider_palette(on_surface=True)
                 )
+        self._refresh_section_summaries()
         self._schedule_save()
 
     def _apply_slider_palette(self, widget: tk.Misc,
@@ -1109,39 +1240,24 @@ class JitterApp(tk.Tk):
             "disabled_text": p["muted"],
         }
 
-    def _navigation_palette(self) -> dict[str, str]:
-        p = self._palette
-        return {
-            "background": p["window"], "surface": p["surface"],
-            "surface_highlight": p["raised"], "border": p["border"],
-            "lens": p["accent"],
-            "lens_highlight": "#B8F6FF" if self._theme == "dark" else "#C7F8FF",
-            "text": p["text"], "selected_text": "#07252C",
-            "focus": p["focus"],
-        }
-
-    def _icon_palette(self) -> dict[str, str]:
-        p = self._palette
-        return {
-            "background": p["window"], "surface": p["raised"],
-            "surface_hover": (
-                "#2A3B52" if self._theme == "dark" else "#D6F5FA"
-            ),
-            "surface_pressed": p["surface"],
-            "surface_disabled": p["disabled_surface"], "border": p["border"],
-            "icon": p["text"], "icon_disabled": p["icon_disabled"],
-            "highlight": p["surface"], "focus": p["focus"],
-        }
-
     def _apply_combobox_popup_palette(self) -> None:
         p = self._palette
-        for combo in (
-            self.trigger_combo,
-            self.modifier_combo,
-            self.preset_combo,
-            self.ramp_mode_combo,
+        for name in (
+            "trigger_combo",
+            "modifier_combo",
+            "preset_combo",
+            "ramp_mode_combo",
+            "target_area_combo",
+            "capture_mode_combo",
+            "overlay_label_mode_combo",
+            "overlay_hud_corner_combo",
         ):
+            combo = getattr(self, name, None)
+            if combo is None:
+                continue
             try:
+                if not combo.winfo_exists():
+                    continue
                 popdown = self.tk.call(
                     "ttk::combobox::PopdownWindow", str(combo)
                 )
@@ -1183,10 +1299,10 @@ class JitterApp(tk.Tk):
         self.runtime_frame = ttk.Frame(
             self.console_workspace,
             style="Liquid.Surface.TFrame",
-            padding=(10, 8),
+            padding=(8, 6),
         )
         self.runtime_frame.grid(
-            row=2, column=0, sticky="ew", pady=(8, 0)
+            row=3, column=0, sticky="ew", pady=(4, 0)
         )
         self.runtime_frame.columnconfigure(0, weight=1, uniform="runtime_actions")
         self.runtime_frame.columnconfigure(1, weight=2)
@@ -1212,71 +1328,29 @@ class JitterApp(tk.Tk):
                                       command=self.emergency_stop)
         self.stop_button.grid(row=0, column=2, sticky="ew")
 
-    def _build_dashboard_header(
-        self,
-        parent: ttk.Frame,
-        eyebrow: str,
-        title: str,
-        subtitle: str,
-    ) -> tuple[ttk.Frame, ttk.Label]:
-        header = ttk.Frame(parent, style="Liquid.App.TFrame")
-        header.grid(
-            row=0, column=0, columnspan=2, sticky="ew", pady=(0, 14)
-        )
-        ttk.Label(
-            header,
-            text=eyebrow,
-            style="Liquid.SettingsEyebrow.TLabel",
-        ).pack(anchor="w")
-        title_label = ttk.Label(
-            header,
-            text=title,
-            style="Liquid.SettingsTitle.TLabel",
-            font=(FONT_FAMILY, 22, "bold"),
-        )
-        title_label.pack(anchor="w", pady=(2, 0))
-        ttk.Label(
-            header,
-            text=subtitle,
-            style="Liquid.Muted.TLabel",
-        ).pack(anchor="w", pady=(3, 0))
-        return header, title_label
-
-    def _build_trigger_card(self) -> None:
-        self.control_page.columnconfigure(0, weight=3, uniform="control")
-        self.control_page.columnconfigure(1, weight=2, uniform="control")
-        self.control_page.rowconfigure(1, weight=1)
-        self.control_header_frame, self.control_title_label = (
-            self._build_dashboard_header(
-                self.control_page,
-                "INPUT AND DEVICE SETUP",
-                "CONTROL",
-                "Choose how Jitter arms and which motion preset is active.",
-            )
-        )
+    def _build_control_section(self, parent: ttk.Frame) -> None:
+        self.control_frame = parent
+        parent.columnconfigure(0, weight=3, uniform="control")
+        parent.columnconfigure(1, weight=2, uniform="control")
         self.control_bindings_card = ttk.Frame(
-            self.control_page,
+            parent,
             style="Liquid.SettingsCard.TFrame",
             padding=(18, 16, 18, 18),
         )
         self.control_bindings_card.grid(
-            row=1, column=0, sticky="nsew", padx=(0, 6)
+            row=0, column=0, sticky="nsew", padx=(0, 6)
         )
         self.control_bindings_card.columnconfigure(0, weight=1, uniform="binding")
         self.control_bindings_card.columnconfigure(1, weight=1, uniform="binding")
-        self.control_bindings_card.rowconfigure(3, weight=1)
         self.control_device_card = ttk.Frame(
-            self.control_page,
+            parent,
             style="Liquid.SettingsCard.TFrame",
             padding=(16, 16, 16, 18),
         )
         self.control_device_card.grid(
-            row=1, column=1, sticky="nsew", padx=(6, 0)
+            row=0, column=1, sticky="nsew", padx=(6, 0)
         )
         self.control_device_card.columnconfigure(0, weight=1)
-        self.control_device_card.rowconfigure(3, weight=1)
-        # Preserve the established public seam for integrations.
-        self.control_frame = self.control_bindings_card
 
         ttk.Label(
             self.control_bindings_card,
@@ -1285,34 +1359,17 @@ class JitterApp(tk.Tk):
             font=(FONT_FAMILY, 12, "bold"),
         ).grid(row=0, column=0, columnspan=2, sticky="w")
         ttk.Label(
-            self.control_bindings_card,
-            text="Hold the trigger and optional modifier to begin movement.",
-            style="Liquid.CardBody.TLabel",
-            wraplength=330,
-            justify="left",
-        ).grid(
-            row=1, column=0, columnspan=2, sticky="ew", pady=(5, 14)
-        )
-
-        ttk.Label(
             self.control_device_card,
             text="DEVICE SETUP",
             style="Liquid.CardTitle.TLabel",
             font=(FONT_FAMILY, 12, "bold"),
         ).grid(row=0, column=0, sticky="w")
-        ttk.Label(
-            self.control_device_card,
-            text="Monitor Makcu and choose a motion preset.",
-            style="Liquid.CardBody.TLabel",
-            wraplength=205,
-            justify="left",
-        ).grid(row=1, column=0, sticky="ew", pady=(5, 14))
         device_row = ttk.Frame(
             self.control_device_card,
             style="Liquid.Metric.TFrame",
             padding=(12, 10),
         )
-        device_row.grid(row=2, column=0, sticky="ew")
+        device_row.grid(row=1, column=0, sticky="ew", pady=(8, 0))
         ttk.Label(
             device_row, text="MAKCU STATUS", style="Liquid.MetricLabel.TLabel"
         ).pack(anchor="w")
@@ -1347,13 +1404,13 @@ class JitterApp(tk.Tk):
             return combo
 
         self.trigger_combo = combo_card(
-            self.control_bindings_card, 2, 0, "Trigger", self.trigger_var,
+            self.control_bindings_card, 1, 0, "Trigger", self.trigger_var,
             ("Left", "Right", "Middle", "Mouse4", "Mouse5"), 10,
             padx=(0, 5),
         )
         self.trigger_combo.bind("<<ComboboxSelected>>", self._bindings_event)
         self.modifier_combo = combo_card(
-            self.control_bindings_card, 2, 1, "Modifier", self.modifier_var,
+            self.control_bindings_card, 1, 1, "Modifier", self.modifier_var,
             ("None", "Left", "Right", "Middle", "Mouse4", "Mouse5"), 10,
             padx=(5, 0),
         )
@@ -1362,7 +1419,7 @@ class JitterApp(tk.Tk):
             self.control_device_card,
             style="Liquid.DropdownField.TFrame",
         )
-        self.source_field.grid(row=3, column=0, sticky="ew", pady=(14, 0))
+        self.source_field.grid(row=2, column=0, sticky="ew", pady=(10, 0))
         self.source_field.columnconfigure(0, weight=1, uniform="sources")
         self.source_field.columnconfigure(1, weight=1, uniform="sources")
         ttk.Label(
@@ -1389,7 +1446,7 @@ class JitterApp(tk.Tk):
             row=1, column=1, sticky="ew", padx=(3, 0)
         )
         self.preset_combo = combo_card(
-            self.control_device_card, 4, 0, "Preset", self.preset_var,
+            self.control_device_card, 3, 0, "Preset", self.preset_var,
             self.preset_values, 14,
             pady=(10, 0),
         )
@@ -1401,132 +1458,32 @@ class JitterApp(tk.Tk):
             command=self.capture_hotkey,
         )
         self.hotkey_button.grid(
-            row=4, column=0, columnspan=2, sticky="sew", pady=(16, 0)
+            row=2, column=0, columnspan=2, sticky="sew", pady=(12, 0)
         )
 
-    def _build_navigation_actions(self) -> None:
-        self.navigation_actions = ttk.Frame(
-            self.navigation_rail, style="Liquid.Surface.TFrame"
+        self._build_control_actions(self.control_device_card)
+
+    def _build_control_actions(self, parent: ttk.Frame) -> None:
+        self.control_action_row = ttk.Frame(
+            parent, style="Liquid.Surface.TFrame"
         )
-        self.navigation_actions.pack(side="bottom", anchor="center")
-        self.reconnect_tooltip_text = "Reconnect Makcu"
-        self.test_tooltip_text = "Test Run 3s"
-        self._action_tooltip: tk.Toplevel | None = None
-        self.reconnect_button = LiquidIconButton(
-            self.navigation_actions,
-            icon="↻",
-            accessible_name=self.reconnect_tooltip_text,
+        self.control_action_row.grid(row=4, column=0, sticky="ew", pady=(10, 0))
+        self.control_action_row.columnconfigure(0, weight=1)
+        self.control_action_row.columnconfigure(1, weight=1)
+        self.reconnect_button = ttk.Button(
+            self.control_action_row,
+            text="Reconnect",
+            style="Liquid.Secondary.TButton",
             command=self.reconnect,
-            palette=self._icon_palette(),
         )
-        self.test_button = LiquidIconButton(
-            self.navigation_actions,
-            icon="▶",
-            accessible_name=self.test_tooltip_text,
+        self.test_button = ttk.Button(
+            self.control_action_row,
+            text="Test 3s",
+            style="Liquid.Primary.TButton",
             command=self.test_run,
-            palette=self._icon_palette(),
         )
-        self.theme_tooltip_text = (
-            "Switch to Light Mode" if self._theme == "dark"
-            else "Switch to Dark Mode"
-        )
-        self._theme_tooltip: tk.Toplevel | None = None
-        self.theme_button = LiquidIconButton(
-            self.navigation_actions,
-            icon="☀" if self._theme == "dark" else "☾",
-            accessible_name=self.theme_tooltip_text,
-            command=self.toggle_theme,
-            palette=self._icon_palette(),
-        )
-        self.reconnect_button.pack(side="left", padx=(0, 5))
-        self.test_button.pack(side="left", padx=(0, 5))
-        self.theme_button.pack(side="left")
-        self.reconnect_button.bind(
-            "<Enter>",
-            lambda event: self._show_action_tooltip(
-                event, self.reconnect_tooltip_text
-            ),
-            add="+",
-        )
-        self.test_button.bind(
-            "<Enter>",
-            lambda event: self._show_action_tooltip(
-                event, self.test_tooltip_text
-            ),
-            add="+",
-        )
-        self.reconnect_button.bind(
-            "<Leave>", self._hide_action_tooltip, add="+"
-        )
-        self.test_button.bind("<Leave>", self._hide_action_tooltip, add="+")
-        self.reconnect_button.bind(
-            "<FocusIn>",
-            lambda event: self._show_action_tooltip(
-                event, self.reconnect_tooltip_text
-            ),
-            add="+",
-        )
-        self.test_button.bind(
-            "<FocusIn>",
-            lambda event: self._show_action_tooltip(
-                event, self.test_tooltip_text
-            ),
-            add="+",
-        )
-        self.reconnect_button.bind(
-            "<FocusOut>", self._hide_action_tooltip, add="+"
-        )
-        self.test_button.bind("<FocusOut>", self._hide_action_tooltip, add="+")
-        self.theme_button.bind(
-            "<Enter>", self._show_theme_tooltip, add="+"
-        )
-        self.theme_button.bind(
-            "<Leave>", self._hide_theme_tooltip, add="+"
-        )
-        self.theme_button.bind(
-            "<FocusIn>", self._show_theme_tooltip, add="+"
-        )
-        self.theme_button.bind(
-            "<FocusOut>", self._hide_theme_tooltip, add="+"
-        )
-
-    def _show_action_tooltip(self, event: tk.Event, text: str) -> None:
-        self._hide_action_tooltip()
-        widget = getattr(event, "widget", None)
-        if widget is None or self._closing:
-            return
-        try:
-            if not widget.winfo_exists():
-                return
-            tooltip = tk.Toplevel(self)
-            tooltip.wm_overrideredirect(True)
-            tooltip.wm_geometry(
-                f"+{widget.winfo_rootx()}+{widget.winfo_rooty() - 26}"
-            )
-            p = self._palette
-            tk.Label(
-                tooltip,
-                text=text,
-                background=p["raised"],
-                foreground=p["text"],
-                borderwidth=1,
-                relief="solid",
-                font=SMALL_FONT,
-                padx=5,
-                pady=2,
-            ).pack()
-        except (tk.TclError, RuntimeError):
-            return
-        self._action_tooltip = tooltip
-
-    def _hide_action_tooltip(self, _event: tk.Event | None = None) -> None:
-        tooltip = getattr(self, "_action_tooltip", None)
-        if tooltip is not None:
-            try:
-                tooltip.destroy()
-            except tk.TclError:
-                pass
-            self._action_tooltip = None
+        self.reconnect_button.grid(row=0, column=0, sticky="ew", padx=(0, 3))
+        self.test_button.grid(row=0, column=1, sticky="ew", padx=(3, 0))
 
     def _numeric_control(self, parent: tk.Misc, row: int, column: int,
                          label: str, key: str, low: float, high: float,
@@ -1595,6 +1552,58 @@ class JitterApp(tk.Tk):
         setattr(self, f"ai_{key}_entry", entry)
         setattr(self, f"ai_{key}_scale", slider)
 
+    def _overlay_numeric_control(
+        self,
+        parent: tk.Misc,
+        *,
+        label: str,
+        key: str,
+        low: int,
+        high: int,
+    ) -> ttk.Frame:
+        block = ttk.Frame(parent, style="Liquid.Surface.TFrame")
+        block.columnconfigure(0, weight=1)
+        top = ttk.Frame(block, style="Liquid.Surface.TFrame")
+        top.grid(row=0, column=0, sticky="ew")
+        ttk.Label(
+            top,
+            text=label.upper(),
+            style="Liquid.CardBody.TLabel",
+        ).pack(side="left")
+        variable = getattr(self, f"overlay_{key}_var")
+        entry = ttk.Entry(
+            top,
+            textvariable=variable,
+            width=5,
+            justify="right",
+            style="Liquid.Entry.TEntry",
+        )
+        entry.pack(side="right")
+        slider = LiquidSlider(
+            block,
+            from_=low,
+            to=high,
+            resolution=1,
+            command=lambda value, name=key: self._overlay_scale_changed(
+                name, value
+            ),
+            palette=self._slider_palette(on_surface=True),
+        )
+        slider.set(float(variable.get()))
+        slider.grid(row=1, column=0, sticky="ew", pady=(3, 0))
+        entry.bind(
+            "<FocusOut>",
+            lambda _event, name=key: self._overlay_entry_changed(name),
+        )
+        entry.bind(
+            "<Return>",
+            lambda _event, name=key: self._overlay_entry_changed(name),
+        )
+        setattr(self, f"overlay_{key}_entry", entry)
+        setattr(self, f"overlay_{key}_scale", slider)
+        setattr(self, f"_overlay_{key}_bounds", (low, high))
+        return block
+
     def _dropdown_field(
         self,
         parent: tk.Misc,
@@ -1623,378 +1632,284 @@ class JitterApp(tk.Tk):
         combo.grid(row=1, column=0, sticky="ew")
         return field, combo
 
-    def _build_quick_card(self) -> None:
-        self.motion_page.columnconfigure(0, weight=3, uniform="motion")
-        self.motion_page.columnconfigure(1, weight=2, uniform="motion")
-        self.motion_page.rowconfigure(1, weight=1)
-        self.motion_header_frame, self.motion_title_label = (
-            self._build_dashboard_header(
-                self.motion_page,
-                "PAIRED PULSE ENGINE",
-                "MOTION",
-                "Tune movement strength, cadence, and acceleration feel.",
-            )
-        )
-        self.motion_scroll_frame = ttk.Frame(
-            self.motion_page, style="Liquid.App.TFrame"
-        )
-        self.motion_scroll_frame.grid(
-            row=1, column=0, columnspan=2, sticky="nsew"
-        )
-        self.motion_scroll_frame.columnconfigure(0, weight=1)
-        self.motion_scroll_frame.rowconfigure(0, weight=1)
-        self.motion_scroll_canvas = tk.Canvas(
-            self.motion_scroll_frame,
-            background=self._palette["window"],
-            highlightthickness=0,
-            borderwidth=0,
-            takefocus=False,
-        )
-        self.motion_scroll_canvas.grid(row=0, column=0, sticky="nsew")
-        self.motion_scrollbar = ttk.Scrollbar(
-            self.motion_scroll_frame,
-            orient="vertical",
-            style="Liquid.Vertical.TScrollbar",
-            command=self.motion_scroll_canvas.yview,
-        )
-        self.motion_scrollbar.grid(row=0, column=1, sticky="ns", padx=(6, 0))
-        self.motion_scroll_canvas.configure(
-            yscrollcommand=self.motion_scrollbar.set
-        )
-        self.motion_scroll_content = ttk.Frame(
-            self.motion_scroll_canvas, style="Liquid.App.TFrame"
-        )
-        self.motion_scroll_content.columnconfigure(
-            0, weight=3, uniform="motion"
-        )
-        self.motion_scroll_content.columnconfigure(
-            1, weight=2, uniform="motion"
-        )
-        self._motion_scroll_window = self.motion_scroll_canvas.create_window(
-            (0, 0), window=self.motion_scroll_content, anchor="nw"
-        )
-        self.motion_scroll_content.bind(
-            "<Configure>", self._refresh_motion_scrollregion, add="+"
-        )
-        self.motion_scroll_canvas.bind(
-            "<Configure>", self._resize_motion_scroll_content, add="+"
-        )
-        self.motion_scroll_canvas.bind(
-            "<MouseWheel>", self._scroll_motion_page, add="+"
-        )
-        self.motion_hero_card = ttk.Frame(
-            self.motion_scroll_content,
-            style="Liquid.SettingsCard.TFrame",
-            padding=(18, 16, 18, 18),
-        )
-        self.motion_hero_card.grid(
-            row=0, column=0, sticky="nsew", padx=(0, 6), pady=(0, 8)
-        )
+    def _build_jitter_section(self, parent: ttk.Frame) -> None:
+        self.quick_frame = parent
+        parent.columnconfigure(0, weight=1)
+        self.motion_hero_card = ttk.Frame(parent, style="Liquid.SettingsCard.TFrame",
+                                           padding=(18, 16, 18, 18))
+        self.motion_hero_card.grid(row=0, column=0, sticky="ew")
         self.motion_hero_card.columnconfigure(0, weight=1)
-        self.motion_hero_card.rowconfigure(2, weight=1)
-        self.motion_summary_card = ttk.Frame(
-            self.motion_scroll_content,
-            style="Liquid.SettingsCard.TFrame",
-            padding=(16, 16, 16, 18),
-        )
-        self.motion_summary_card.grid(
-            row=0, column=1, sticky="nsew", padx=(6, 0), pady=(0, 8)
-        )
-        self.motion_summary_card.columnconfigure(0, weight=1)
-        self.motion_summary_card.rowconfigure(2, weight=1)
-        # Preserve the established public seams for integrations.
-        self.quick_frame = self.motion_hero_card
-        ttk.Label(
-            self.motion_hero_card,
-            text="MOTION SHAPE",
-            style="Liquid.CardTitle.TLabel",
-            font=(FONT_FAMILY, 12, "bold"),
-        ).grid(row=0, column=0, sticky="w")
-        ttk.Label(
-            self.motion_hero_card,
-            text="Adjust the two-dimensional paired pulse sent to Makcu.",
-            style="Liquid.CardBody.TLabel",
-            wraplength=330,
-            justify="left",
-        ).grid(row=1, column=0, sticky="ew", pady=(5, 12))
-        self.quick_grid = ttk.Frame(
-            self.motion_hero_card, style="Liquid.Surface.TFrame"
-        )
-        self.quick_grid.grid(row=2, column=0, sticky="new")
+        ttk.Label(self.motion_hero_card, text="MOTION SHAPE",
+                  style="Liquid.CardTitle.TLabel",
+                  font=(FONT_FAMILY, 12, "bold")).grid(row=0, column=0, sticky="w")
+        self.quick_grid = ttk.Frame(self.motion_hero_card, style="Liquid.Surface.TFrame")
+        self.quick_grid.grid(row=1, column=0, sticky="ew", pady=(8, 0))
         self.quick_grid.columnconfigure(0, weight=1, uniform="quick")
         self.quick_grid.columnconfigure(1, weight=1, uniform="quick")
-        controls = (
-            ("Pulse Size", "pulse_size_px", 1, 8, 1),
-            ("Pulse Rate", "pulse_rate_hz", 20, 120, 1),
-        )
-        for index, control in enumerate(controls):
+        for index, control in enumerate((("Pulse Size", "pulse_size_px", 1, 8, 1),
+                                         ("Pulse Rate", "pulse_rate_hz", 20, 120, 1))):
             self._numeric_control(self.quick_grid, index // 2, index % 2, *control)
         ramp_row, self.ramp_mode_combo = self._dropdown_field(
-            self.quick_grid,
-            label="Ramp Mode",
-            variable=self.motion_vars["ramp_mode"],
-            values=RAMP_MODES,
-        )
-        ramp_row.grid(
-            row=1, column=0, columnspan=2, sticky="ew", padx=5, pady=(8, 4)
-        )
-
-        ttk.Label(
-            self.motion_summary_card,
-            text="LIVE SNAPSHOT",
-            style="Liquid.CardTitle.TLabel",
-            font=(FONT_FAMILY, 12, "bold"),
-        ).grid(row=0, column=0, sticky="w")
-        ttk.Label(
-            self.motion_summary_card,
-            text="The immutable profile currently shared with the mover.",
-            style="Liquid.CardBody.TLabel",
-            wraplength=200,
-            justify="left",
-        ).grid(row=1, column=0, sticky="ew", pady=(5, 12))
-        self.motion_summary_frame = ttk.Frame(
-            self.motion_summary_card,
-            style="Liquid.Surface.TFrame",
-            padding=0,
-        )
-        self.motion_summary_frame.grid(row=2, column=0, sticky="nsew")
-        self.motion_summary_frame.columnconfigure(0, weight=1, uniform="metric")
-        self.motion_summary_frame.columnconfigure(1, weight=1, uniform="metric")
-        size_metric = ttk.Frame(
-            self.motion_summary_frame,
-            style="Liquid.Metric.TFrame",
-            padding=(10, 6),
-        )
-        size_metric.grid(
-            row=0, column=0, columnspan=2, sticky="ew"
-        )
-        ttk.Label(
-            size_metric, text="PULSE SIZE", style="Liquid.MetricLabel.TLabel"
-        ).pack(anchor="w")
-        size_value = ttk.Frame(size_metric, style="Liquid.Metric.TFrame")
-        size_value.pack(anchor="w", pady=(3, 0))
-        self.motion_size_readout = ttk.Label(
-            size_value,
-            textvariable=self.motion_snapshot_size_var,
-            style="Liquid.MetricValue.TLabel",
-            font=(FONT_FAMILY, 22, "bold"),
-        )
-        self.motion_size_readout.pack(side="left")
-        ttk.Label(
-            size_value, text=" px", style="Liquid.MetricUnit.TLabel"
-        ).pack(side="left", pady=(8, 0))
-
-        rate_metric = ttk.Frame(
-            self.motion_summary_frame,
-            style="Liquid.Metric.TFrame",
-            padding=(10, 6),
-        )
-        rate_metric.grid(
-            row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0)
-        )
-        ttk.Label(
-            rate_metric, text="PULSE RATE", style="Liquid.MetricLabel.TLabel"
-        ).pack(anchor="w")
-        rate_value = ttk.Frame(rate_metric, style="Liquid.Metric.TFrame")
-        rate_value.pack(anchor="w", pady=(3, 0))
-        self.motion_rate_readout = ttk.Label(
-            rate_value,
-            textvariable=self.motion_snapshot_rate_var,
-            style="Liquid.MetricValue.TLabel",
-            font=(FONT_FAMILY, 22, "bold"),
-        )
-        self.motion_rate_readout.pack(side="left")
-        ttk.Label(
-            rate_value, text=" Hz", style="Liquid.MetricUnit.TLabel"
-        ).pack(side="left", pady=(8, 0))
-
-        ramp_metric = ttk.Frame(
-            self.motion_summary_frame,
-            style="Liquid.Metric.TFrame",
-            padding=(10, 6),
-        )
-        ramp_metric.grid(
-            row=2, column=0, columnspan=2, sticky="ew", pady=(6, 0)
-        )
-        ttk.Label(
-            ramp_metric, text="RAMP MODE", style="Liquid.MetricLabel.TLabel"
-        ).pack(anchor="w")
-        self.motion_ramp_readout = ttk.Label(
-            ramp_metric,
-            textvariable=self.motion_snapshot_ramp_var,
-            style="Liquid.MetricValue.TLabel",
-            font=(FONT_FAMILY, 13, "bold"),
-        )
-        self.motion_ramp_readout.pack(anchor="w", pady=(4, 0))
-
-        ttk.Label(
-            self.motion_summary_frame,
-            text="ACTIVE PROFILE",
-            style="Liquid.CardBody.TLabel",
-        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(10, 0))
-        self.motion_summary_label = ttk.Label(
-            self.motion_summary_frame,
-            textvariable=self.motion_summary_var,
-            style="Liquid.CardText.TLabel",
-            wraplength=200,
-            justify="left",
-        )
-        self.motion_summary_label.grid(
-            row=4, column=0, columnspan=2, sticky="ew", pady=(3, 0)
-        )
-
+            self.quick_grid, label="Ramp Mode",
+            variable=self.motion_vars["ramp_mode"], values=RAMP_MODES)
+        ramp_row.grid(row=1, column=0, columnspan=2, sticky="ew", padx=5, pady=(8, 4))
+    def _build_ai_section(self, parent: ttk.Frame) -> None:
         self.ai_settings_card = ttk.Frame(
-            self.motion_scroll_content,
-            style="Liquid.SettingsCard.TFrame",
-            padding=(18, 16, 18, 18),
+            parent, style="Liquid.SettingsCard.TFrame", padding=(18, 16, 18, 18)
         )
-        self.ai_settings_card.grid(
-            row=1, column=0, sticky="nsew", padx=(0, 6)
-        )
+        self.ai_settings_card.grid(row=0, column=0, sticky="ew")
         self.ai_settings_card.columnconfigure(0, weight=1)
         ttk.Label(
-            self.ai_settings_card,
-            text="AI AIM SETTINGS",
-            style="Liquid.CardTitle.TLabel",
-            font=(FONT_FAMILY, 12, "bold"),
+            self.ai_settings_card, text="AI AIM SETTINGS",
+            style="Liquid.CardTitle.TLabel", font=(FONT_FAMILY, 12, "bold"),
         ).grid(row=0, column=0, sticky="w")
-        ttk.Label(
-            self.ai_settings_card,
-            text="Tune target acceptance and smooth closed-loop movement.",
-            style="Liquid.CardBody.TLabel",
-            wraplength=330,
-            justify="left",
-        ).grid(row=1, column=0, sticky="ew", pady=(5, 12))
         self.ai_controls_grid = ttk.Frame(
             self.ai_settings_card, style="Liquid.Surface.TFrame"
         )
-        self.ai_controls_grid.grid(row=2, column=0, sticky="new")
+        self.ai_controls_grid.grid(row=1, column=0, sticky="ew", pady=(8, 0))
         self.ai_controls_grid.columnconfigure(0, weight=1, uniform="ai_controls")
         self.ai_controls_grid.columnconfigure(1, weight=1, uniform="ai_controls")
         for index, (key, spec) in enumerate(_AI_CONTROL_SPECS.items()):
             self._ai_numeric_control(
-                self.ai_controls_grid,
-                index // 2,
-                index % 2,
-                spec[0],
-                key,
-                spec[1],
-                spec[2],
-                spec[3],
+                self.ai_controls_grid, index // 2, index % 2, spec[0], key,
+                spec[1], spec[2], spec[3],
             )
+        self.ai_target_row = ttk.Frame(
+            self.ai_settings_card, style="Liquid.Surface.TFrame"
+        )
+        self.ai_target_row.grid(row=2, column=0, sticky="ew", pady=(12, 0))
+        self.ai_target_row.columnconfigure(0, weight=1, uniform="ai_target")
+        self.ai_target_row.columnconfigure(1, weight=1, uniform="ai_target")
         target_area_field, self.target_area_combo = self._dropdown_field(
-            self.ai_settings_card,
-            label="Target Area",
-            variable=self.target_area_var,
+            self.ai_target_row, label="Target Area", variable=self.target_area_var,
             values=tuple(_TARGET_AREA_VALUES),
         )
-        target_area_field.grid(
-            row=3, column=0, sticky="ew", padx=5, pady=(12, 0)
+        target_area_field.grid(row=0, column=0, sticky="ew", padx=5)
+        self.target_area_combo.bind("<<ComboboxSelected>>", self._target_area_changed)
+        capture_mode_field, self.capture_mode_combo = self._dropdown_field(
+            self.ai_target_row,
+            label="Capture Mode",
+            variable=self.capture_mode_var,
+            values=tuple(_CAPTURE_MODE_VALUES),
         )
-        self.target_area_combo.bind(
-            "<<ComboboxSelected>>", self._target_area_changed
+        capture_mode_field.grid(row=0, column=1, sticky="ew", padx=5)
+        self.capture_mode_combo.bind(
+            "<<ComboboxSelected>>", self._capture_mode_changed
         )
-
         self.ai_model_frame = ttk.Frame(
-            self.ai_settings_card,
-            style="Liquid.Surface.TFrame",
-            padding=(5, 10),
+            self.ai_settings_card, style="Liquid.Surface.TFrame", padding=(5, 10)
         )
-        self.ai_model_frame.grid(row=4, column=0, sticky="ew")
+        self.ai_model_frame.grid(row=3, column=0, sticky="ew")
         self.ai_model_frame.columnconfigure(0, weight=1)
         self.ai_model_frame.columnconfigure(1, weight=1)
         ttk.Label(
-            self.ai_model_frame,
-            text="MODEL",
-            style="Liquid.CardBody.TLabel",
+            self.ai_model_frame, text="MODEL", style="Liquid.CardBody.TLabel"
         ).grid(row=0, column=0, columnspan=2, sticky="w")
         ttk.Label(
-            self.ai_model_frame,
-            textvariable=self.ai_model_var,
-            style="Liquid.CardText.TLabel",
-            wraplength=300,
+            self.ai_model_frame, textvariable=self.ai_model_var,
+            style="Liquid.CardText.TLabel", wraplength=300,
         ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 6))
         self.model_browse_button = ttk.Button(
-            self.ai_model_frame,
-            text="Browse...",
-            style="Liquid.Secondary.TButton",
+            self.ai_model_frame, text="Browse...", style="Liquid.Secondary.TButton",
             command=self.browse_ai_model,
         )
         self.model_browse_button.grid(row=2, column=0, sticky="ew", padx=(0, 3))
         self.use_default_model_button = ttk.Button(
-            self.ai_model_frame,
-            text="Use Default",
-            style="Liquid.Secondary.TButton",
+            self.ai_model_frame, text="Use Default", style="Liquid.Secondary.TButton",
             command=self.use_default_ai_model,
         )
-        self.use_default_model_button.grid(
-            row=2, column=1, sticky="ew", padx=(3, 0)
-        )
+        self.use_default_model_button.grid(row=2, column=1, sticky="ew", padx=(3, 0))
+        self._build_ai_curve_card(parent)
 
-        self.ai_status_card = ttk.Frame(
-            self.motion_scroll_content,
+    def _build_overlay_section(self, parent: ttk.Frame) -> None:
+        self.overlay_custom_window: tk.Toplevel | None = None
+        self.overlay_control_card = ttk.Frame(
+            parent,
             style="Liquid.SettingsCard.TFrame",
-            padding=(16, 16, 16, 18),
+            padding=(18, 14, 18, 14),
         )
-        self.ai_status_card.grid(
-            row=1, column=1, sticky="nsew", padx=(6, 0)
+        self.overlay_control_card.grid(
+            row=0,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(8, 0),
         )
-        self.ai_status_card.columnconfigure(0, weight=1)
+        self.overlay_control_card.columnconfigure(0, weight=1)
         ttk.Label(
-            self.ai_status_card,
-            text="AI RUNTIME",
+            self.overlay_control_card,
+            text="OVERLAY VISIBILITY",
             style="Liquid.CardTitle.TLabel",
             font=(FONT_FAMILY, 12, "bold"),
         ).grid(row=0, column=0, sticky="w")
         ttk.Label(
-            self.ai_status_card,
-            text="Capture, provider, and inference health stay visible here.",
+            self.overlay_control_card,
+            text="Detection boxes and HUD are independent from motion sources.",
             style="Liquid.CardBody.TLabel",
-            wraplength=200,
-            justify="left",
-        ).grid(row=1, column=0, sticky="ew", pady=(5, 12))
-        for row, (label, variable) in enumerate((
-            ("STATUS", self.ai_status_var),
-            ("INFERENCE", self.ai_fps_var),
-            ("PROVIDER", self.ai_provider_var),
-            ("CADENCE", self.ai_cadence_var),
-            ("ZOOM", self.ai_zoom_var),
-        ), start=2):
-            metric = ttk.Frame(
-                self.ai_status_card,
-                style="Liquid.Metric.TFrame",
-                padding=(10, 8),
-            )
-            metric.grid(row=row, column=0, sticky="ew", pady=(0, 6))
-            ttk.Label(
-                metric, text=label, style="Liquid.MetricLabel.TLabel"
-            ).pack(anchor="w")
-            ttk.Label(
-                metric,
-                textvariable=variable,
-                style="Liquid.MetricValue.TLabel",
-                font=(FONT_FAMILY, 12, "bold"),
-                wraplength=190,
-                justify="left",
-            ).pack(anchor="w", pady=(4, 0))
+        ).grid(row=1, column=0, sticky="w", pady=(4, 0))
+
+        actions = ttk.Frame(
+            self.overlay_control_card,
+            style="Liquid.SettingsCard.TFrame",
+        )
+        actions.grid(row=0, column=1, rowspan=2, sticky="e", padx=(12, 0))
         self.overlay_button = ttk.Button(
-            self.ai_status_card,
+            actions,
             text="Overlay OFF",
             style="Liquid.Secondary.TButton",
-            command=lambda: self.toggle_overlay(),
+            command=self.toggle_overlay,
         )
-        self.overlay_button.grid(row=7, column=0, sticky="ew", pady=(4, 0))
+        self.overlay_button.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        self.overlay_customize_button = ttk.Button(
+            actions,
+            text="Customize Overlay",
+            style="Liquid.Secondary.TButton",
+            command=self.open_overlay_customizer,
+        )
+        self.overlay_customize_button.grid(
+            row=0,
+            column=1,
+            sticky="ew",
+            padx=(4, 0),
+        )
+
+    def _overlay_customizer_exists(self) -> bool:
+        window = self.overlay_custom_window
+        if window is None:
+            return False
+        try:
+            return bool(window.winfo_exists())
+        except tk.TclError:
+            return False
+
+    def _normalize_overlay_numeric_values(self) -> None:
+        defaults = {
+            "box_width": 2,
+            "hud_offset_x": 8,
+            "hud_offset_y": 8,
+            "hud_font_size": 10,
+        }
+        for key, default in defaults.items():
+            variable = getattr(self, f"overlay_{key}_var")
+            low, high = getattr(self, f"_overlay_{key}_bounds")
+            try:
+                value = int(variable.get())
+            except (TypeError, ValueError):
+                value = default
+            variable.set(str(max(low, min(high, value))))
+
+    def open_overlay_customizer(self) -> None:
+        if self._overlay_customizer_exists():
+            window = self.overlay_custom_window
+            window.deiconify()
+            window.lift()
+            window.focus_set()
+            return
+
+        self._normalize_overlay_numeric_values()
+        window = tk.Toplevel(self)
+        self.overlay_custom_window = window
+        try:
+            window.withdraw()
+            window.title("Customize Overlay")
+            window.geometry("760x520")
+            window.resizable(False, False)
+            window.transient(self)
+            window.configure(background=self._palette["window"])
+            window.protocol("WM_DELETE_WINDOW", self.close_overlay_customizer)
+            self._build_overlay_customizer_contents(window)
+            self._apply_combobox_popup_palette()
+            self._render_runtime_controls()
+            window.deiconify()
+            window.lift()
+            window.focus_set()
+        except Exception:
+            self.overlay_custom_window = None
+            try:
+                self._cancel_slider_callbacks(window)
+                window.destroy()
+            except Exception:
+                pass
+            raise
+
+    def close_overlay_customizer(self) -> None:
+        window = self.overlay_custom_window
+        self.overlay_custom_window = None
+        if window is None:
+            return
+        try:
+            self._cancel_slider_callbacks(window)
+            window.destroy()
+        except tk.TclError:
+            pass
+
+    def _build_overlay_customizer_contents(self, parent: tk.Toplevel) -> None:
+        self.overlay_custom_card = ttk.Frame(
+            parent,
+            style="Liquid.SettingsCard.TFrame",
+            padding=(18, 16, 18, 18),
+        )
+        self.overlay_custom_card.pack(
+            fill="both",
+            expand=True,
+            padx=12,
+            pady=12,
+        )
+        self.overlay_custom_card.columnconfigure(0, weight=1, uniform="overlay")
+        self.overlay_custom_card.columnconfigure(1, weight=1, uniform="overlay")
+        ttk.Label(
+            self.overlay_custom_card,
+            text="OVERLAY CUSTOM",
+            style="Liquid.CardTitle.TLabel",
+            font=(FONT_FAMILY, 12, "bold"),
+        ).grid(row=0, column=0, sticky="w")
+        overlay_header_actions = ttk.Frame(
+            self.overlay_custom_card,
+            style="Liquid.SettingsCard.TFrame",
+        )
+        overlay_header_actions.grid(row=0, column=1, sticky="e")
+        overlay_header_actions.columnconfigure(0, weight=1)
+        self.overlay_reset_button = ttk.Button(
+            overlay_header_actions,
+            text="Reset Overlay",
+            style="Liquid.Secondary.TButton",
+            command=self.reset_overlay_customization,
+        )
+        self.overlay_reset_button.grid(
+            row=0, column=0, sticky="ew"
+        )
+        ttk.Label(
+            self.overlay_custom_card,
+            text=(
+                "Box color and Head Boxes are saved; other controls reset "
+                "on launch."
+            ),
+            style="Liquid.CardBody.TLabel",
+        ).grid(
+            row=1,
+            column=0,
+            columnspan=2,
+            sticky="w",
+            pady=(5, 12),
+        )
+        detection = ttk.Frame(
+            self.overlay_custom_card,
+            style="Liquid.Surface.TFrame",
+        )
+        detection.grid(row=2, column=0, sticky="new", padx=(0, 6))
+        for column in range(2):
+            detection.columnconfigure(column, weight=1, uniform="boxes")
         self.overlay_color_button = ttk.Button(
-            self.ai_status_card,
+            detection,
             text=f"Box Color {self.overlay_color.upper()}",
             style="Liquid.Secondary.TButton",
             command=self.choose_overlay_color,
         )
         self.overlay_color_button.grid(
-            row=8, column=0, sticky="ew", pady=(6, 0)
+            row=0, column=0, columnspan=2, sticky="ew"
         )
         self.overlay_head_button = ttk.Button(
-            self.ai_status_card,
+            detection,
             text=(
                 "Head Boxes ON"
                 if self.overlay_head_visible else "Head Boxes OFF"
@@ -2006,19 +1921,154 @@ class JitterApp(tk.Tk):
             command=self.toggle_overlay_heads,
         )
         self.overlay_head_button.grid(
-            row=9, column=0, sticky="ew", pady=(6, 0)
+            row=1, column=0, sticky="ew", padx=(0, 4), pady=(8, 0)
+        )
+        self.overlay_player_button = ttk.Button(
+            detection,
+            text="Player Boxes ON",
+            style="Liquid.Primary.TButton",
+            command=self.toggle_overlay_players,
+        )
+        self.overlay_player_button.grid(
+            row=1, column=1, sticky="ew", padx=(4, 0), pady=(8, 0)
+        )
+        width_control = self._overlay_numeric_control(
+            detection,
+            label="Box Width",
+            key="box_width",
+            low=1,
+            high=8,
+        )
+        width_control.grid(
+            row=2, column=0, sticky="ew", padx=(0, 6), pady=(10, 0)
+        )
+        label_field, self.overlay_label_mode_combo = self._dropdown_field(
+            detection,
+            label="Box Label",
+            variable=self.overlay_label_mode_var,
+            values=("Off", "Class", "Class + Confidence"),
+        )
+        label_field.grid(
+            row=2,
+            column=1,
+            sticky="ew",
+            padx=(6, 0),
+            pady=(10, 0),
+        )
+        self.overlay_label_mode_combo.bind(
+            "<<ComboboxSelected>>",
+            lambda _event: self._overlay_style_changed(),
         )
 
-        self._build_ai_curve_card()
+        hud = ttk.Frame(
+            self.overlay_custom_card,
+            style="Liquid.Surface.TFrame",
+        )
+        hud.grid(row=2, column=1, sticky="new", padx=(6, 0))
+        hud.columnconfigure(0, weight=1)
+        hud.columnconfigure(1, weight=1)
+        corner_field, self.overlay_hud_corner_combo = self._dropdown_field(
+            hud,
+            label="HUD Corner",
+            variable=self.overlay_hud_corner_var,
+            values=("Top Left", "Top Right", "Bottom Left", "Bottom Right"),
+        )
+        corner_field.grid(row=0, column=0, columnspan=2, sticky="ew")
+        self.overlay_hud_corner_combo.bind(
+            "<<ComboboxSelected>>",
+            lambda _event: self._overlay_style_changed(),
+        )
+        for column, (label, key, low, high) in enumerate((
+            ("HUD X Offset", "hud_offset_x", 0, 500),
+            ("HUD Y Offset", "hud_offset_y", 0, 500),
+        )):
+            control = self._overlay_numeric_control(
+                hud,
+                label=label,
+                key=key,
+                low=low,
+                high=high,
+            )
+            control.grid(
+                row=1,
+                column=column,
+                sticky="ew",
+                padx=(0, 5) if column == 0 else (5, 0),
+                pady=(10, 0),
+            )
+        font_control = self._overlay_numeric_control(
+            hud,
+            label="HUD Font Size",
+            key="hud_font_size",
+            low=8,
+            high=24,
+        )
+        font_control.grid(
+            row=2,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(10, 0),
+        )
+        hud_actions = ttk.Frame(hud, style="Liquid.Surface.TFrame")
+        hud_actions.grid(
+            row=3, column=0, columnspan=2, sticky="ew", pady=(10, 0)
+        )
+        hud_actions.columnconfigure(0, weight=1)
+        hud_actions.columnconfigure(1, weight=1)
+        self.overlay_hud_button = ttk.Button(
+            hud_actions,
+            text="HUD ON",
+            style="Liquid.Primary.TButton",
+            command=self.toggle_overlay_hud,
+        )
+        self.overlay_hud_button.grid(
+            row=0, column=0, sticky="ew", padx=(0, 4)
+        )
+        self.overlay_hud_color_button = ttk.Button(
+            hud_actions,
+            text=f"HUD Color {self.overlay_hud_color.upper()}",
+            style="Liquid.Secondary.TButton",
+            command=self.choose_overlay_hud_color,
+        )
+        self.overlay_hud_color_button.grid(
+            row=0, column=1, sticky="ew", padx=(4, 0)
+        )
+        metrics = ttk.Frame(hud, style="Liquid.Surface.TFrame")
+        metrics.grid(
+            row=4, column=0, columnspan=2, sticky="ew", pady=(8, 0)
+        )
+        metrics.columnconfigure(0, weight=1)
+        metrics.columnconfigure(1, weight=1)
+        for index, (label, key) in enumerate((
+            ("FPS", "fps"),
+            ("Provider", "provider"),
+            ("Zoom", "zoom"),
+            ("Lock", "lock"),
+        )):
+            button = ttk.Button(
+                metrics,
+                text=f"{label} ON",
+                style="Liquid.Primary.TButton",
+                command=lambda name=key: self.toggle_overlay_hud_metric(name),
+            )
+            button.grid(
+                row=index // 2,
+                column=index % 2,
+                sticky="ew",
+                padx=(0, 4) if index % 2 == 0 else (4, 0),
+                pady=(0, 4) if index < 2 else (4, 0),
+            )
+            setattr(self, f"overlay_hud_{key}_button", button)
 
-    def _build_ai_curve_card(self) -> None:
+    def _build_ai_curve_card(self, parent: ttk.Frame) -> None:
         self.ai_curve_card = ttk.Frame(
-            self.motion_scroll_content,
+            parent,
             style="Liquid.SettingsCard.TFrame",
             padding=(18, 16, 18, 18),
         )
         self.ai_curve_card.grid(
-            row=2,
+            row=1,
             column=0,
             columnspan=2,
             sticky="ew",
@@ -2044,25 +2094,15 @@ class JitterApp(tk.Tk):
             command=self._reset_ai_curve,
         )
         self.ai_curve_reset_button.grid(row=0, column=1, sticky="e")
-        ttk.Label(
-            self.ai_curve_card,
-            text=(
-                "Shape how target distance becomes movement. Drag a node or "
-                "enter an exact percentage."
-            ),
-            style="Liquid.CardBody.TLabel",
-            justify="left",
-        ).grid(row=1, column=0, sticky="ew", pady=(5, 10))
-
         self.ai_curve_canvas = tk.Canvas(
             self.ai_curve_card,
-            height=176,
+            height=132,
             background=self._palette["raised"],
             highlightthickness=0,
             borderwidth=0,
             takefocus=False,
         )
-        self.ai_curve_canvas.grid(row=2, column=0, sticky="ew")
+        self.ai_curve_canvas.grid(row=1, column=0, sticky="ew", pady=(8, 0))
         self.ai_curve_canvas.bind(
             "<Configure>", self._redraw_ai_curve, add="+"
         )
@@ -2076,7 +2116,7 @@ class JitterApp(tk.Tk):
         exact = ttk.Frame(
             self.ai_curve_card, style="Liquid.SettingsCard.TFrame"
         )
-        exact.grid(row=3, column=0, sticky="ew", pady=(10, 0))
+        exact.grid(row=2, column=0, sticky="ew", pady=(10, 0))
         for column in range(5):
             exact.columnconfigure(column, weight=1, uniform="curve_exact")
         fixed = ttk.Frame(exact, style="Liquid.SettingsCard.TFrame")
@@ -2309,7 +2349,7 @@ class JitterApp(tk.Tk):
         self._replace_ai_snapshot(
             replace(self.get_ai_settings(), target_area=target_area)
         )
-        self._ai_targeting_revision = self.ai_service.reset_targeting()
+        self._invalidate_trigger_lock_epoch()
         self.ai_zoom_var.set("1.0×")
 
     def _curve_entry_changed(self, index: int) -> None:
@@ -2414,59 +2454,37 @@ class JitterApp(tk.Tk):
                 return
             raise
 
-    def _refresh_motion_scrollregion(
+    def _refresh_dashboard_scrollregion(
         self, _event: tk.Event | None = None
     ) -> None:
-        self.motion_scroll_canvas.configure(
-            scrollregion=self.motion_scroll_canvas.bbox("all")
+        self.dashboard_scroll_canvas.configure(
+            scrollregion=self.dashboard_scroll_canvas.bbox("all")
         )
 
-    def _resize_motion_scroll_content(self, event: tk.Event) -> None:
-        self.motion_scroll_canvas.itemconfigure(
-            self._motion_scroll_window,
+    def _resize_dashboard_content(self, event: tk.Event) -> None:
+        self.dashboard_scroll_canvas.itemconfigure(
+            self._dashboard_scroll_window,
             width=max(1, int(event.width)),
         )
 
-    def _scroll_motion_page(self, event: tk.Event) -> str:
+    def _scroll_dashboard(self, event: tk.Event) -> str | None:
+        widget = event.widget
+        while widget is not None:
+            if widget is self.dashboard_frame:
+                break
+            widget = getattr(widget, "master", None)
+        else:
+            return None
         delta = int(getattr(event, "delta", 0))
         if delta:
-            self.motion_scroll_canvas.yview_scroll(
+            self.dashboard_scroll_canvas.yview_scroll(
                 -1 if delta > 0 else 1, "units"
             )
         return "break"
 
-    def _build_settings_page(self) -> None:
-        self.settings_page.columnconfigure(0, weight=1)
-        self.settings_page.rowconfigure(1, weight=1)
-
-        self.settings_header_frame = ttk.Frame(
-            self.settings_page, style="Liquid.App.TFrame"
-        )
-        self.settings_header_frame.grid(
-            row=0, column=0, sticky="ew", pady=(0, 16)
-        )
-        ttk.Label(
-            self.settings_header_frame,
-            text="PERSONALIZE YOUR CONTROL DECK",
-            style="Liquid.SettingsEyebrow.TLabel",
-        ).pack(anchor="w")
-        self.settings_title_label = ttk.Label(
-            self.settings_header_frame,
-            text="SETTINGS",
-            style="Liquid.SettingsTitle.TLabel",
-            font=(FONT_FAMILY, 22, "bold"),
-        )
-        self.settings_title_label.pack(anchor="w", pady=(2, 0))
-        ttk.Label(
-            self.settings_header_frame,
-            text="Tune the audible feedback used by the global hotkey.",
-            style="Liquid.Muted.TLabel",
-        ).pack(anchor="w", pady=(3, 0))
-
-        self.settings_content = ttk.Frame(
-            self.settings_page, style="Liquid.App.TFrame"
-        )
-        self.settings_content.grid(row=1, column=0, sticky="nsew")
+    def _build_settings_section(self, parent: ttk.Frame) -> None:
+        parent.columnconfigure(0, weight=1)
+        self.settings_content = parent
         self.settings_content.columnconfigure(0, weight=3, uniform="settings")
         self.settings_content.columnconfigure(1, weight=2, uniform="settings")
         self.settings_content.rowconfigure(0, weight=1)
@@ -2487,21 +2505,10 @@ class JitterApp(tk.Tk):
             style="Liquid.CardTitle.TLabel",
             font=(FONT_FAMILY, 12, "bold"),
         ).grid(row=0, column=0, sticky="w")
-        ttk.Label(
-            self.sound_feedback_card,
-            text=(
-                "Hear a clean cue whenever the global hotkey arms or "
-                "disables Jitter."
-            ),
-            style="Liquid.CardBody.TLabel",
-            wraplength=300,
-            justify="left",
-        ).grid(row=1, column=0, sticky="ew", pady=(5, 16))
-
         sound_toggle_row = ttk.Frame(
             self.sound_feedback_card, style="Liquid.Surface.TFrame"
         )
-        sound_toggle_row.grid(row=2, column=0, sticky="ew")
+        sound_toggle_row.grid(row=1, column=0, sticky="ew", pady=(8, 0))
         sound_toggle_row.columnconfigure(0, weight=1)
         ttk.Label(
             sound_toggle_row,
@@ -2519,48 +2526,21 @@ class JitterApp(tk.Tk):
         self.sound_enabled_check.grid(row=0, column=1, sticky="e")
         ttk.Separator(
             self.sound_feedback_card, orient="horizontal"
-        ).grid(row=3, column=0, sticky="ew", pady=16)
+        ).grid(row=2, column=0, sticky="ew", pady=12)
 
-        volume_readout = ttk.Frame(
+        volume_control = ttk.Frame(
             self.sound_feedback_card, style="Liquid.Surface.TFrame"
         )
-        volume_readout.grid(row=4, column=0, sticky="ew")
-        volume_readout.columnconfigure(0, weight=1)
-        ttk.Label(
-            volume_readout,
-            text="OUTPUT LEVEL",
-            style="Liquid.CardBody.TLabel",
-        ).grid(row=0, column=0, columnspan=2, sticky="w")
-        volume_value = ttk.Frame(
-            volume_readout, style="Liquid.Surface.TFrame"
-        )
-        volume_value.grid(row=1, column=0, sticky="w", pady=(2, 0))
-        ttk.Label(
-            volume_value,
-            textvariable=self.sound_volume_var,
-            style="Liquid.Volume.TLabel",
-            font=(FONT_FAMILY, 30, "bold"),
-        ).pack(side="left")
-        ttk.Label(
-            volume_value,
-            text="%",
-            style="Liquid.VolumeUnit.TLabel",
-            font=(FONT_FAMILY, 12, "bold"),
-        ).pack(side="left", padx=(3, 0), pady=(13, 0))
+        volume_control.grid(row=4, column=0, sticky="ew", pady=(12, 0))
+        volume_control.columnconfigure(0, weight=1)
         self.sound_volume_entry = ttk.Entry(
-            volume_readout,
+            volume_control,
             textvariable=self.sound_volume_var,
             width=5,
             justify="right",
             style="Liquid.Entry.TEntry",
         )
-        self.sound_volume_entry.grid(row=1, column=1, sticky="e", padx=(12, 0))
-
-        volume_control = ttk.Frame(
-            self.sound_feedback_card, style="Liquid.Surface.TFrame"
-        )
-        volume_control.grid(row=5, column=0, sticky="ew", pady=(12, 0))
-        volume_control.columnconfigure(0, weight=1)
+        self.sound_volume_entry.grid(row=0, column=1, sticky="e", padx=(8, 0))
         self.sound_volume_scale = LiquidSlider(
             volume_control,
             from_=0,
@@ -2594,18 +2574,10 @@ class JitterApp(tk.Tk):
             style="Liquid.CardTitle.TLabel",
             font=(FONT_FAMILY, 12, "bold"),
         ).grid(row=0, column=0, sticky="w")
-        ttk.Label(
-            self.sound_preview_card,
-            text="Check both cues at the selected volume.",
-            style="Liquid.CardBody.TLabel",
-            wraplength=185,
-            justify="left",
-        ).grid(row=1, column=0, sticky="ew", pady=(4, 12))
-
         actions = ttk.Frame(
             self.sound_preview_card, style="Liquid.Surface.TFrame"
         )
-        actions.grid(row=2, column=0, sticky="new")
+        actions.grid(row=1, column=0, sticky="new", pady=(8, 0))
         actions.columnconfigure(0, weight=1)
         ttk.Label(
             actions,
@@ -2614,8 +2586,7 @@ class JitterApp(tk.Tk):
         ).grid(row=0, column=0, sticky="w")
         self.test_on_button = ttk.Button(
             actions,
-            text="\u25b6",
-            width=2,
+            text="Play Armed Cue",
             style="Liquid.CompactPrimary.TButton",
             command=lambda: self.preview_sound(True),
         )
@@ -2630,19 +2601,28 @@ class JitterApp(tk.Tk):
         ).grid(row=2, column=0, sticky="w")
         self.test_off_button = ttk.Button(
             actions,
-            text="\u25b6",
-            width=2,
+            text="Play Disabled Cue",
             style="Liquid.CompactSecondary.TButton",
             command=lambda: self.preview_sound(False),
         )
         self.test_off_button.grid(row=2, column=1, sticky="e")
+        self.theme_button = ttk.Button(
+            actions,
+            text=(
+                "Switch to Light Mode" if self._theme == "dark"
+                else "Switch to Dark Mode"
+            ),
+            style="Liquid.Secondary.TButton",
+            command=self.toggle_theme,
+        )
+        self.theme_button.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(8, 0))
 
     def _build_footer(self) -> None:
         self.footer_frame = ttk.Frame(
             self.console_workspace, style="Liquid.App.TFrame"
         )
         self.footer_frame.grid(
-            row=1, column=0, sticky="ew", pady=(6, 0)
+            row=2, column=0, sticky="ew", pady=(0, 2)
         )
         self.footer_label = ttk.Label(
             self.footer_frame,
@@ -2651,44 +2631,6 @@ class JitterApp(tk.Tk):
             anchor="w",
         )
         self.footer_label.pack(side="left", fill="x", expand=True)
-
-    def _show_theme_tooltip(self, _event: tk.Event | None = None) -> None:
-        self._hide_theme_tooltip()
-        if self._closing:
-            return
-        widget = getattr(_event, "widget", self.theme_button)
-        try:
-            if not widget.winfo_exists():
-                return
-            tooltip = tk.Toplevel(self)
-            tooltip.wm_overrideredirect(True)
-            tooltip.wm_geometry(
-                f"+{widget.winfo_rootx()}+{widget.winfo_rooty() - 26}"
-            )
-            p = self._palette
-            tk.Label(
-                tooltip,
-                text=self.theme_tooltip_text,
-                background=p["raised"],
-                foreground=p["text"],
-                borderwidth=1,
-                relief="solid",
-                font=SMALL_FONT,
-                padx=5,
-                pady=2,
-            ).pack()
-        except (tk.TclError, RuntimeError):
-            return
-        self._theme_tooltip = tooltip
-
-    def _hide_theme_tooltip(self, _event: tk.Event | None = None) -> None:
-        tooltip = getattr(self, "_theme_tooltip", None)
-        if tooltip is not None:
-            try:
-                tooltip.destroy()
-            except tk.TclError:
-                pass
-            self._theme_tooltip = None
 
     # ---- shell interactions -------------------------------------------
 
@@ -2701,7 +2643,7 @@ class JitterApp(tk.Tk):
         shell_left = self.shell.winfo_rootx()
         shell_top = self.shell.winfo_rooty()
         workspace = getattr(self, "console_workspace", None)
-        workspace_left = 176
+        workspace_left = 0
         if workspace is not None:
             workspace_left = max(
                 0, workspace.winfo_rootx() - shell_left
@@ -2728,8 +2670,8 @@ class JitterApp(tk.Tk):
 
         p = self._palette
         for name, attribute in (
-            ("rail", "navigation_rail"),
-            ("page", "page_host"),
+            ("topbar", "topbar_frame"),
+            ("dashboard", "dashboard_frame"),
             ("runtime", "runtime_frame"),
         ):
             panel = getattr(self, attribute, None)
@@ -2756,8 +2698,6 @@ class JitterApp(tk.Tk):
                 "floating-panel",
                 f"floating-panel-{name}",
             )
-            if name == "rail":
-                panel_tags += ("rail-surface",)
             self.shell.create_polygon(
                 points,
                 smooth=True,
@@ -2815,14 +2755,89 @@ class JitterApp(tk.Tk):
         self.connection_status_var.set(state)
         self.connection_label.configure(style=f"Liquid.Status{state}.TLabel")
         self._redraw_connection_indicator()
+        self._refresh_section_summaries()
 
-    def select_page(self, index: int) -> None:
-        selected = min(len(self.pages) - 1, max(0, int(index)))
-        for page in self.pages:
-            page.grid_remove()
-        self.pages[selected].grid()
-        if self.nav.selected_index != selected:
-            self.nav.select(selected, notify=False)
+    def _set_section_summary(
+        self, variable: tk.StringVar, *parts: object
+    ) -> None:
+        try:
+            variable.set(_compact_section_summary(*parts))
+        except (tk.TclError, RuntimeError, TypeError, ValueError):
+            logging.debug("Could not refresh dashboard summary", exc_info=True)
+
+    def _refresh_section_summaries(self) -> None:
+        if self._closing:
+            return
+        try:
+            source_names = [
+                name
+                for selected, name in (
+                    (self.jitter_selected, "Jitter"),
+                    (self.ai_selected, "AI Aim"),
+                )
+                if selected
+            ]
+            sources = " + ".join(source_names) or "No sources"
+            self._set_section_summary(
+                self.control_section_summary_var,
+                sources,
+                self.trigger_var.get(),
+                self.preset_var.get(),
+                self.connection_status_var.get(),
+            )
+
+            aim = self.get_ai_settings()
+            target = _TARGET_AREA_LABELS.get(aim.target_area, "Head")
+            capture_mode = _CAPTURE_MODE_LABELS[self._capture_mode]
+            strength = f"Strength {_display_value(aim.aim_strength)}"
+            ai_details = _compact_section_summary(target, capture_mode, strength)
+            model_limit = max(3, 72 - len(ai_details) - 3)
+            model = _compact_section_summary(
+                self.ai_model_var.get(), limit=model_limit
+            )
+            self._set_section_summary(
+                self.ai_section_summary_var,
+                model,
+                target,
+                capture_mode,
+                strength,
+            )
+
+            box_names = [
+                name
+                for visible, name in (
+                    (self.overlay_head_visible, "Head"),
+                    (self.overlay_player_visible, "Player"),
+                )
+                if visible
+            ]
+            boxes = " + ".join(box_names) or "No boxes"
+            hud = (
+                f"HUD {self.overlay_hud_corner_var.get()}"
+                if self.overlay_hud_visible else "HUD Off"
+            )
+            self._set_section_summary(
+                self.overlay_section_summary_var,
+                f"Overlay {'On' if self.overlay_visible else 'Off'}",
+                boxes,
+                hud,
+            )
+
+            try:
+                volume = max(0, min(100, int(self.sound_volume_var.get())))
+            except (TypeError, ValueError):
+                volume = self.config.sound_volume
+            self._set_section_summary(
+                self.settings_section_summary_var,
+                f"Sound {'On' if self.sound_enabled_var.get() else 'Off'}",
+                f"{volume}%",
+                self.theme_var.get().title(),
+            )
+        except (tk.TclError, RuntimeError, TypeError, ValueError):
+            logging.debug("Could not refresh dashboard summaries", exc_info=True)
+
+    def _set_test_button_enabled(self, enabled: bool) -> None:
+        self.test_button.configure(state="normal" if enabled else "disabled")
 
     # ---- runtime wiring -----------------------------------------------
 
@@ -2872,6 +2887,7 @@ class JitterApp(tk.Tk):
             volume=volume,
         )
         self._schedule_save()
+        self._refresh_section_summaries()
 
     def preview_sound(self, enabled: bool) -> None:
         self.apply_sound_settings()
@@ -2896,6 +2912,41 @@ class JitterApp(tk.Tk):
         finally:
             self._updating_ai_controls = False
         self._ai_changed(key)
+
+    def _overlay_scale_changed(self, key: str, value: str) -> None:
+        variable = getattr(self, f"overlay_{key}_var")
+        variable.set(str(int(round(float(value)))))
+        self._overlay_style_changed()
+
+    def _overlay_entry_changed(self, key: str) -> None:
+        variable = getattr(self, f"overlay_{key}_var")
+        low, high = getattr(self, f"_overlay_{key}_bounds")
+        defaults = {
+            "box_width": 2,
+            "hud_offset_x": 8,
+            "hud_offset_y": 8,
+            "hud_font_size": 10,
+        }
+        try:
+            value = int(variable.get())
+        except (TypeError, ValueError):
+            value = defaults[key]
+        value = max(low, min(high, value))
+        variable.set(str(value))
+        getattr(self, f"overlay_{key}_scale").set(value)
+        self._overlay_style_changed()
+
+    def _overlay_style_changed(self) -> None:
+        self.footer_var.set("Overlay customization updated")
+        self._refresh_section_summaries()
+
+    def _overlay_int_value(self, key: str, default: int) -> int:
+        try:
+            value = int(getattr(self, f"overlay_{key}_var").get())
+        except (TypeError, ValueError):
+            value = default
+        low, high = getattr(self, f"_overlay_{key}_bounds")
+        return max(low, min(high, value))
 
     def _bindings_event(self, _event: tk.Event | None = None) -> None:
         self.on_bindings_changed()
@@ -2950,6 +3001,10 @@ class JitterApp(tk.Tk):
     def _model_changes_unavailable(self) -> bool:
         return (
             self._model_switch is not None
+            or self._model_start_pending is not None
+            or self._capture_mode_switching
+            or self._capture_restart_pending
+            or self._deferred_ai_start is not None
             or self._motion_mode in _TEST_MOTION_MODES
             or self._closing
         )
@@ -2957,7 +3012,15 @@ class JitterApp(tk.Tk):
     def _render_model_controls(self) -> None:
         busy = self._model_switch is not None
         testing = self._motion_mode in _TEST_MOTION_MODES
-        disabled = busy or testing or self._closing
+        disabled = (
+            busy
+            or self._model_start_pending is not None
+            or self._capture_mode_switching
+            or self._capture_restart_pending
+            or self._deferred_ai_start is not None
+            or testing
+            or self._closing
+        )
         self.model_browse_button.configure(
             state="disabled" if disabled else "normal"
         )
@@ -2968,6 +3031,315 @@ class JitterApp(tk.Tk):
                 else "normal"
             )
         )
+        self._render_capture_mode_control()
+        self._refresh_section_summaries()
+
+    def _render_capture_mode_control(self) -> None:
+        disabled = (
+            self._closing
+            or self._motion_mode in _TEST_MOTION_MODES
+            or self._model_switch is not None
+            or self._capture_mode_switching
+            or self._capture_restart_pending
+            or self._deferred_ai_start is not None
+            or (self._ai_runtime_active and not self._ai_ready)
+        )
+        self.capture_mode_combo.configure(
+            state="disabled" if disabled else "readonly"
+        )
+
+    def _capture_mode_changed(self, _event: tk.Event | None = None) -> None:
+        label = self.capture_mode_var.get()
+        mode = _CAPTURE_MODE_VALUES.get(label)
+        try:
+            mode = validated_capture_mode(mode)
+        except ValueError:
+            self.capture_mode_var.set(_CAPTURE_MODE_LABELS[self._capture_mode])
+            return
+        guarded = (
+            self._closing
+            or self._motion_mode in _TEST_MOTION_MODES
+            or self._model_switch is not None
+            or self._model_start_pending is not None
+            or self._capture_mode_switching
+            or self._capture_restart_pending
+            or self._deferred_ai_start is not None
+            or (self._ai_runtime_active and not self._ai_ready)
+        )
+        if guarded:
+            self.capture_mode_var.set(_CAPTURE_MODE_LABELS[self._capture_mode])
+            self._render_capture_mode_control()
+            return
+        if mode == self._capture_mode:
+            return
+        self._capture_mode = mode
+        if not self._ai_runtime_active:
+            self._render_capture_mode_control()
+            self._refresh_section_summaries()
+            return
+
+        self._capture_mode_switching = True
+        self._capture_restart_pending = False
+        self.footer_var.set(f"Switching AI capture to {label}...")
+        self._render_model_controls()
+        self._refresh_section_summaries()
+        if not self._invalidate_trigger_lock_epoch():
+            try:
+                self._stop_ai_runtime("Capture mode change failed")
+            except Exception:
+                logging.exception(
+                    "AI runtime cleanup failed after targeting reset error"
+                )
+            self._fail_capture_mode_switch()
+            return
+        try:
+            self._stop_ai_runtime("Capture mode changed")
+        except Exception:
+            logging.exception("AI runtime stop failed during capture switch")
+            self._fail_capture_mode_switch()
+            return
+        self._ai_ready = False
+        self._ai_provider = None
+        self._ai_runtime_active = False
+        self._sync_adaptive_zoom_gate()
+        self.ai_status_var.set("Loading")
+        self.ai_fps_var.set("0 FPS")
+        self.ai_provider_var.set("No provider")
+        self.ai_zoom_var.set("1.0\N{MULTIPLICATION SIGN}")
+        self._capture_restart_pending = True
+        self._continue_capture_mode_switch()
+
+    def _continue_capture_mode_switch(self) -> None:
+        if not self._capture_restart_pending:
+            return
+        if self._closing or not self._ai_runtime_required():
+            self._capture_restart_pending = False
+            return
+        try:
+            worker_active = bool(self.ai_service.worker_active)
+        except Exception:
+            logging.exception("AI worker retirement probe failed")
+            self._fail_capture_mode_switch()
+            return
+        if worker_active:
+            return
+        self._capture_restart_pending = False
+        if self._start_ai_runtime(
+            "Capture mode changed",
+            capture_mode=self._capture_mode,
+            lifecycle_kind="capture",
+        ):
+            return
+        self._fail_capture_mode_switch()
+
+    def _continue_deferred_ai_start(self) -> None:
+        capture_transition = (
+            self._capture_mode_switching or self._capture_restart_pending
+        )
+        model_transition = (
+            self._model_start_pending is not None
+            or (
+                self._model_switch is not None
+                and self._model_switch.phase
+                in {"starting_candidate", "starting_rollback"}
+            )
+        )
+        if (
+            (capture_transition and model_transition)
+            or (
+                self._deferred_ai_start is not None
+                and (capture_transition or model_transition)
+            )
+        ):
+            logging.error("Conflicting AI lifecycle starts were rejected")
+            self._capture_restart_pending = False
+            self._capture_mode_switching = False
+            self._model_start_pending = None
+            self._deferred_ai_start = None
+            self._handle_ai_runtime_error("Conflicting AI lifecycle transitions")
+            return
+        self._continue_capture_mode_switch()
+        self._continue_model_start()
+        self._continue_general_ai_start()
+
+    def _general_ai_start_request(self, context: str) -> _DeferredAiStart:
+        is_test = (
+            self._motion_mode in {"test_ai_loading", "test_combined_loading"}
+            and self._test_pending_generation is not None
+        )
+        return _DeferredAiStart(
+            context=context,
+            model_choice=self._model_choice,
+            capture_mode=self._capture_mode,
+            lifecycle_epoch=self._ai_event_epoch,
+            kind="test" if is_test else "normal",
+            test_generation=(
+                self._test_pending_generation if is_test else None
+            ),
+        )
+
+    def _general_ai_start_is_current(self, request: _DeferredAiStart) -> bool:
+        if (
+            self._closing
+            or request.lifecycle_epoch != self._ai_event_epoch
+            or not self._ai_runtime_required()
+            or request.model_choice != self._model_choice
+            or request.capture_mode != self._capture_mode
+            or self._capture_mode_switching
+            or self._capture_restart_pending
+            or self._model_switch is not None
+            or self._model_start_pending is not None
+        ):
+            return False
+        if request.kind == "test":
+            return (
+                request.test_generation is not None
+                and request.test_generation == self._test_pending_generation
+                and self._motion_mode
+                in {"test_ai_loading", "test_combined_loading"}
+                and self._test_start_pending
+            )
+        return request.kind == "normal" and self._motion_mode is None
+
+    def _request_general_ai_start(self, context: str) -> bool:
+        request = self._general_ai_start_request(context)
+        try:
+            worker_active = bool(self.ai_service.worker_active)
+        except Exception:
+            logging.exception("AI worker retirement probe failed")
+            return False
+        if worker_active:
+            self._deferred_ai_start = request
+            self._ai_ready = False
+            self._ai_provider = None
+            self._ai_runtime_active = False
+            self._sync_adaptive_zoom_gate()
+            self.ai_status_var.set("Loading")
+            self.ai_fps_var.set("0 FPS")
+            self.ai_provider_var.set("No provider")
+            self.ai_zoom_var.set("1.0\N{MULTIPLICATION SIGN}")
+            self._render_model_controls()
+            return True
+        return self._start_ai_runtime(
+            request.context,
+            model_choice=request.model_choice,
+            capture_mode=request.capture_mode,
+            lifecycle_kind=request.kind,
+            test_generation=request.test_generation,
+        )
+
+    def _continue_general_ai_start(self) -> None:
+        request = self._deferred_ai_start
+        if request is None:
+            return
+        if not self._general_ai_start_is_current(request):
+            self._deferred_ai_start = None
+            self._render_model_controls()
+            return
+        try:
+            worker_active = bool(self.ai_service.worker_active)
+        except Exception:
+            logging.exception("AI worker retirement probe failed")
+            self._deferred_ai_start = None
+            self._handle_deferred_ai_start_failure(request)
+            return
+        if worker_active:
+            return
+        self._deferred_ai_start = None
+        started = self._start_ai_runtime(
+            request.context,
+            model_choice=request.model_choice,
+            capture_mode=request.capture_mode,
+            lifecycle_kind=request.kind,
+            test_generation=request.test_generation,
+        )
+        if not started:
+            self._handle_deferred_ai_start_failure(request)
+
+    def _handle_deferred_ai_start_failure(
+        self, request: _DeferredAiStart
+    ) -> None:
+        if (
+            request.kind == "test"
+            and request.test_generation == self._test_pending_generation
+        ):
+            self._abort_test_run("AI Test Run could not start")
+            return
+        self._hide_overlay_after_ai_failure()
+        if self.master_armed and self.ai_selected:
+            self._handle_ai_start_failure()
+        else:
+            self._render_runtime_controls()
+            self.footer_var.set("Overlay could not start AI detection")
+
+    def _continue_model_start(self) -> None:
+        pending = self._model_start_pending
+        if pending is None:
+            return
+        kind, token = pending
+        switch = self._model_switch
+        expected_phase = {
+            "candidate": "starting_candidate",
+            "rollback": "starting_rollback",
+        }.get(kind)
+        if (
+            expected_phase is None
+            or switch is None
+            or switch.token != token
+            or switch.phase != expected_phase
+        ):
+            self._model_start_pending = None
+            return
+        if self._closing or not self._ai_runtime_required():
+            self._model_start_pending = None
+            return
+        try:
+            worker_active = bool(self.ai_service.worker_active)
+        except Exception:
+            logging.exception("AI worker retirement probe failed")
+            self._model_start_pending = None
+            if kind == "candidate":
+                self._start_model_rollback(
+                    switch, "candidate retirement probe failed"
+                )
+            else:
+                self._handle_ai_runtime_error(
+                    "AI model rollback retirement probe failed"
+                )
+            return
+        if worker_active:
+            return
+        self._model_start_pending = None
+        choice = switch.candidate if kind == "candidate" else switch.previous
+        context = "Model switch" if kind == "candidate" else "Model rollback"
+        if self._start_ai_runtime(
+            context,
+            model_choice=choice,
+            capture_mode=self._capture_mode,
+            lifecycle_kind=f"model_{kind}",
+            lifecycle_token=token,
+        ):
+            return
+        if kind == "candidate":
+            self._start_model_rollback(switch, "candidate startup failed")
+        else:
+            self._handle_ai_runtime_error("AI model rollback failed")
+
+    def _fail_capture_mode_switch(self) -> None:
+        self._capture_restart_pending = False
+        self._deferred_ai_start = None
+        self._capture_mode_switching = False
+        self._ai_ready = False
+        self._ai_provider = None
+        self._ai_runtime_active = False
+        self._sync_adaptive_zoom_gate()
+        self.ai_status_var.set("Error")
+        self.ai_fps_var.set("0 FPS")
+        self.ai_provider_var.set("No provider")
+        self.ai_zoom_var.set("1.0\N{MULTIPLICATION SIGN}")
+        self._hide_overlay_after_ai_failure()
+        self._handle_ai_start_failure()
+        self._render_runtime_controls()
 
     def browse_ai_model(self) -> None:
         if self._motion_mode in _TEST_MOTION_MODES:
@@ -3006,6 +3378,15 @@ class JitterApp(tk.Tk):
         self._begin_model_switch(bundled_model_choice())
 
     def _begin_model_switch(self, candidate: ModelChoice) -> None:
+        if (
+            self._model_start_pending is not None
+            or self._capture_mode_switching
+            or self._capture_restart_pending
+            or self._deferred_ai_start is not None
+        ):
+            self.footer_var.set("Wait for the current AI transition to finish")
+            self._render_model_controls()
+            return
         if candidate.path == self._model_choice.path:
             self.footer_var.set(f"Using model: {candidate.display_name}")
             return
@@ -3028,7 +3409,7 @@ class JitterApp(tk.Tk):
             self._set_runtime_state(
                 "armed" if self.master_armed else "disabled"
             )
-        self._ai_targeting_revision = self.ai_service.reset_targeting()
+        self._invalidate_trigger_lock_epoch()
         self.ai_zoom_var.set("1.0\N{MULTIPLICATION SIGN}")
         if self._ai_runtime_active:
             self._stop_ai_runtime("Model switch")
@@ -3045,6 +3426,7 @@ class JitterApp(tk.Tk):
             )
 
     def _finish_model_switch(self, choice: ModelChoice, footer: str) -> None:
+        self._model_start_pending = None
         self._model_choice = choice
         self._model_switch = None
         self._normalize_idle_ai_runtime_status()
@@ -3064,6 +3446,7 @@ class JitterApp(tk.Tk):
         switch = self._model_switch
         if switch is None:
             return
+        self._model_start_pending = None
         self._model_switch_token += 1
         try:
             self.model_validator.cancel()
@@ -3124,10 +3507,8 @@ class JitterApp(tk.Tk):
         starting = replace(switch, phase="starting_candidate")
         self._model_switch = starting
         self._render_model_controls()
-        if not self._start_ai_runtime(
-            "Model switch", model_choice=starting.candidate
-        ):
-            self._start_model_rollback(starting, "candidate startup failed")
+        self._model_start_pending = ("candidate", starting.token)
+        self._continue_model_start()
 
     def _start_model_rollback(
         self,
@@ -3166,11 +3547,8 @@ class JitterApp(tk.Tk):
         self._model_switch = rollback
         self.ai_model_var.set(f"Loading · {rollback.previous.display_name}")
         self._render_model_controls()
-        if self._start_ai_runtime(
-            "Model rollback", model_choice=rollback.previous
-        ):
-            return
-        self._handle_ai_runtime_error("AI model rollback failed")
+        self._model_start_pending = ("rollback", rollback.token)
+        self._continue_model_start()
 
     def _render_runtime_controls(self) -> None:
         testing = self._motion_mode in _TEST_MOTION_MODES
@@ -3200,20 +3578,57 @@ class JitterApp(tk.Tk):
                 if self.overlay_visible else "Liquid.Secondary.TButton"
             ),
         )
-        self.overlay_color_button.configure(
-            text=f"Box Color {self.overlay_color.upper()}"
-        )
-        self.overlay_head_button.configure(
-            text=(
-                "Head Boxes ON"
-                if self.overlay_head_visible else "Head Boxes OFF"
-            ),
-            style=(
-                "Liquid.Primary.TButton"
-                if self.overlay_head_visible else "Liquid.Secondary.TButton"
-            ),
-        )
+        if self._overlay_customizer_exists():
+            self.overlay_color_button.configure(
+                text=f"Box Color {self.overlay_color.upper()}"
+            )
+            self.overlay_head_button.configure(
+                text=(
+                    "Head Boxes ON"
+                    if self.overlay_head_visible else "Head Boxes OFF"
+                ),
+                style=(
+                    "Liquid.Primary.TButton"
+                    if self.overlay_head_visible else "Liquid.Secondary.TButton"
+                ),
+            )
+            self.overlay_player_button.configure(
+                text=(
+                    "Player Boxes ON"
+                    if self.overlay_player_visible else "Player Boxes OFF"
+                ),
+                style=(
+                    "Liquid.Primary.TButton"
+                    if self.overlay_player_visible else "Liquid.Secondary.TButton"
+                ),
+            )
+            self.overlay_hud_button.configure(
+                text=f"HUD {'ON' if self.overlay_hud_visible else 'OFF'}",
+                style=(
+                    "Liquid.Primary.TButton"
+                    if self.overlay_hud_visible else "Liquid.Secondary.TButton"
+                ),
+            )
+            self.overlay_hud_color_button.configure(
+                text=f"HUD Color {self.overlay_hud_color.upper()}"
+            )
+            for label, key in (
+                ("FPS", "fps"),
+                ("Provider", "provider"),
+                ("Zoom", "zoom"),
+                ("Lock", "lock"),
+            ):
+                enabled = getattr(self, f"overlay_hud_show_{key}")
+                getattr(self, f"overlay_hud_{key}_button").configure(
+                    text=f"{label} {'ON' if enabled else 'OFF'}",
+                    style=(
+                        "Liquid.Primary.TButton"
+                        if enabled else "Liquid.Secondary.TButton"
+                    ),
+                )
         self._render_model_controls()
+        self._render_capture_mode_control()
+        self._refresh_section_summaries()
 
     def choose_overlay_color(self) -> None:
         try:
@@ -3244,6 +3659,73 @@ class JitterApp(tk.Tk):
         state = "shown" if self.overlay_head_visible else "hidden"
         self.footer_var.set(f"Overlay head boxes {state}")
 
+    def toggle_overlay_players(self) -> None:
+        self.overlay_player_visible = not self.overlay_player_visible
+        self._render_runtime_controls()
+        state = "shown" if self.overlay_player_visible else "hidden"
+        self.footer_var.set(f"Overlay player boxes {state}")
+
+    def toggle_overlay_hud(self) -> None:
+        self.overlay_hud_visible = not self.overlay_hud_visible
+        self._render_runtime_controls()
+        self._overlay_style_changed()
+
+    def toggle_overlay_hud_metric(self, key: str) -> None:
+        attribute = f"overlay_hud_show_{key}"
+        setattr(self, attribute, not getattr(self, attribute))
+        self._render_runtime_controls()
+        self._overlay_style_changed()
+
+    def choose_overlay_hud_color(self) -> None:
+        try:
+            choice = self._color_chooser(
+                initialcolor=self.overlay_hud_color,
+                parent=self,
+                title="Overlay HUD Color",
+            )
+        except tk.TclError:
+            logging.exception("Overlay HUD color chooser failed")
+            self.footer_var.set("Could not open the color chooser")
+            return
+        selected = (
+            choice[1]
+            if isinstance(choice, tuple) and len(choice) > 1 else None
+        )
+        if selected is None:
+            return
+        self.overlay_hud_color = normalize_overlay_color(selected)
+        self._render_runtime_controls()
+        self._overlay_style_changed()
+
+    def reset_overlay_customization(self) -> None:
+        defaults = OverlayStyle()
+        self.overlay_color = defaults.box_color
+        self.overlay_head_visible = defaults.show_heads
+        self.overlay_player_visible = defaults.show_players
+        self.overlay_box_width_var.set(str(defaults.box_width))
+        self.overlay_label_mode_var.set("Off")
+        self.overlay_hud_visible = defaults.hud_visible
+        self.overlay_hud_corner_var.set("Top Left")
+        self.overlay_hud_offset_x_var.set(str(defaults.hud_offset_x))
+        self.overlay_hud_offset_y_var.set(str(defaults.hud_offset_y))
+        self.overlay_hud_font_size_var.set(str(defaults.hud_font_size))
+        self.overlay_hud_color = defaults.hud_color
+        self.overlay_hud_show_fps = defaults.hud_show_fps
+        self.overlay_hud_show_provider = defaults.hud_show_provider
+        self.overlay_hud_show_zoom = defaults.hud_show_zoom
+        self.overlay_hud_show_lock = defaults.hud_show_lock
+        for key in (
+            "box_width",
+            "hud_offset_x",
+            "hud_offset_y",
+            "hud_font_size",
+        ):
+            value = int(getattr(self, f"overlay_{key}_var").get())
+            getattr(self, f"overlay_{key}_scale").set(value)
+        self._render_runtime_controls()
+        self._schedule_save()
+        self.footer_var.set("Overlay customization reset")
+
     def toggle_master(self) -> None:
         if self._motion_mode in _TEST_MOTION_MODES:
             self.footer_var.set("Test Run is active; use STOP to cancel")
@@ -3259,6 +3741,7 @@ class JitterApp(tk.Tk):
     def set_master(self, armed: bool) -> None:
         armed = bool(armed)
         if not armed:
+            self._retire_owned_trigger_lock_epoch()
             self.master_armed = False
             self._normal_motion_started = False
             self.trigger_gate.clear()
@@ -3311,6 +3794,7 @@ class JitterApp(tk.Tk):
             self.footer_var.set("Test Run is active; use STOP to cancel")
             return
         old_sources = self._selected_sources()
+        self._end_trigger_lock_epoch()
         if source_name == "jitter":
             self.jitter_selected = not self.jitter_selected
         elif source_name == "ai":
@@ -3373,7 +3857,21 @@ class JitterApp(tk.Tk):
         if required and switch is not None and switch.phase == "validating":
             self._cancel_model_switch(f"{context}: AI demand started")
         if required and not self._ai_runtime_active:
-            started = self._start_ai_runtime(context)
+            if self._capture_restart_pending or self._model_start_pending:
+                self._continue_deferred_ai_start()
+                return bool(
+                    self._capture_restart_pending
+                    or self._model_start_pending
+                    or self._ai_runtime_active
+                )
+            if self._deferred_ai_start is not None:
+                self._deferred_ai_start = self._general_ai_start_request(context)
+                self._continue_deferred_ai_start()
+                return bool(
+                    self._deferred_ai_start is not None
+                    or self._ai_runtime_active
+                )
+            started = self._request_general_ai_start(context)
             if not started:
                 self._hide_overlay_after_ai_failure()
             return started
@@ -3388,6 +3886,10 @@ class JitterApp(tk.Tk):
                     "AI runtime stop failed during %s", context
                 )
             finally:
+                self._capture_restart_pending = False
+                self._model_start_pending = None
+                self._deferred_ai_start = None
+                self._capture_mode_switching = False
                 self._ai_ready = False
                 self._ai_provider = None
                 self._ai_runtime_active = False
@@ -3407,6 +3909,7 @@ class JitterApp(tk.Tk):
         )
 
     def _hide_overlay_fail_closed(self, failure_message: str) -> None:
+        self._last_overlay_render_key = None
         try:
             self.overlay.hide()
         except Exception:
@@ -3430,6 +3933,7 @@ class JitterApp(tk.Tk):
             self.footer_var.set("Overlay disabled")
             return
 
+        self._last_overlay_render_key = None
         try:
             self.overlay.show()
         except OverlaySetupError:
@@ -3445,6 +3949,7 @@ class JitterApp(tk.Tk):
             self.footer_var.set("Overlay unavailable; check app.log")
             return
 
+        self._last_overlay_render_key = None
         self.overlay_visible = True
         self._render_runtime_controls()
         if not self._reconcile_ai_runtime("Overlay enabled"):
@@ -3459,23 +3964,91 @@ class JitterApp(tk.Tk):
         if self._closing or not self.overlay_visible:
             return
         try:
-            self.overlay.render(
-                self.ai_service.latest_detection_snapshot(),
-                now=self._clock(),
-                color=self.overlay_color,
-                show_heads=self.overlay_head_visible,
+            snapshot = self.ai_service.latest_detection_snapshot()
+            now = self._clock()
+            runtime = (
+                self.ai_fps_var.get(),
+                self.ai_provider_var.get(),
+                self.ai_zoom_var.get(),
             )
+            style = self._overlay_style_snapshot()
+            if snapshot is None:
+                snapshot_key = ("none",)
+            elif hasattr(snapshot, "sequence") and hasattr(
+                snapshot,
+                "captured_at",
+            ):
+                is_fresh = (
+                    max(0.0, now - snapshot.captured_at)
+                    <= MAX_FRAME_AGE_S
+                )
+                snapshot_key = (
+                    snapshot.sequence,
+                    snapshot.captured_at,
+                    is_fresh,
+                )
+            else:
+                snapshot_key = ("opaque", id(snapshot))
+            render_key = (snapshot_key, runtime, style)
+            if render_key != self._last_overlay_render_key:
+                self.overlay.render(
+                    snapshot,
+                    now=now,
+                    color=self.overlay_color,
+                    show_heads=self.overlay_head_visible,
+                    runtime=runtime,
+                    style=style,
+                )
+                self._last_overlay_render_key = render_key
         except Exception:
             logging.exception("Detection overlay rendering failed")
             self._disable_overlay_after_error()
             return
         try:
-            self._overlay_after_id = self.after(16, self._poll_overlay)
+            self._overlay_after_id = self.after(
+                self._overlay_poll_delay_ms,
+                self._poll_overlay,
+            )
         except (tk.TclError, RuntimeError):
             self._overlay_after_id = None
 
+    def _overlay_style_snapshot(self) -> OverlayStyle:
+        label_modes = {
+            "Off": "off",
+            "Class": "class",
+            "Class + Confidence": "class_confidence",
+        }
+        hud_corners = {
+            "Top Left": "top_left",
+            "Top Right": "top_right",
+            "Bottom Left": "bottom_left",
+            "Bottom Right": "bottom_right",
+        }
+        return OverlayStyle(
+            box_color=self.overlay_color,
+            show_heads=self.overlay_head_visible,
+            show_players=self.overlay_player_visible,
+            box_width=self._overlay_int_value("box_width", 2),
+            label_mode=label_modes.get(
+                self.overlay_label_mode_var.get(), "off"
+            ),
+            hud_corner=hud_corners.get(
+                self.overlay_hud_corner_var.get(), "top_left"
+            ),
+            hud_offset_x=self._overlay_int_value("hud_offset_x", 8),
+            hud_offset_y=self._overlay_int_value("hud_offset_y", 8),
+            hud_font_size=self._overlay_int_value("hud_font_size", 10),
+            hud_color=self.overlay_hud_color,
+            hud_visible=self.overlay_hud_visible,
+            hud_show_fps=self.overlay_hud_show_fps,
+            hud_show_provider=self.overlay_hud_show_provider,
+            hud_show_zoom=self.overlay_hud_show_zoom,
+            hud_show_lock=self.overlay_hud_show_lock,
+        )
+
     def _disable_overlay_after_error(self) -> None:
         self.overlay_visible = False
+        self._last_overlay_render_key = None
         self._cancel_after("_overlay_after_id")
         try:
             self.overlay.close()
@@ -3490,24 +4063,46 @@ class JitterApp(tk.Tk):
         context: str,
         *,
         model_choice: ModelChoice | None = None,
+        capture_mode: str | None = None,
+        lifecycle_kind: str = "normal",
+        lifecycle_token: int | None = None,
+        test_generation: int | None = None,
     ) -> bool:
         choice = model_choice or self._model_choice
+        generation_capture_mode = (
+            self._capture_mode if capture_mode is None else capture_mode
+        )
+        request = _DeferredAiStart(
+            context=context,
+            model_choice=choice,
+            capture_mode=generation_capture_mode,
+            lifecycle_epoch=self._ai_event_epoch,
+            kind=lifecycle_kind,
+            test_generation=test_generation,
+        )
         if not self._ai_runtime_active:
             self._ai_event_epoch += 1
+        event_epoch = self._ai_event_epoch
         self._ai_runtime_active = True
+        self._active_ai_lifecycle = None
         self._sync_adaptive_zoom_gate()
+        self._render_capture_mode_control()
         try:
             generation = self.ai_service.start(
                 self.get_ai_settings,
                 self.get_adaptive_zoom_gate,
+                self.get_trigger_lock_epoch,
                 model_path=choice.path,
+                capture_mode=generation_capture_mode,
             )
         except Exception:
             logging.exception("AI runtime could not start during %s", context)
             self._ai_ready = False
             self._ai_provider = None
             self._ai_runtime_active = False
+            self._active_ai_lifecycle = None
             self._sync_adaptive_zoom_gate()
+            self._render_capture_mode_control()
             self.ai_status_var.set("Error")
             self.ai_fps_var.set("0 FPS")
             self.ai_provider_var.set("No provider")
@@ -3517,15 +4112,27 @@ class JitterApp(tk.Tk):
             self._ai_ready = False
             self._ai_provider = None
             self._ai_runtime_active = False
+            self._active_ai_lifecycle = None
             self._sync_adaptive_zoom_gate()
+            self._render_capture_mode_control()
             self.ai_status_var.set("Error")
             self.ai_fps_var.set("0 FPS")
             self.ai_provider_var.set("No provider")
             return False
+        self._active_ai_lifecycle = _ActiveAiLifecycle(
+            request=request,
+            generation=generation,
+            event_epoch=event_epoch,
+            model_token=lifecycle_token,
+        )
         return True
 
     def _handle_ai_start_failure(self) -> None:
         """Fail closed to Jitter when normal armed AI demand cannot start."""
+        self._retire_owned_trigger_lock_epoch()
+        self._capture_restart_pending = False
+        self._deferred_ai_start = None
+        self._capture_mode_switching = False
         self.ai_selected = False
         self._ai_ready = False
         self._ai_provider = None
@@ -3549,6 +4156,7 @@ class JitterApp(tk.Tk):
             self.ai_service.stop(reason)
         finally:
             self._ai_event_epoch += 1
+            self._active_ai_lifecycle = None
 
     def _stop_motion_runtime(
         self,
@@ -3616,6 +4224,7 @@ class JitterApp(tk.Tk):
         self._deferred_motion_action = None
         self._test_restore_master = self.master_armed
         self.master_armed = False
+        self._end_trigger_lock_epoch()
         self.trigger_gate.clear()
         self._test_sources = sources
         self._test_generation += 1
@@ -3641,7 +4250,7 @@ class JitterApp(tk.Tk):
             test_generation=generation,
         )
         self._set_runtime_state("testing")
-        self.test_button.set_enabled(False)
+        self._set_test_button_enabled(False)
         self._render_runtime_controls()
 
         if sources.ai and not self._reconcile_ai_runtime("Test Run"):
@@ -3675,6 +4284,14 @@ class JitterApp(tk.Tk):
         self._test_start_pending = False
         self._test_pending_generation = None
         self._motion_event_epoch += 1
+        if sources.ai:
+            if not self._reset_targeting_for_trigger_lock(
+                "AI Test 3s start"
+            ):
+                return False
+            self._publish_trigger_lock_epoch(
+                self._next_trigger_lock_epoch(), "test"
+            )
         started = self._request_motion_start(sources, duration_s=3.0)
         if started:
             self.footer_var.set("Test Run active")
@@ -3686,6 +4303,9 @@ class JitterApp(tk.Tk):
         self.footer_var.set(message)
 
     def _restore_after_test(self, *, restore_master: bool = True) -> None:
+        test_epoch = self._clear_trigger_lock_epoch("test")
+        if test_epoch is not None:
+            self._reset_targeting_for_trigger_lock("AI Test 3s cleanup")
         restore = (
             restore_master
             and self._test_restore_master
@@ -3701,12 +4321,12 @@ class JitterApp(tk.Tk):
         self._test_pending_generation = None
         self._test_waiting_for_motion_stop = False
         self._test_restore_master = False
-        self.test_button.set_enabled(True)
+        self._set_test_button_enabled(True)
+        self.trigger_gate.clear()
         self.master_armed = bool(restore)
         if restore:
             self._set_runtime_state("armed")
         else:
-            self.trigger_gate.clear()
             self._set_runtime_state("disabled")
         self._sync_adaptive_zoom_gate()
         self._reconcile_ai_runtime("Test Run complete")
@@ -3719,6 +4339,9 @@ class JitterApp(tk.Tk):
         stop_device_motion: bool = True,
     ) -> None:
         stop_reason = str(reason or "Stopped")
+        self._retire_owned_trigger_lock_epoch()
+        self._capture_restart_pending = False
+        self._capture_mode_switching = False
         self.master_armed = False
         self._sync_adaptive_zoom_gate()
         was_overlay_visible = self.overlay_visible
@@ -3754,10 +4377,12 @@ class JitterApp(tk.Tk):
         self._advance_hotkey_epoch()
         self._set_runtime_state("disabled")
         self._render_runtime_controls()
-        self.test_button.set_enabled(True)
+        self._set_test_button_enabled(True)
         self.footer_var.set(stop_reason)
 
     def _handle_disconnect(self, reason: str) -> None:
+        self._retire_owned_trigger_lock_epoch()
+        self._capture_mode_switching = False
         self.master_armed = False
         self._sync_adaptive_zoom_gate()
         self._normal_motion_started = False
@@ -3783,7 +4408,7 @@ class JitterApp(tk.Tk):
         self._advance_hotkey_epoch()
         self._set_runtime_state("disabled")
         self._render_runtime_controls()
-        self.test_button.set_enabled(True)
+        self._set_test_button_enabled(True)
         self.footer_var.set(reason)
 
     def _consume_deferred_motion_action(self, source: Any) -> None:
@@ -3867,7 +4492,24 @@ class JitterApp(tk.Tk):
                 button, pressed = event.payload
             except (TypeError, ValueError):
                 return
-            self.trigger_gate.update_button(str(button), bool(pressed))
+            button = str(button)
+            pressed = bool(pressed)
+            was_physically_down = button in self._physical_buttons_down
+            if pressed:
+                self._physical_buttons_down.add(button)
+            else:
+                self._physical_buttons_down.discard(button)
+            self.trigger_gate.update_button(button, pressed)
+            is_trigger_button = button == self.trigger_gate.trigger
+            if self._motion_mode not in _TEST_MOTION_MODES:
+                if is_trigger_button and pressed and not was_physically_down:
+                    self._begin_trigger_lock_epoch()
+                elif (
+                    is_trigger_button
+                    and not pressed
+                    and was_physically_down
+                ):
+                    self._end_trigger_lock_epoch()
             self._sync_adaptive_zoom_gate()
             if not self.trigger_gate.active:
                 action = self._deferred_motion_action
@@ -3917,6 +4559,9 @@ class JitterApp(tk.Tk):
             self.ai_service.latest_snapshot,
             self.get_ai_settings,
             duration_s=duration_s,
+            targeting_epoch_provider=(
+                self.ai_service.current_targeting_revision
+            ),
         )
         if source is None or source is False:
             return False
@@ -3936,9 +4581,27 @@ class JitterApp(tk.Tk):
         if self._closing:
             return
         kind = event.kind
+        active_lifecycle = self._active_ai_lifecycle
         if (
             kind in {"loading", "ready", "fps", "zoom", "error"}
             and not self._ai_runtime_active
+        ):
+            return
+        if (
+            kind in {"loading", "ready", "fps", "zoom", "error", "stopped"}
+            and (
+                (
+                    active_lifecycle is None
+                    and event.generation is not None
+                )
+                or (
+                    active_lifecycle is not None
+                    and (
+                        event.generation != active_lifecycle.generation
+                        or active_lifecycle.event_epoch != self._ai_event_epoch
+                    )
+                )
+            )
         ):
             return
         if kind == "loading":
@@ -3949,15 +4612,34 @@ class JitterApp(tk.Tk):
             self.ai_status_var.set("Loading")
             self.ai_fps_var.set("0 FPS")
             self.ai_provider_var.set("No provider")
+            self._render_capture_mode_control()
             self.ai_zoom_var.set("1.0×")
         elif kind == "ready":
             switch = self._model_switch
-            if switch is not None and switch.phase == "starting_candidate":
+            lifecycle_kind = (
+                active_lifecycle.request.kind
+                if active_lifecycle is not None else None
+            )
+            lifecycle_token = (
+                active_lifecycle.model_token
+                if active_lifecycle is not None else None
+            )
+            if (
+                switch is not None
+                and switch.phase == "starting_candidate"
+                and lifecycle_kind == "model_candidate"
+                and lifecycle_token == switch.token
+            ):
                 self._finish_model_switch(
                     switch.candidate,
                     f"Using model: {switch.candidate.display_name}",
                 )
-            elif switch is not None and switch.phase == "starting_rollback":
+            elif (
+                switch is not None
+                and switch.phase == "starting_rollback"
+                and lifecycle_kind == "model_rollback"
+                and lifecycle_token == switch.token
+            ):
                 failure = switch.failure or "AI model validation failed"
                 self._finish_model_switch(
                     switch.previous,
@@ -3975,6 +4657,21 @@ class JitterApp(tk.Tk):
             self._sync_adaptive_zoom_gate()
             self.ai_status_var.set(f"Ready ({provider})")
             self.ai_provider_var.set(provider)
+            capture_mode_switching = bool(
+                self._capture_mode_switching
+                and lifecycle_kind == "capture"
+                and active_lifecycle is not None
+                and active_lifecycle.request.capture_mode == self._capture_mode
+            )
+            if capture_mode_switching:
+                self._capture_restart_pending = False
+                self._capture_mode_switching = False
+            self._render_model_controls()
+            if capture_mode_switching:
+                self.footer_var.set(
+                    f"AI capture ready: "
+                    f"{_CAPTURE_MODE_LABELS[self._capture_mode]}"
+                )
             if (
                 self._motion_mode in {
                     "test_ai_loading", "test_combined_loading"
@@ -4019,6 +4716,9 @@ class JitterApp(tk.Tk):
                 factor = 1.0
             self.ai_zoom_var.set(f"{factor:.1f}×")
         elif kind == "error":
+            self._capture_restart_pending = False
+            if self._capture_mode_switching:
+                self._capture_mode_switching = False
             switch = self._model_switch
             if switch is not None and switch.phase == "starting_candidate":
                 failure = str(event.payload or "AI service failed")
@@ -4029,16 +4729,23 @@ class JitterApp(tk.Tk):
                 return
             self._handle_ai_runtime_error(event.payload)
         elif kind == "stopped":
+            self._capture_restart_pending = False
+            self._capture_mode_switching = False
             self._ai_ready = False
             self._ai_provider = None
             self._ai_runtime_active = False
+            self._active_ai_lifecycle = None
             self._sync_adaptive_zoom_gate()
             self.ai_status_var.set("Stopped")
             self.ai_fps_var.set("0 FPS")
             self.ai_provider_var.set("No provider")
+            self._render_capture_mode_control()
 
     def _handle_ai_runtime_error(self, payload: object) -> None:
         logging.error("AI runtime error: %s", payload)
+        self._retire_owned_trigger_lock_epoch()
+        self._deferred_ai_start = None
+        self._active_ai_lifecycle = None
         self._ai_runtime_active = False
         self._sync_adaptive_zoom_gate()
         test_sources = self._test_sources
@@ -4130,7 +4837,7 @@ class JitterApp(tk.Tk):
             self._set_runtime_state("disabled")
         self._advance_hotkey_epoch()
         self._render_runtime_controls()
-        self.test_button.set_enabled(True)
+        self._set_test_button_enabled(True)
         self.footer_var.set("AI Aim stopped; Jitter remains available")
 
     def queue_service_event(self, event: ServiceEvent) -> None:
@@ -4177,6 +4884,20 @@ class JitterApp(tk.Tk):
                         "hotkey": self._hotkey_event_epoch,
                     }.get(kind)
                     if epoch is not None and epoch != current_epoch:
+                        if kind == "service" and payload.kind == "button":
+                            try:
+                                button, pressed = payload.payload
+                            except (TypeError, ValueError):
+                                pass
+                            else:
+                                button = str(button)
+                                if bool(pressed):
+                                    self._physical_buttons_down.add(button)
+                                else:
+                                    # Releases fail closed even after a
+                                    # lifecycle advance; stale presses remain
+                                    # latch-only and cannot rearm movement.
+                                    self.handle_service_event(payload)
                         processed += 1
                         continue
                     if kind == "service":
@@ -4200,6 +4921,7 @@ class JitterApp(tk.Tk):
             if processed >= _UI_QUEUE_MAX_BATCH or not self._ui_queue.empty():
                 next_delay_ms = 0
         finally:
+            self._continue_deferred_ai_start()
             if not self._closing and not self._closed:
                 try:
                     self._ui_pump_after_id = self.after(
@@ -4288,6 +5010,7 @@ class JitterApp(tk.Tk):
     def on_bindings_changed(self) -> None:
         trigger = self.trigger_var.get()
         modifier = self.modifier_var.get()
+        self._end_trigger_lock_epoch()
         action = self._deferred_motion_action
         self._deferred_motion_action = None
         if action is not None and action.kind == "test":
@@ -4301,6 +5024,7 @@ class JitterApp(tk.Tk):
             if self.enabled:
                 self._set_runtime_state("armed")
         self._schedule_save()
+        self._refresh_section_summaries()
 
     def get_motion_settings(self) -> MotionSettings:
         with self._motion_lock:
@@ -4313,6 +5037,99 @@ class JitterApp(tk.Tk):
     def get_adaptive_zoom_gate(self) -> bool:
         with self._ai_lock:
             return self._adaptive_zoom_gate
+
+    def get_trigger_lock_epoch(self) -> int | None:
+        with self._ai_lock:
+            return self._trigger_lock_epoch
+
+    def _publish_trigger_lock_epoch(
+        self,
+        epoch: int | None,
+        owner: str | None,
+    ) -> None:
+        if (epoch is None) != (owner is None) or owner not in {
+            None, "normal", "test",
+        }:
+            raise ValueError("Trigger-lock epoch and owner must agree")
+        with self._ai_lock:
+            self._trigger_lock_epoch = epoch
+            self._trigger_lock_owner = owner
+
+    def _clear_trigger_lock_epoch(
+        self,
+        expected_owner: str | None = None,
+    ) -> int | None:
+        with self._ai_lock:
+            if (
+                expected_owner is not None
+                and self._trigger_lock_owner != expected_owner
+            ):
+                return None
+            epoch = self._trigger_lock_epoch
+            self._trigger_lock_epoch = None
+            self._trigger_lock_owner = None
+            return epoch
+
+    def _next_trigger_lock_epoch(self) -> int:
+        with self._ai_lock:
+            self._trigger_lock_counter += 1
+            return self._trigger_lock_counter
+
+    def _raw_trigger_press_eligible(self) -> bool:
+        return bool(
+            not self._closing
+            and self.service.connected
+            and self.master_armed
+            and self.ai_selected
+            and self._motion_mode is None
+        )
+
+    def _reset_targeting_for_trigger_lock(self, context: str) -> bool:
+        try:
+            revision = self.ai_service.reset_targeting()
+        except Exception:
+            logging.exception("AI targeting reset failed during %s", context)
+            self._clear_trigger_lock_epoch()
+            self.footer_var.set("AI target lock stopped; check app.log")
+            return False
+        self._ai_targeting_revision = revision
+        return True
+
+    def _begin_trigger_lock_epoch(self) -> None:
+        with self._ai_lock:
+            if self._trigger_lock_owner is not None:
+                return
+        if not self._raw_trigger_press_eligible():
+            return
+        if not self._reset_targeting_for_trigger_lock("Trigger press"):
+            return
+        self._publish_trigger_lock_epoch(
+            self._next_trigger_lock_epoch(), "normal"
+        )
+
+    def _end_trigger_lock_epoch(self) -> None:
+        epoch = self._clear_trigger_lock_epoch("normal")
+        if epoch is None:
+            return
+        self._reset_targeting_for_trigger_lock("Trigger release")
+
+    def _retire_owned_trigger_lock_epoch(self) -> None:
+        epoch = self._clear_trigger_lock_epoch()
+        if epoch is None:
+            return
+        self._reset_targeting_for_trigger_lock("Trigger lock retirement")
+
+    def _invalidate_trigger_lock_epoch(self) -> bool:
+        epoch = self.get_trigger_lock_epoch()
+        try:
+            revision = self.ai_service.invalidate_trigger_lock(epoch)
+        except Exception:
+            logging.exception("AI Trigger lock invalidation failed")
+            self._clear_trigger_lock_epoch()
+            self.footer_var.set("AI target lock stopped; check app.log")
+            return False
+        self._ai_targeting_revision = revision
+        return True
 
     def _sync_adaptive_zoom_gate(self) -> None:
         active = bool(
@@ -4332,6 +5149,7 @@ class JitterApp(tk.Tk):
     def _replace_ai_snapshot(self, settings: AimSettings) -> None:
         with self._ai_lock:
             self._ai_snapshot = settings
+        self._refresh_section_summaries()
 
     def _replace_motion_snapshot(self, settings: MotionSettings) -> None:
         with self._motion_lock:
@@ -4378,6 +5196,7 @@ class JitterApp(tk.Tk):
             finally:
                 self._updating_motion_controls = False
         self._schedule_save()
+        self._refresh_section_summaries()
 
     def _ai_changed(self, key: str) -> None:
         if self._updating_ai_controls or self._closing:
@@ -4414,6 +5233,8 @@ class JitterApp(tk.Tk):
                 finally:
                     self._updating_ai_controls = False
         self._replace_ai_snapshot(aim_settings_from_mapping(mapping))
+        if key == "confidence":
+            self._invalidate_trigger_lock_epoch()
         self._schedule_save()
 
     @staticmethod
@@ -4478,6 +5299,7 @@ class JitterApp(tk.Tk):
                 entry.configure(style="Liquid.Entry.TEntry")
         self._replace_motion_snapshot(settings)
         self._schedule_save()
+        self._refresh_section_summaries()
 
     def _schedule_save(self) -> None:
         if self._closing or not self._save_allowed:
@@ -4529,12 +5351,14 @@ class JitterApp(tk.Tk):
         if self._closed or self._closing:
             return
         self._closing = True
-        self.nav.cancel_animation()
+        self._capture_restart_pending = False
+        self._model_start_pending = None
+        self._deferred_ai_start = None
+        self._active_ai_lifecycle = None
+        self._capture_mode_switching = False
         self._cancel_ai_curve_callbacks()
         for widget in self.winfo_children():
             self._cancel_slider_callbacks(widget)
-        self._hide_action_tooltip()
-        self._hide_theme_tooltip()
         self._cancel_after("_save_after_id")
         self._cancel_after("_capture_after_id")
         self._cancel_after("_ui_pump_after_id")

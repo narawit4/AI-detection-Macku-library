@@ -6,7 +6,6 @@ from typing import Iterable
 
 import numpy as np
 
-from .resize import resize_rgb_bilinear
 from .targeting import (
     AimSettings,
     Detection,
@@ -24,10 +23,13 @@ _HEAD_TWO_X_MAX = 18.0
 _HEAD_ONE_HALF_X_MAX = 32.0
 _PLAYER_TWO_X_MAX = 64.0
 _PLAYER_ONE_HALF_X_MAX = 112.0
-_ZOOM_SOURCE_SIZES = {1.5: 213, 2.0: 160}
 STABLE_DISPLACEMENT_PX = 18.0
 STABLE_CONFIRMATION_COUNT = 2
 RECOIL_COOLDOWN_SECONDS = 0.100
+
+
+def _policy_scale(frame_width: int, frame_height: int) -> float:
+    return FRAME_SIZE / max(frame_width, frame_height)
 
 
 @dataclass(frozen=True)
@@ -63,10 +65,13 @@ def observe_zoom_stability(
     unstable = (
         previous is None
         or previous.target_class != target.target_class
+        or previous.frame_width != target.frame_width
+        or previous.frame_height != target.frame_height
         or math.hypot(
             target.aim_x - previous.aim_x,
             target.aim_y - previous.aim_y,
-        ) > STABLE_DISPLACEMENT_PX
+        ) * _policy_scale(target.frame_width, target.frame_height)
+        > STABLE_DISPLACEMENT_PX
     )
     if unstable:
         return ZoomStabilityState(
@@ -116,7 +121,10 @@ def limit_zoom_factor(
 class ZoomTransform:
     left: int
     top: int
-    size: int
+    crop_width: int
+    crop_height: int
+    source_width: int
+    source_height: int
     factor: float
 
 
@@ -126,12 +134,16 @@ def select_zoom_factor(
 ) -> float:
     if target is None:
         return 1.0
+    policy_scale = _policy_scale(target.frame_width, target.frame_height)
     if (
-        math.hypot(target.aim_x - 160.0, target.aim_y - 160.0)
+        math.hypot(
+            (target.aim_x - target.frame_width / 2.0) * policy_scale,
+            (target.aim_y - target.frame_height / 2.0) * policy_scale,
+        )
         > MAX_CENTER_DISTANCE
     ):
         return 1.0
-    height = detection.y2 - detection.y1
+    height = (detection.y2 - detection.y1) * policy_scale
     if detection.class_id == 7:
         if height <= _HEAD_TWO_X_MAX:
             return 2.0
@@ -150,34 +162,79 @@ def build_zoom_input(
     target: TargetSnapshot,
     factor: float,
 ) -> tuple[np.ndarray, ZoomTransform]:
-    if not isinstance(frame, np.ndarray) or frame.shape != (320, 320, 3):
-        raise ValueError("Zoom source must be RGB 320x320x3")
+    if (
+        not isinstance(frame, np.ndarray)
+        or frame.ndim != 3
+        or frame.shape[0] <= 0
+        or frame.shape[1] <= 0
+        or frame.shape[2] != 3
+    ):
+        raise ValueError("Zoom source must be a nonempty RGB frame")
     if frame.dtype != np.uint8:
         raise ValueError("Zoom source must use uint8 pixels")
     try:
-        size = _ZOOM_SOURCE_SIZES[float(factor)]
-    except (KeyError, TypeError, ValueError, OverflowError) as error:
+        zoom_factor = float(factor)
+    except (TypeError, ValueError, OverflowError) as error:
         raise ValueError("Zoom factor must be 1.5 or 2.0") from error
-    left = max(0, min(320 - size, round(target.aim_x - size / 2)))
-    top = max(0, min(320 - size, round(target.aim_y - size / 2)))
-    transform = ZoomTransform(left, top, size, float(factor))
-    crop = frame[top:top + size, left:left + size]
-    return resize_rgb_bilinear(crop), transform
+    if zoom_factor not in (1.5, 2.0):
+        raise ValueError("Zoom factor must be 1.5 or 2.0")
+    source_height, source_width = frame.shape[:2]
+    if (
+        target.frame_width != source_width
+        or target.frame_height != source_height
+    ):
+        raise ValueError("Target dimensions must match zoom source")
+    crop_width = max(1, math.floor(source_width / zoom_factor + 0.5))
+    crop_height = max(1, math.floor(source_height / zoom_factor + 0.5))
+    left = max(
+        0,
+        min(
+            source_width - crop_width,
+            math.floor(target.aim_x - crop_width / 2 + 0.5),
+        ),
+    )
+    top = max(
+        0,
+        min(
+            source_height - crop_height,
+            math.floor(target.aim_y - crop_height / 2 + 0.5),
+        ),
+    )
+    transform = ZoomTransform(
+        left,
+        top,
+        crop_width,
+        crop_height,
+        source_width,
+        source_height,
+        zoom_factor,
+    )
+    crop = np.ascontiguousarray(
+        frame[top:top + crop_height, left:left + crop_width].copy()
+    )
+    return crop, transform
 
 
-def _map_coordinate(value: float, origin: int, scale: float) -> float:
-    return max(0.0, min(320.0, origin + value * scale))
+def _map_coordinate(value: float, origin: int, limit: int) -> float:
+    return max(0.0, min(float(limit), origin + value))
 
 
 def map_detection(
     detection: Detection,
     transform: ZoomTransform,
 ) -> Detection | None:
-    scale = transform.size / 320.0
-    x1 = _map_coordinate(detection.x1, transform.left, scale)
-    y1 = _map_coordinate(detection.y1, transform.top, scale)
-    x2 = _map_coordinate(detection.x2, transform.left, scale)
-    y2 = _map_coordinate(detection.y2, transform.top, scale)
+    x1 = _map_coordinate(
+        detection.x1, transform.left, transform.source_width
+    )
+    y1 = _map_coordinate(
+        detection.y1, transform.top, transform.source_height
+    )
+    x2 = _map_coordinate(
+        detection.x2, transform.left, transform.source_width
+    )
+    y2 = _map_coordinate(
+        detection.y2, transform.top, transform.source_height
+    )
     if x2 <= x1 or y2 <= y1:
         return None
     return Detection(
@@ -189,13 +246,18 @@ def map_target(
     target: TargetSnapshot,
     transform: ZoomTransform,
 ) -> TargetSnapshot:
-    scale = transform.size / 320.0
     return TargetSnapshot(
         target.sequence,
         target.captured_at,
         target.target_class,
-        _map_coordinate(target.aim_x, transform.left, scale),
-        _map_coordinate(target.aim_y, transform.top, scale),
+        _map_coordinate(
+            target.aim_x, transform.left, transform.source_width
+        ),
+        _map_coordinate(
+            target.aim_y, transform.top, transform.source_height
+        ),
+        transform.source_width,
+        transform.source_height,
     )
 
 
@@ -224,8 +286,12 @@ def compose_zoom_refinement(
     else:
         return None
 
-    margin_x = max(12.0, (seed.x2 - seed.x1) * 0.20)
-    margin_y = max(12.0, (seed.y2 - seed.y1) * 0.20)
+    policy_scale = _policy_scale(
+        base.frame.frame_width, base.frame.frame_height
+    )
+    fixed_source_margin = 12.0 / policy_scale
+    margin_x = max(fixed_source_margin, (seed.x2 - seed.x1) * 0.20)
+    margin_y = max(fixed_source_margin, (seed.y2 - seed.y1) * 0.20)
     compatible = []
     for detection in refined_detections:
         mapped = map_detection(detection, transform)
@@ -245,19 +311,15 @@ def compose_zoom_refinement(
         ):
             compatible.append((mapped, point))
 
-    if not compatible:
+    if len(compatible) != 1:
         return None
-    selected_refined, selected_point = min(
-        compatible,
-        key=lambda item: math.hypot(
-            item[1][1] - base.target.aim_x,
-            item[1][2] - base.target.aim_y,
-        ),
-    )
+    selected_refined, selected_point = compatible[0]
     refined_target = TargetSnapshot(
         base.frame.sequence,
         base.frame.captured_at,
         *selected_point,
+        base.frame.frame_width,
+        base.frame.frame_height,
     )
     composed = list(base.frame.detections)
     composed[selected_index] = selected_refined
@@ -268,5 +330,11 @@ def compose_zoom_refinement(
             base.frame.captured_at,
             tuple(composed),
             selected_index,
+            base.frame.frame_width,
+            base.frame.frame_height,
+            base.frame.output_width,
+            base.frame.output_height,
+            base.frame.capture_left,
+            base.frame.capture_top,
         ),
     )

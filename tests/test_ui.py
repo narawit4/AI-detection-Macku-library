@@ -13,19 +13,24 @@ from jitter_app.ai.model_selection import (
     ModelValidationEvent,
     bundled_model_choice,
 )
+from jitter_app.ai.capture import CENTER_320, FULL_DISPLAY
 from jitter_app.ai.service import AiEvent
 from jitter_app.ai.targeting import (
     AimSettings,
     DEFAULT_RESPONSE_CURVE,
+    DetectionFrameSnapshot,
     response_curve_value,
 )
 from jitter_app.motion.combined import MotionSources
 from jitter_app.device.display_timing import RuntimeCadence
 from jitter_app.presentation.ui import JitterApp
 from jitter_app.device.makcu import ServiceEvent
-from jitter_app.presentation.widgets import LiquidIconButton, LiquidSlider
+from jitter_app.presentation.widgets import (
+    CollapsibleSection,
+    LiquidSlider,
+)
 from jitter_app.motion.engine import MotionSettings
-from jitter_app.presentation.overlay import OverlaySetupError
+from jitter_app.presentation.overlay import OverlaySetupError, OverlayStyle
 from jitter_app.config.store import AppConfig
 from jitter_app.presentation.sound import ToggleSoundPlayer
 
@@ -157,12 +162,15 @@ class StubService:
         target_provider,
         aim_provider,
         duration_s=None,
+        *,
+        targeting_epoch_provider=None,
     ):
         self.started += 1
         call = SimpleNamespace(
             sources=sources,
             motion_provider=motion_provider,
             target_provider=target_provider,
+            targeting_epoch_provider=targeting_epoch_provider,
             aim_provider=aim_provider,
             duration_s=duration_s,
         )
@@ -218,27 +226,44 @@ class StubAiService:
         self.detection_snapshot = object()
         self.generation = 0
         self.active_generation = None
+        self.worker_active = False
+        self.retire_immediately = True
         self.start_result = True
         self.start_exception = None
         self.stop_exception = None
         self.stop_hook = None
+        self.reset_exception = None
         self.reset_targeting_calls = 0
         self.targeting_revision = 0
+        self.trigger_epoch_providers = []
+        self.invalidated_trigger_epochs = []
 
     def with_sink(self, event_sink):
         self.event_sink = event_sink
         return self
 
-    def start(self, settings_provider, zoom_gate_provider=None, *, model_path=None):
+    def start(
+        self,
+        settings_provider,
+        zoom_gate_provider=None,
+        trigger_epoch_provider=None,
+        *,
+        model_path=None,
+        capture_mode=CENTER_320,
+    ):
+        self.trigger_epoch_providers.append(trigger_epoch_provider)
         self.start_calls.append(
-            (settings_provider, zoom_gate_provider, model_path)
+            (settings_provider, zoom_gate_provider, model_path, capture_mode)
         )
+        if self.worker_active and self.active_generation is None:
+            return None
         if self.start_exception is not None:
             raise self.start_exception
         if not self.start_result:
             return self.start_result
         self.generation += 1
         self.active_generation = self.generation
+        self.worker_active = True
         return self.active_generation
 
     def stop(self, reason="manual"):
@@ -248,6 +273,11 @@ class StubAiService:
         if self.stop_hook is not None:
             self.stop_hook(self.active_generation)
         self.active_generation = None
+        if self.retire_immediately:
+            self.worker_active = False
+
+    def finish_retirement(self):
+        self.worker_active = False
 
     def emit(self, event, *, generation=None):
         source_generation = (
@@ -258,6 +288,8 @@ class StubAiService:
             or source_generation != self.active_generation
         ):
             return False
+        if event.generation is None:
+            event = replace(event, generation=source_generation)
         self.event_sink(event)
         return True
 
@@ -272,17 +304,39 @@ class StubAiService:
 
     def reset_targeting(self):
         self.reset_targeting_calls += 1
+        if self.reset_exception is not None:
+            raise self.reset_exception
         self.targeting_revision += 1
+        self.snapshot = None
+        self.detection_snapshot = None
+        return self.targeting_revision
+
+    def invalidate_trigger_lock(self, epoch):
+        self.invalidated_trigger_epochs.append(epoch)
+        return self.reset_targeting()
+
+    def current_targeting_revision(self):
         return self.targeting_revision
 
 
 class StrictDuplicateStartAiService(StubAiService):
     """Mirror production ownership: a duplicate start keeps its generation."""
 
-    def start(self, settings_provider, zoom_gate_provider=None, *, model_path=None):
+    def start(
+        self,
+        settings_provider,
+        zoom_gate_provider=None,
+        trigger_epoch_provider=None,
+        *,
+        model_path=None,
+        capture_mode=CENTER_320,
+    ):
+        self.trigger_epoch_providers.append(trigger_epoch_provider)
         self.start_calls.append(
-            (settings_provider, zoom_gate_provider, model_path)
+            (settings_provider, zoom_gate_provider, model_path, capture_mode)
         )
+        if self.worker_active and self.active_generation is None:
+            return None
         if self.start_exception is not None:
             raise self.start_exception
         if not self.start_result:
@@ -291,6 +345,7 @@ class StrictDuplicateStartAiService(StubAiService):
             return self.active_generation
         self.generation += 1
         self.active_generation = self.generation
+        self.worker_active = True
         return self.active_generation
 
 
@@ -361,6 +416,7 @@ class StubOverlay:
         self.cleared = 0
         self.rendered = []
         self.render_options = []
+        self.styles = []
         self.show_error = None
         self.hide_error = None
         self.render_error = None
@@ -377,11 +433,14 @@ class StubOverlay:
         now,
         color=None,
         show_heads=None,
+        runtime=None,
+        style=None,
     ):
         if self.render_error is not None:
             raise self.render_error
         self.rendered.append((snapshot, now))
-        self.render_options.append((color, show_heads))
+        self.render_options.append((color, show_heads, runtime))
+        self.styles.append(style)
 
     def clear(self):
         self.cleared += 1
@@ -493,7 +552,7 @@ class JitterLayoutTests(unittest.TestCase):
             runtime_cadence=(
                 runtime_cadence
                 if runtime_cadence is not None
-                else RuntimeCadence(None, 120, 240)
+                else RuntimeCadence(None, 120, 1000)
             ),
         )
         original_after_cancel = self.app.after_cancel
@@ -510,6 +569,33 @@ class JitterLayoutTests(unittest.TestCase):
         self.app._cancel_after("_ui_pump_after_id")
         self.app._drain_ui_queue()
 
+    def handle_current_ai_event(self, event):
+        generation = self.ai.active_generation
+        self.assertIsNotNone(generation)
+        self.app.handle_ai_event(replace(event, generation=generation))
+
+    def ai_runtime_event_state(self):
+        return (
+            self.app._capture_restart_pending,
+            self.app._capture_mode_switching,
+            self.app._ai_ready,
+            self.app._ai_provider,
+            self.app._ai_runtime_active,
+            self.app._active_ai_lifecycle,
+            self.app.ai_status_var.get(),
+            self.app.ai_fps_var.get(),
+            self.app.ai_provider_var.get(),
+            self.app.ai_zoom_var.get(),
+            self.app.footer_var.get(),
+            self.app.master_armed,
+            self.app.jitter_selected,
+            self.app.ai_selected,
+            self.app.overlay_visible,
+            self.app._normal_motion_started,
+            self.app._expected_motion_generation,
+            self.app.runtime_state_var.get(),
+        )
+
     def begin_custom_model_switch(self, filename):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -525,7 +611,7 @@ class JitterLayoutTests(unittest.TestCase):
 
     def test_app_default_factories_receive_runtime_cadence(self):
         self.app.close_app()
-        cadence = RuntimeCadence(144, 144, 288)
+        cadence = RuntimeCadence(144, 144, 1000)
         makcu_kwargs = []
         ai_kwargs = []
 
@@ -548,23 +634,22 @@ class JitterLayoutTests(unittest.TestCase):
             )
 
         self.assertEqual(app.runtime_cadence, cadence)
-        self.assertEqual(makcu_kwargs, [{"ai_poll_hz": 288}])
+        self.assertEqual(makcu_kwargs, [{"ai_poll_hz": 1000}])
         self.assertEqual(ai_kwargs, [{"capture_fps": 144}])
         self.assertEqual(
             app.ai_cadence_var.get(),
-            "DISPLAY 144 HZ · SERVO 288 HZ",
+            "DISPLAY 144 HZ · SERVO 1000 HZ",
         )
-        self.assertIn(app.ai_cadence_var.get(), widget_texts(app.ai_status_card))
 
     def test_fallback_cadence_status_is_explicit(self):
         self.app.close_app()
         app = self.make_app(
-            runtime_cadence=RuntimeCadence(None, 120, 240),
+            runtime_cadence=RuntimeCadence(None, 120, 1000),
         )
 
         self.assertEqual(
             app.ai_cadence_var.get(),
-            "DISPLAY AUTO · SERVO 240 HZ",
+            "DISPLAY AUTO · SERVO 1000 HZ",
         )
 
     def test_injected_service_factories_keep_one_argument_contract(self):
@@ -593,6 +678,16 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertEqual(self.app.jitter_source_button.cget("text"), "Jitter OFF")
         self.assertEqual(self.app.ai_source_button.cget("text"), "AI Aim OFF")
         self.assertFalse(hasattr(self.app, "mode_combo"))
+
+    def test_ai_controls_show_recommended_defaults(self):
+        self.assertEqual(self.app.ai_vars["confidence"].get(), "0.25")
+        self.assertEqual(self.app.ai_vars["aim_strength"].get(), "0.35")
+        self.assertEqual(self.app.ai_vars["smoothing"].get(), "0.58")
+        self.assertEqual(self.app.ai_vars["max_step"].get(), "18")
+        self.assertEqual(
+            tuple(self.app.get_ai_settings().response_curve),
+            (0.0, 0.16, 0.38, 0.68, 0.95),
+        )
 
     def test_ai_controls_reflect_config_without_restoring_runtime_selection(self):
         self.app.close_app()
@@ -635,6 +730,516 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertEqual(app.ai_zoom_var.get(), "1.0×")
         self.assertIsNone(app._save_after_id)
 
+    def test_capture_mode_starts_centered_and_shares_target_row(self):
+        self.assertEqual(self.app._capture_mode, CENTER_320)
+        self.assertEqual(self.app.capture_mode_var.get(), "Center 320")
+        self.assertEqual(
+            tuple(self.app.capture_mode_combo.cget("values")),
+            ("Center 320", "Full Display"),
+        )
+        self.assertEqual(
+            self.app.capture_mode_combo.master.master,
+            self.app.target_area_combo.master.master,
+        )
+
+    def test_capture_mode_is_runtime_only_and_new_app_restores_center(self):
+        self.app.capture_mode_var.set("Full Display")
+        self.app._capture_mode_changed()
+        self.app.save_config()
+        self.assertFalse(hasattr(self.store.saved[-1], "capture_mode"))
+        config = self.app.config
+        self.app.close_app()
+        app = self.make_app(config=config)
+        self.assertEqual(app._capture_mode, CENTER_320)
+
+    def test_idle_capture_mode_change_does_not_start_ai(self):
+        self.app.capture_mode_var.set("Full Display")
+        self.app._capture_mode_changed()
+        self.assertEqual(self.app._capture_mode, FULL_DISPLAY)
+        self.assertEqual(self.ai.start_calls, [])
+        self.assertEqual(self.ai.stop_calls, [])
+
+    def test_active_capture_mode_change_restarts_ai_and_keeps_overlay(self):
+        self.app.toggle_overlay()
+        self.ai.emit(AiEvent("ready", "DmlExecutionProvider"))
+        self.drain_ui_queue()
+        starts = len(self.ai.start_calls)
+
+        self.app.capture_mode_var.set("Full Display")
+        self.app._capture_mode_changed()
+
+        self.assertTrue(self.app.overlay_visible)
+        self.assertEqual(self.ai.stop_calls[-1], "Capture mode changed")
+        self.assertEqual(len(self.ai.start_calls), starts + 1)
+        self.assertEqual(self.ai.start_calls[-1][3], FULL_DISPLAY)
+        self.assertEqual(str(self.app.capture_mode_combo.cget("state")), "disabled")
+        self.ai.emit(AiEvent("ready", "DmlExecutionProvider"))
+        self.drain_ui_queue()
+        self.assertEqual(str(self.app.capture_mode_combo.cget("state")), "readonly")
+
+    def test_capture_replacement_waits_until_retiring_worker_is_inactive(self):
+        self.app.toggle_overlay()
+        self.ai.emit(AiEvent("ready", "DmlExecutionProvider"))
+        self.drain_ui_queue()
+        starts = len(self.ai.start_calls)
+        self.ai.retire_immediately = False
+
+        self.app.capture_mode_var.set("Full Display")
+        self.app._capture_mode_changed()
+
+        self.assertEqual(self.ai.stop_calls[-1], "Capture mode changed")
+        self.assertEqual(len(self.ai.start_calls), starts)
+        self.assertTrue(self.ai.worker_active)
+        self.assertTrue(self.app._capture_mode_switching)
+        self.assertEqual(
+            str(self.app.capture_mode_combo.cget("state")), "disabled"
+        )
+
+        self.drain_ui_queue()
+        self.assertEqual(len(self.ai.start_calls), starts)
+
+        self.ai.finish_retirement()
+        self.drain_ui_queue()
+
+        self.assertEqual(len(self.ai.start_calls), starts + 1)
+        self.assertEqual(self.ai.start_calls[-1][3], FULL_DISPLAY)
+        self.assertTrue(self.app._capture_mode_switching)
+        self.assertEqual(
+            str(self.app.capture_mode_combo.cget("state")), "disabled"
+        )
+
+    def test_rapid_overlay_reenable_waits_for_physical_ai_retirement(self):
+        self.app.capture_mode_var.set("Full Display")
+        self.app._capture_mode_changed()
+        self.app.toggle_overlay()
+        self.ai.emit(AiEvent("ready", "DmlExecutionProvider"))
+        self.drain_ui_queue()
+        self.ai.retire_immediately = False
+
+        self.app.toggle_overlay()
+        starts = len(self.ai.start_calls)
+        self.app.toggle_overlay()
+
+        self.assertTrue(self.app.overlay_visible)
+        self.assertEqual(len(self.ai.start_calls), starts)
+        self.assertIsNotNone(getattr(self.app, "_deferred_ai_start", None))
+
+        self.ai.finish_retirement()
+        self.drain_ui_queue()
+
+        self.assertEqual(len(self.ai.start_calls), starts + 1)
+        self.assertEqual(self.ai.start_calls[-1][2], self.app._model_choice.path)
+        self.assertEqual(self.ai.start_calls[-1][3], FULL_DISPLAY)
+        self.assertTrue(self.app.overlay_visible)
+
+    def test_rapid_master_reenable_waits_for_physical_ai_retirement(self):
+        self.app.capture_mode_var.set("Full Display")
+        self.app._capture_mode_changed()
+        self.service.connected = True
+        self.app.ai_selected = True
+        self.app.set_master(True)
+        self.ai.emit(AiEvent("ready", "DmlExecutionProvider"))
+        self.drain_ui_queue()
+        self.ai.retire_immediately = False
+
+        self.app.set_master(False)
+        starts = len(self.ai.start_calls)
+        self.app.set_master(True)
+
+        self.assertTrue(self.app.master_armed)
+        self.assertTrue(self.app.ai_selected)
+        self.assertEqual(len(self.ai.start_calls), starts)
+        self.assertIsNotNone(getattr(self.app, "_deferred_ai_start", None))
+
+        self.ai.finish_retirement()
+        self.drain_ui_queue()
+
+        self.assertEqual(len(self.ai.start_calls), starts + 1)
+        self.assertEqual(self.ai.start_calls[-1][2], self.app._model_choice.path)
+        self.assertEqual(self.ai.start_calls[-1][3], FULL_DISPLAY)
+        self.assertTrue(self.app.master_armed)
+        self.assertTrue(self.app.ai_selected)
+
+    def test_combined_motion_continues_during_capture_mode_restart(self):
+        self.prepare_armed_sources(
+            MotionSources(True, True), gate_active=True
+        )
+        self.app.toggle_overlay()
+        motion_generation = self.app._expected_motion_generation
+        cancellations = len(self.service.cancel_reasons)
+
+        self.app.capture_mode_var.set("Full Display")
+        self.app._capture_mode_changed()
+
+        self.assertTrue(self.app.master_armed)
+        self.assertEqual(
+            self.app._selected_sources(), MotionSources(True, True)
+        )
+        self.assertTrue(self.app.trigger_gate.active)
+        self.assertTrue(self.app.overlay_visible)
+        self.assertEqual(
+            self.app._expected_motion_generation, motion_generation
+        )
+        self.assertEqual(len(self.service.cancel_reasons), cancellations)
+        self.assertTrue(self.app._normal_motion_started)
+
+    def test_invalid_capture_mode_label_restores_current_selection(self):
+        self.app.capture_mode_var.set("Unsupported")
+        self.app._capture_mode_changed()
+
+        self.assertEqual(self.app._capture_mode, CENTER_320)
+        self.assertEqual(self.app.capture_mode_var.get(), "Center 320")
+        self.assertEqual(self.ai.start_calls, [])
+        self.assertEqual(self.ai.stop_calls, [])
+
+    def test_model_validation_guards_capture_mode_lifecycle(self):
+        self.app.capture_mode_var.set("Full Display")
+        self.app._capture_mode_changed()
+        self.begin_custom_model_switch("validating.onnx")
+        starts = list(self.ai.start_calls)
+        stops = list(self.ai.stop_calls)
+
+        self.assertEqual(
+            str(self.app.capture_mode_combo.cget("state")), "disabled"
+        )
+        self.app.capture_mode_var.set("Center 320")
+        self.app._capture_mode_changed()
+
+        self.assertEqual(self.app._capture_mode, FULL_DISPLAY)
+        self.assertEqual(self.app.capture_mode_var.get(), "Full Display")
+        self.assertEqual(self.ai.start_calls, starts)
+        self.assertEqual(self.ai.stop_calls, stops)
+
+    def test_every_test_motion_mode_guards_capture_mode_lifecycle(self):
+        self.app.capture_mode_var.set("Full Display")
+        self.app._capture_mode_changed()
+        test_modes = (
+            "test_jitter_pending",
+            "test_jitter",
+            "test_ai_loading",
+            "test_ai",
+            "test_combined_loading",
+            "test_combined",
+        )
+        for motion_mode in test_modes:
+            with self.subTest(motion_mode=motion_mode):
+                self.app._motion_mode = motion_mode
+                self.app._render_runtime_controls()
+                starts = list(self.ai.start_calls)
+                stops = list(self.ai.stop_calls)
+
+                self.assertEqual(
+                    str(self.app.capture_mode_combo.cget("state")),
+                    "disabled",
+                )
+                self.app.capture_mode_var.set("Center 320")
+                self.app._capture_mode_changed()
+
+                self.assertEqual(self.app._capture_mode, FULL_DISPLAY)
+                self.assertEqual(
+                    self.app.capture_mode_var.get(), "Full Display"
+                )
+                self.assertEqual(self.ai.start_calls, starts)
+                self.assertEqual(self.ai.stop_calls, stops)
+
+    def test_loading_and_existing_restart_guard_capture_mode_lifecycle(self):
+        self.app.toggle_overlay()
+        starts = len(self.ai.start_calls)
+        self.assertEqual(
+            str(self.app.capture_mode_combo.cget("state")), "disabled"
+        )
+
+        self.app.capture_mode_var.set("Full Display")
+        self.app._capture_mode_changed()
+        self.assertEqual(self.app._capture_mode, CENTER_320)
+        self.assertEqual(self.app.capture_mode_var.get(), "Center 320")
+        self.assertEqual(len(self.ai.start_calls), starts)
+        self.assertEqual(self.ai.stop_calls, [])
+
+        self.handle_current_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        self.assertEqual(
+            str(self.app.capture_mode_combo.cget("state")), "readonly"
+        )
+        self.app.capture_mode_var.set("Full Display")
+        self.app._capture_mode_changed()
+        starts = len(self.ai.start_calls)
+        stops = len(self.ai.stop_calls)
+
+        self.app.capture_mode_var.set("Center 320")
+        self.app._capture_mode_changed()
+        self.assertEqual(self.app._capture_mode, FULL_DISPLAY)
+        self.assertEqual(self.app.capture_mode_var.get(), "Full Display")
+        self.assertEqual(len(self.ai.start_calls), starts)
+        self.assertEqual(len(self.ai.stop_calls), stops)
+
+    def test_test_candidate_and_rollback_generations_keep_capture_mode(self):
+        self.app.capture_mode_var.set("Full Display")
+        self.app._capture_mode_changed()
+        self.service.connected = True
+        self.app.ai_selected = True
+        self.app.start_test_run()
+        self.assertEqual(self.ai.start_calls[-1][3], FULL_DISPLAY)
+
+        self.app.close_app()
+        app = self.make_app()
+        app.capture_mode_var.set("Full Display")
+        app._capture_mode_changed()
+        app.toggle_overlay()
+        self.handle_current_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        choice, token = self.begin_custom_model_switch("candidate.onnx")
+        validated = self.validated_model_choice(choice)
+        self.model_validator.emit(
+            ModelValidationEvent("ready", token, validated)
+        )
+        self.drain_model_ui_queue()
+        self.assertEqual(self.ai.start_calls[-1][2], validated.path)
+        self.assertEqual(self.ai.start_calls[-1][3], FULL_DISPLAY)
+
+        self.handle_current_ai_event(AiEvent("error", "candidate failed"))
+        self.assertEqual(
+            self.ai.start_calls[-1][2], app._model_switch.previous.path
+        )
+        self.assertEqual(self.ai.start_calls[-1][3], FULL_DISPLAY)
+
+    def test_stop_keeps_runtime_capture_mode_and_new_app_starts_centered(self):
+        self.app.capture_mode_var.set("Full Display")
+        self.app._capture_mode_changed()
+        self.app.emergency_stop("Stopped by user")
+
+        self.assertEqual(self.app._capture_mode, FULL_DISPLAY)
+        self.assertEqual(self.app.capture_mode_var.get(), "Full Display")
+        self.app.close_app()
+        app = self.make_app(config=self.app.config)
+        self.assertEqual(app._capture_mode, CENTER_320)
+
+    def test_false_and_exception_capture_restarts_use_ai_failure_policy(self):
+        for failure in (False, RuntimeError("restart failed")):
+            with self.subTest(failure=type(failure).__name__):
+                self.app.close_app()
+                app = self.make_app()
+                self.prepare_armed_sources(
+                    MotionSources(True, True), gate_active=True
+                )
+                app.toggle_overlay()
+                generation = app._expected_motion_generation
+                cancellations = len(self.service.cancel_reasons)
+                if isinstance(failure, Exception):
+                    self.ai.start_exception = failure
+                else:
+                    self.ai.start_result = failure
+
+                app.capture_mode_var.set("Full Display")
+                with self.assertLogs(level="ERROR"):
+                    app._capture_mode_changed()
+
+                self.assertFalse(app.overlay_visible)
+                self.assertFalse(app.ai_selected)
+                self.assertTrue(app.jitter_selected)
+                self.assertTrue(app.master_armed)
+                self.assertTrue(app.trigger_gate.active)
+                self.assertEqual(
+                    app._expected_motion_generation, generation
+                )
+                self.assertEqual(
+                    len(self.service.cancel_reasons), cancellations
+                )
+                self.assertEqual(app._capture_mode, FULL_DISPLAY)
+                self.assertFalse(app._capture_mode_switching)
+
+    def test_capture_reset_or_stop_error_fails_closed_without_replacement(self):
+        for failure_site in ("reset", "stop"):
+            with self.subTest(failure_site=failure_site):
+                self.app.close_app()
+                app = self.make_app()
+                self.prepare_armed_sources(
+                    MotionSources(True, True), gate_active=True
+                )
+                app.toggle_overlay()
+                starts = len(self.ai.start_calls)
+                motion_generation = app._expected_motion_generation
+                cancellations = len(self.service.cancel_reasons)
+                if failure_site == "reset":
+                    self.ai.reset_exception = RuntimeError("reset failed")
+                else:
+                    self.ai.stop_exception = RuntimeError("stop failed")
+
+                app.capture_mode_var.set("Full Display")
+                with self.assertLogs(level="ERROR"):
+                    app._capture_mode_changed()
+
+                self.assertEqual(len(self.ai.start_calls), starts)
+                self.assertFalse(app._capture_mode_switching)
+                self.assertFalse(app._capture_restart_pending)
+                self.assertFalse(app.overlay_visible)
+                self.assertEqual(self.overlay.hidden, 1)
+                self.assertFalse(app.ai_selected)
+                self.assertTrue(app.jitter_selected)
+                self.assertTrue(app.master_armed)
+                self.assertTrue(app.trigger_gate.active)
+                self.assertEqual(
+                    app._expected_motion_generation, motion_generation
+                )
+                self.assertEqual(
+                    len(self.service.cancel_reasons), cancellations
+                )
+                self.assertEqual(app.ai_status_var.get(), "Error")
+                self.assertEqual(
+                    str(app.capture_mode_combo.cget("state")), "readonly"
+                )
+
+    def test_async_capture_restart_error_clears_switch_before_failure_policy(self):
+        self.prepare_armed_sources(
+            MotionSources(True, True), gate_active=True
+        )
+        self.app.toggle_overlay()
+        self.app.capture_mode_var.set("Full Display")
+        self.app._capture_mode_changed()
+
+        with self.assertLogs(level="ERROR"):
+            self.handle_current_ai_event(AiEvent("error", "capture failed"))
+
+        self.assertFalse(self.app._capture_mode_switching)
+        self.assertEqual(self.app._capture_mode, FULL_DISPLAY)
+        self.assertFalse(self.app.overlay_visible)
+        self.assertFalse(self.app.ai_selected)
+        self.assertTrue(self.app.jitter_selected)
+        self.assertTrue(self.app.master_armed)
+
+    def test_stop_disconnect_and_shutdown_clear_capture_restart_state(self):
+        for action in ("stop", "disconnect", "shutdown"):
+            with self.subTest(action=action):
+                self.app.close_app()
+                app = self.make_app()
+                app.toggle_overlay()
+                self.handle_current_ai_event(
+                    AiEvent("ready", "DmlExecutionProvider")
+                )
+                app.capture_mode_var.set("Full Display")
+                app._capture_mode_changed()
+                self.assertTrue(app._capture_mode_switching)
+
+                if action == "stop":
+                    app.emergency_stop("Stopped by user")
+                elif action == "disconnect":
+                    app._handle_disconnect("Device disconnected")
+                else:
+                    app.close_app()
+
+                self.assertFalse(app._capture_mode_switching)
+                if action == "stop":
+                    self.assertEqual(
+                        str(app.capture_mode_combo.cget("state")),
+                        "readonly",
+                    )
+                elif action == "disconnect":
+                    self.handle_current_ai_event(
+                        AiEvent("ready", "DmlExecutionProvider")
+                    )
+                    self.assertEqual(
+                        str(app.capture_mode_combo.cget("state")),
+                        "readonly",
+                    )
+
+    def test_stale_ai_events_cannot_mutate_capture_replacement(self):
+        for stale_event in (
+            AiEvent("ready", "CPUExecutionProvider"),
+            AiEvent("error", "old capture failed"),
+        ):
+            with self.subTest(kind=stale_event.kind):
+                self.app.close_app()
+                app = self.make_app()
+                app.toggle_overlay()
+                self.handle_current_ai_event(
+                    AiEvent("ready", "DmlExecutionProvider")
+                )
+                app.queue_ai_event(
+                    replace(stale_event, generation=self.ai.active_generation)
+                )
+
+                app.capture_mode_var.set("Full Display")
+                app._capture_mode_changed()
+                self.drain_ui_queue()
+
+                self.assertTrue(app._capture_mode_switching)
+                self.assertTrue(app._ai_runtime_active)
+                self.assertTrue(app.overlay_visible)
+                self.assertEqual(app._capture_mode, FULL_DISPLAY)
+                self.assertEqual(app.ai_status_var.get(), "Loading")
+
+    def test_each_capture_direction_makes_exactly_one_stop_and_start(self):
+        self.app.toggle_overlay()
+        self.handle_current_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        for label, mode in (
+            ("Full Display", FULL_DISPLAY),
+            ("Center 320", CENTER_320),
+        ):
+            with self.subTest(label=label):
+                starts = len(self.ai.start_calls)
+                stops = len(self.ai.stop_calls)
+                self.app.capture_mode_var.set(label)
+                self.app._capture_mode_changed()
+
+                self.assertEqual(len(self.ai.start_calls), starts + 1)
+                self.assertEqual(len(self.ai.stop_calls), stops + 1)
+                self.assertEqual(self.ai.start_calls[-1][3], mode)
+                self.assertEqual(
+                    self.app.footer_var.get(),
+                    f"Switching AI capture to {label}...",
+                )
+                self.app.handle_ai_event(
+                    AiEvent(
+                        "ready",
+                        "DmlExecutionProvider",
+                        generation=self.ai.active_generation,
+                    )
+                )
+                self.assertEqual(
+                    self.app.footer_var.get(),
+                    f"AI capture ready: {label}",
+                )
+
+    def test_motion_worker_survives_capture_restart_with_cleared_ai_target(self):
+        for sources in (
+            MotionSources(False, True),
+            MotionSources(True, True),
+        ):
+            with self.subTest(sources=sources):
+                self.app.close_app()
+                app = self.make_app()
+                self.prepare_armed_sources(sources, gate_active=True)
+                call = self.service.composite_motion_calls[-1]
+                generation = app._expected_motion_generation
+                cancellations = len(self.service.cancel_reasons)
+
+                app.capture_mode_var.set("Full Display")
+                app._capture_mode_changed()
+
+                self.assertIsNone(call.target_provider())
+                self.assertEqual(
+                    app._expected_motion_generation, generation
+                )
+                self.assertEqual(
+                    len(self.service.cancel_reasons), cancellations
+                )
+                self.assertTrue(app._normal_motion_started)
+
+    def test_motion_worker_receives_live_ai_targeting_epoch_provider(self):
+        self.prepare_armed_sources(
+            MotionSources(True, True), gate_active=True
+        )
+        call = self.service.composite_motion_calls[-1]
+        provider = call.targeting_epoch_provider
+
+        self.assertTrue(callable(provider))
+        self.assertEqual(provider(), self.ai.targeting_revision)
+
+        before_switch = provider()
+        self.app.capture_mode_var.set("Full Display")
+        self.app._capture_mode_changed()
+
+        self.assertGreater(provider(), before_switch)
+        self.assertEqual(provider(), self.ai.targeting_revision)
+
     def test_save_config_keeps_target_area_runtime_only(self):
         self.app.target_area_var.set("Chest")
         self.app._target_area_changed()
@@ -658,6 +1263,7 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertFalse(app.overlay_visible)
 
     def test_overlay_color_button_applies_choice_and_schedules_save(self):
+        self.app.open_overlay_customizer()
         self.app._color_chooser = lambda **_kwargs: (
             (0.0, 204.0, 136.0),
             "#00CC88",
@@ -673,6 +1279,7 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertIn("#00CC88", button.cget("text"))
 
     def test_overlay_color_cancel_keeps_current_choice(self):
+        self.app.open_overlay_customizer()
         self.app._color_chooser = lambda **_kwargs: (None, None)
         before = self.app.overlay_color
         button = self.app.overlay_color_button
@@ -683,6 +1290,8 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertIsNone(self.app._save_after_id)
 
     def test_overlay_color_chooser_error_keeps_current_choice(self):
+        self.app.open_overlay_customizer()
+
         def fail_chooser(**_kwargs):
             raise tk.TclError("chooser failed")
 
@@ -700,6 +1309,7 @@ class JitterLayoutTests(unittest.TestCase):
         )
 
     def test_head_boxes_button_toggles_visibility_and_schedules_save(self):
+        self.app.open_overlay_customizer()
         self.app._cancel_after("_save_after_id")
         button = self.app.overlay_head_button
         button.invoke()
@@ -709,6 +1319,144 @@ class JitterLayoutTests(unittest.TestCase):
         )
         self.assertIsNotNone(self.app._save_after_id)
         self.assertEqual(button.cget("text"), "Head Boxes OFF")
+
+    def test_player_boxes_button_is_runtime_only_and_reaches_overlay_style(self):
+        self.app.open_overlay_customizer()
+        self.assertTrue(
+            hasattr(self.app, "overlay_player_button"),
+            "Overlay customization must expose a Player Boxes control",
+        )
+        self.app._cancel_after("_save_after_id")
+
+        self.app.overlay_player_button.invoke()
+        style = self.app._overlay_style_snapshot()
+
+        self.assertFalse(style.show_players)
+        self.assertEqual(
+            self.app.overlay_player_button.cget("text"),
+            "Player Boxes OFF",
+        )
+        self.assertIsNone(self.app._save_after_id)
+
+    def test_detection_custom_controls_publish_width_and_label_mode_runtime_only(self):
+        self.app.open_overlay_customizer()
+        self.assertTrue(hasattr(self.app, "overlay_box_width_entry"))
+        self.assertTrue(hasattr(self.app, "overlay_box_width_scale"))
+        self.assertTrue(hasattr(self.app, "overlay_label_mode_combo"))
+        self.app._cancel_after("_save_after_id")
+        self.app.overlay_box_width_var.set("20")
+        self.app.overlay_label_mode_var.set("Class + Confidence")
+
+        self.app._overlay_entry_changed("box_width")
+        self.app._overlay_style_changed()
+        style = self.app._overlay_style_snapshot()
+
+        self.assertEqual(self.app.overlay_box_width_var.get(), "8")
+        self.assertEqual(style.box_width, 8)
+        self.assertEqual(style.label_mode, "class_confidence")
+        self.assertIsNone(self.app._save_after_id)
+
+    def test_hud_placement_controls_publish_corner_offsets_and_font_size(self):
+        self.app.open_overlay_customizer()
+        for name in (
+            "overlay_hud_corner_combo",
+            "overlay_hud_offset_x_entry",
+            "overlay_hud_offset_x_scale",
+            "overlay_hud_offset_y_entry",
+            "overlay_hud_offset_y_scale",
+            "overlay_hud_font_size_entry",
+            "overlay_hud_font_size_scale",
+        ):
+            self.assertTrue(hasattr(self.app, name), name)
+        self.app._cancel_after("_save_after_id")
+        self.app.overlay_hud_corner_var.set("Bottom Right")
+        self.app.overlay_hud_offset_x_var.set("40")
+        self.app.overlay_hud_offset_y_var.set("50")
+        self.app.overlay_hud_font_size_var.set("18")
+
+        for key in ("hud_offset_x", "hud_offset_y", "hud_font_size"):
+            self.app._overlay_entry_changed(key)
+        self.app._overlay_style_changed()
+        style = self.app._overlay_style_snapshot()
+
+        self.assertEqual(style.hud_corner, "bottom_right")
+        self.assertEqual(style.hud_offset_x, 40)
+        self.assertEqual(style.hud_offset_y, 50)
+        self.assertEqual(style.hud_font_size, 18)
+        self.assertIsNone(self.app._save_after_id)
+
+    def test_hud_visibility_color_and_metric_buttons_are_runtime_only(self):
+        self.app.open_overlay_customizer()
+        for name in (
+            "overlay_hud_button",
+            "overlay_hud_color_button",
+            "overlay_hud_fps_button",
+            "overlay_hud_provider_button",
+            "overlay_hud_zoom_button",
+            "overlay_hud_lock_button",
+        ):
+            self.assertTrue(hasattr(self.app, name), name)
+        self.app._color_chooser = lambda **_kwargs: (
+            (0.0, 204.0, 136.0),
+            "#00CC88",
+        )
+        self.app._cancel_after("_save_after_id")
+
+        self.app.overlay_hud_color_button.invoke()
+        self.app.overlay_hud_button.invoke()
+        self.app.overlay_hud_fps_button.invoke()
+        self.app.overlay_hud_zoom_button.invoke()
+        style = self.app._overlay_style_snapshot()
+
+        self.assertFalse(style.hud_visible)
+        self.assertEqual(style.hud_color, "#00cc88")
+        self.assertFalse(style.hud_show_fps)
+        self.assertTrue(style.hud_show_provider)
+        self.assertFalse(style.hud_show_zoom)
+        self.assertTrue(style.hud_show_lock)
+        self.assertEqual(style.box_color, "#ff2b2b")
+        self.assertIsNone(self.app._save_after_id)
+
+    def test_reset_overlay_restores_complete_default_and_saves_only_legacy_preferences(self):
+        self.app.open_overlay_customizer()
+        self.assertTrue(hasattr(self.app, "overlay_reset_button"))
+        self.app.overlay_color = "#00cc88"
+        self.app.overlay_head_visible = False
+        self.app.overlay_player_visible = False
+        self.app.overlay_box_width_var.set("8")
+        self.app.overlay_label_mode_var.set("Class + Confidence")
+        self.app.overlay_hud_visible = False
+        self.app.overlay_hud_corner_var.set("Bottom Right")
+        self.app.overlay_hud_offset_x_var.set("40")
+        self.app.overlay_hud_offset_y_var.set("50")
+        self.app.overlay_hud_font_size_var.set("18")
+        self.app.overlay_hud_color = "#123456"
+        self.app.overlay_hud_show_fps = False
+        self.app.overlay_hud_show_provider = False
+        self.app.overlay_hud_show_zoom = False
+        self.app.overlay_hud_show_lock = False
+        self.app._cancel_after("_save_after_id")
+
+        self.app.overlay_reset_button.invoke()
+
+        self.assertEqual(self.app._overlay_style_snapshot(), OverlayStyle())
+        self.assertIsNotNone(self.app._save_after_id)
+
+    def test_overlay_style_snapshot_uses_safe_defaults_while_exact_input_is_incomplete(self):
+        self.app.overlay_box_width_var.set("")
+        self.app.overlay_hud_offset_x_var.set("-")
+        self.app.overlay_hud_offset_y_var.set("not a number")
+        self.app.overlay_hud_font_size_var.set("")
+
+        try:
+            style = self.app._overlay_style_snapshot()
+        except ValueError as exc:
+            self.fail(f"Incomplete exact input must not stop the overlay: {exc}")
+
+        self.assertEqual(style.box_width, 2)
+        self.assertEqual(style.hud_offset_x, 8)
+        self.assertEqual(style.hud_offset_y, 8)
+        self.assertEqual(style.hud_font_size, 10)
 
     def test_ai_service_is_injected_after_widgets_without_autostart(self):
         self.assertIs(self.ai.event_sink.__self__, self.app)
@@ -902,27 +1650,527 @@ class JitterLayoutTests(unittest.TestCase):
             self.app.footer_var.get(), "Test Run is active; use STOP to cancel"
         )
 
-    def test_motion_scroll_keeps_both_source_settings_available(self):
-        self.assertIsInstance(self.app.motion_scroll_canvas, tk.Canvas)
-        for card in (
-            self.app.motion_hero_card,
-            self.app.motion_summary_card,
-            self.app.ai_settings_card,
-            self.app.ai_status_card,
-        ):
-            self.assertIs(card.master, self.app.motion_scroll_content)
-            self.assertEqual(card.winfo_manager(), "grid")
-        self.app.update_idletasks()
-        self.assertEqual(self.app.geometry().split("+")[0], "840x620")
-        self.assertEqual(self.app.stop_button.winfo_manager(), "grid")
+    def test_single_page_shell_orders_fixed_chrome_around_one_scroll_region(self):
+        widgets = (
+            self.app.topbar_frame,
+            self.app.dashboard_frame,
+            self.app.footer_frame,
+            self.app.runtime_frame,
+        )
+        self.assertEqual(
+            [int(widget.grid_info()["row"]) for widget in widgets],
+            [0, 1, 2, 3],
+        )
+        self.assertTrue(
+            all(widget.master is self.app.console_workspace for widget in widgets)
+        )
+        self.assertIsInstance(self.app.dashboard_scroll_canvas, tk.Canvas)
+        self.assertFalse(hasattr(self.app, "nav"))
+        self.assertFalse(hasattr(self.app, "pages"))
 
-    def test_response_curve_card_is_scrollable_and_keeps_window_fixed(self):
-        self.assertIs(self.app.ai_curve_card.master, self.app.motion_scroll_content)
-        self.assertEqual(self.app.ai_curve_card.winfo_manager(), "grid")
-        self.assertIsInstance(self.app.ai_curve_canvas, tk.Canvas)
-        self.app.update_idletasks()
-        self.assertEqual(self.app.geometry().split("+")[0], "840x620")
-        self.assertEqual(self.app.stop_button.winfo_manager(), "grid")
+    def test_dashboard_has_five_ordered_independent_sections(self):
+        self.assertEqual(
+            tuple(section.title for section in self.app.sections),
+            ("CONTROL", "JITTER", "AI AIM", "OVERLAY", "SETTINGS"),
+        )
+        self.assertTrue(
+            all(isinstance(section, CollapsibleSection) for section in self.app.sections)
+        )
+        self.assertTrue(self.app.control_section.expanded)
+        self.assertTrue(all(not section.expanded for section in self.app.sections[1:]))
+        self.app.ai_section.set_expanded(True)
+        self.app.overlay_section.set_expanded(True)
+        self.assertTrue(self.app.control_section.expanded)
+        self.assertTrue(self.app.ai_section.expanded)
+        self.assertTrue(self.app.overlay_section.expanded)
+
+    def test_overlay_section_opens_custom_controls_in_separate_window(self):
+        self.assertTrue(
+            hasattr(self.app, "overlay_customize_button"),
+            "Overlay section must expose the separate customizer action",
+        )
+        self.assertEqual(
+            self.app.overlay_customize_button.cget("text"),
+            "Customize Overlay",
+        )
+        self.assertTrue(
+            self._is_descendant(
+                self.app.overlay_customize_button,
+                self.app.overlay_section.body,
+            )
+        )
+
+        self.app.deiconify()
+        self.app.overlay_customize_button.invoke()
+        self.app.update()
+
+        customizer = self.app.overlay_custom_window
+        self.assertIsInstance(customizer, tk.Toplevel)
+        self.assertEqual(customizer.title(), "Customize Overlay")
+        self.assertTrue(customizer.winfo_viewable())
+        self.assertTrue(
+            self._is_descendant(self.app.overlay_color_button, customizer)
+        )
+        self.assertFalse(
+            self._is_descendant(
+                self.app.overlay_color_button,
+                self.app.dashboard_content,
+            )
+        )
+
+    def test_opening_overlay_customizer_twice_reuses_one_window(self):
+        self.app.deiconify()
+        self.app.open_overlay_customizer()
+        first = self.app.overlay_custom_window
+
+        self.app.open_overlay_customizer()
+        self.app.update()
+
+        self.assertIs(self.app.overlay_custom_window, first)
+        self.assertEqual(
+            [
+                child
+                for child in self.app.winfo_children()
+                if isinstance(child, tk.Toplevel)
+                and child.title() == "Customize Overlay"
+            ],
+            [first],
+        )
+
+    def test_overlay_customizer_keeps_all_controls_inside_fixed_window(self):
+        self.app.deiconify()
+        self.app.open_overlay_customizer()
+        self.app.update()
+        customizer = self.app.overlay_custom_window
+        controls = (
+            self.app.overlay_color_button,
+            self.app.overlay_head_button,
+            self.app.overlay_player_button,
+            self.app.overlay_box_width_scale,
+            self.app.overlay_label_mode_combo,
+            self.app.overlay_hud_corner_combo,
+            self.app.overlay_hud_offset_x_scale,
+            self.app.overlay_hud_offset_y_scale,
+            self.app.overlay_hud_font_size_scale,
+            self.app.overlay_hud_button,
+            self.app.overlay_hud_color_button,
+            self.app.overlay_hud_fps_button,
+            self.app.overlay_hud_provider_button,
+            self.app.overlay_hud_zoom_button,
+            self.app.overlay_hud_lock_button,
+        )
+        left = customizer.winfo_rootx()
+        top = customizer.winfo_rooty()
+        right = left + customizer.winfo_width()
+        bottom = top + customizer.winfo_height()
+
+        for control in controls:
+            with self.subTest(control=control):
+                self.assertGreaterEqual(control.winfo_rootx(), left)
+                self.assertGreaterEqual(control.winfo_rooty(), top)
+                self.assertLessEqual(
+                    control.winfo_rootx() + control.winfo_width(),
+                    right,
+                )
+                self.assertLessEqual(
+                    control.winfo_rooty() + control.winfo_height(),
+                    bottom,
+                )
+
+    def test_overlay_customizer_keeps_action_labels_unclipped(self):
+        self.app.deiconify()
+        self.app.open_overlay_customizer()
+        self.app.update()
+
+        for button in (
+            self.app.overlay_color_button,
+            self.app.overlay_head_button,
+            self.app.overlay_player_button,
+            self.app.overlay_hud_button,
+            self.app.overlay_hud_color_button,
+        ):
+            with self.subTest(button=button):
+                self.assertGreaterEqual(
+                    button.winfo_width(),
+                    button.winfo_reqwidth(),
+                )
+
+    def test_closing_overlay_customizer_keeps_detection_overlay_enabled(self):
+        self.app.toggle_overlay()
+        self.app.deiconify()
+        self.app.open_overlay_customizer()
+        customizer = self.app.overlay_custom_window
+
+        self.app.close_overlay_customizer()
+        self.app.update()
+
+        self.assertTrue(self.app.overlay_visible)
+        self.assertFalse(
+            customizer.winfo_exists() and customizer.winfo_viewable()
+        )
+
+    def test_reopening_overlay_customizer_normalizes_incomplete_numeric_edits(self):
+        self.app.deiconify()
+        self.app.open_overlay_customizer()
+        self.app.overlay_box_width_var.set("")
+        self.app.overlay_hud_offset_x_var.set("-")
+        self.app.overlay_hud_offset_y_var.set("9999")
+        self.app.overlay_hud_font_size_var.set("0")
+        self.app.close_overlay_customizer()
+
+        try:
+            self.app.open_overlay_customizer()
+        except (tk.TclError, TypeError, ValueError) as exc:
+            self.fail(f"reopening the customizer raised {type(exc).__name__}: {exc}")
+        self.app.update()
+
+        self.assertEqual(
+            (
+                self.app.overlay_box_width_var.get(),
+                self.app.overlay_hud_offset_x_var.get(),
+                self.app.overlay_hud_offset_y_var.get(),
+                self.app.overlay_hud_font_size_var.get(),
+            ),
+            ("2", "8", "500", "8"),
+        )
+        self.assertTrue(self.app.overlay_custom_window.winfo_viewable())
+
+    def test_open_overlay_customizer_cleans_up_failed_window_build(self):
+        self.app.deiconify()
+        with mock.patch.object(
+            self.app,
+            "_dropdown_field",
+            side_effect=tk.TclError("partial build failed"),
+        ):
+            with self.assertRaisesRegex(tk.TclError, "partial build failed"):
+                self.app.open_overlay_customizer()
+
+        try:
+            self.assertIsNone(self.app.overlay_custom_window)
+            self.assertFalse(
+                any(
+                    isinstance(child, tk.Toplevel)
+                    and child.title() == "Customize Overlay"
+                    for child in self.app.winfo_children()
+                )
+            )
+        finally:
+            leaked = self.app.overlay_custom_window
+            self.app.overlay_custom_window = None
+            if leaked is not None and leaked.winfo_exists():
+                leaked.destroy()
+
+        try:
+            self.app.toggle_theme()
+        except tk.TclError as exc:
+            self.fail(f"theme toggle used a stale partial-build slider: {exc}")
+
+    def test_theme_toggle_after_closing_overlay_customizer_ignores_stale_sliders(self):
+        self.app.deiconify()
+        self.app.open_overlay_customizer()
+        self.app.close_overlay_customizer()
+        before = self.app.theme_var.get()
+
+        try:
+            self.app.toggle_theme()
+        except tk.TclError as exc:
+            self.fail(f"theme toggle used a stale customizer slider: {exc}")
+
+        self.assertNotEqual(self.app.theme_var.get(), before)
+
+    def test_overlay_customizer_native_background_tracks_theme(self):
+        self.app.deiconify()
+        self.app.open_overlay_customizer()
+        customizer = self.app.overlay_custom_window
+        before = str(customizer.cget("background"))
+
+        self.app.toggle_theme()
+        self.app.update()
+
+        self.assertEqual(
+            str(customizer.cget("background")),
+            self.app._palette["window"],
+        )
+        self.assertEqual(
+            str(self.app.overlay_box_width_scale.cget("background")),
+            self.app._palette["surface"],
+        )
+        self.assertNotEqual(str(customizer.cget("background")), before)
+
+    def test_dashboard_uses_one_vertical_scrollbar_and_no_motion_scroll(self):
+        vertical = [
+            widget
+            for widget in descendant_widgets(self.app.console_workspace)
+            if isinstance(widget, ttk.Scrollbar)
+            and str(widget.cget("orient")) == "vertical"
+        ]
+        self.assertEqual(vertical, [self.app.dashboard_scrollbar])
+        self.assertFalse(hasattr(self.app, "motion_scrollbar"))
+
+    def test_single_page_shell_keeps_semantic_layers_in_both_themes(self):
+        shell = self.app.shell
+        self.app.deiconify()
+        self.app.update()
+        required_tags = (
+            "workspace-band", "rounded-surface", "floating-panel",
+            "floating-panel-topbar", "floating-panel-dashboard",
+            "floating-panel-runtime",
+        )
+        themed_layers = {}
+        for theme in ("light", "dark"):
+            with self.subTest(theme=theme):
+                self.assertEqual(self.app.theme_var.get(), theme)
+                for tag in required_tags:
+                    self.assertTrue(shell.find_withtag(tag), tag)
+                fills = tuple(
+                    shell.itemcget(item, "fill")
+                    for item in shell.find_withtag("workspace-band")
+                )
+                themed_layers[theme] = fills
+            self.app.toggle_theme()
+            self.app.update()
+        self.assertNotEqual(themed_layers["light"], themed_layers["dark"])
+
+    def test_control_section_keeps_three_to_two_card_layout(self):
+        self.assertEqual(
+            tuple(
+                int(self.app.control_section.body.grid_columnconfigure(column)["weight"])
+                for column in (0, 1)
+            ),
+            (3, 2),
+        )
+        self.assertEqual(int(self.app.control_bindings_card.grid_info()["column"]), 0)
+        self.assertEqual(int(self.app.control_device_card.grid_info()["column"]), 1)
+
+    def test_settings_section_keeps_three_to_two_card_layout(self):
+        self.assertIs(self.app.settings_content, self.app.settings_section.body)
+        self.assertEqual(
+            tuple(
+                int(self.app.settings_content.grid_columnconfigure(column)["weight"])
+                for column in (0, 1)
+            ),
+            (3, 2),
+        )
+        self.assertIs(self.app.theme_button.master, self.app.test_on_button.master)
+
+    def test_jitter_section_keeps_compact_snapshot_summary(self):
+        self.assertIs(self.app.jitter_section.summary, self.app.motion_summary_var)
+        self.assertEqual(
+            self.app.motion_summary_var.get(),
+            "2 px paired pulse at 60 Hz | Smooth",
+        )
+
+    def test_collapsed_sections_keep_compact_headers_at_fixed_window_size(self):
+        self.app.jitter_section.set_expanded(True)
+        self.app.deiconify()
+        self.app.update()
+        self.assertLessEqual(
+            self.app.jitter_section.header_button.winfo_reqheight(),
+            self.app.jitter_section.winfo_height(),
+        )
+        self.assertNotIn("LIVE SNAPSHOT", widget_texts(self.app.jitter_section.body))
+
+    def test_collapsed_section_summaries_follow_validated_live_state(self):
+        self.assertIn("No sources", self.app.control_section_summary_var.get())
+        self.assertEqual(
+            self.app.motion_summary_var.get(),
+            "2 px paired pulse at 60 Hz | Smooth",
+        )
+        self.assertIn("Head", self.app.ai_section_summary_var.get())
+        self.assertIn("Center 320", self.app.ai_section_summary_var.get())
+        self.assertIn("Overlay Off", self.app.overlay_section_summary_var.get())
+        self.assertIn("Sound On", self.app.settings_section_summary_var.get())
+
+        self.app.toggle_jitter_source()
+        self.app.pulse_size_px_var.set("4")
+        self.app._motion_changed("pulse_size_px")
+        self.app.overlay_player_visible = False
+        self.app._render_runtime_controls()
+        self.app.sound_volume_var.set("45")
+        self.app.apply_sound_settings()
+
+        self.assertIn("Jitter", self.app.control_section_summary_var.get())
+        self.assertIn("4 px", self.app.jitter_section.summary.get())
+        self.assertIn("Head", self.app.overlay_section_summary_var.get())
+        self.assertNotIn("Player", self.app.overlay_section_summary_var.get())
+        self.assertIn("45%", self.app.settings_section_summary_var.get())
+
+    def test_invalid_ai_text_does_not_replace_valid_ai_summary(self):
+        before = self.app.ai_section_summary_var.get()
+        self.app.ai_vars["aim_strength"].set("invalid")
+        self.app._ai_changed("aim_strength")
+        self.assertEqual(self.app.ai_section_summary_var.get(), before)
+
+    def test_ai_model_summary_get_failure_does_not_skip_targeting_reset(self):
+        """Fails if a summary getter aborts target-change runtime work."""
+        resets = self.ai.reset_targeting_calls
+        with mock.patch.object(
+            self.app.ai_model_var,
+            "get",
+            side_effect=tk.TclError("summary getter failed"),
+        ):
+            self.app.target_area_var.set("Upper Body")
+            self.app._target_area_changed()
+
+        self.assertEqual(self.ai.reset_targeting_calls, resets + 1)
+        self.assertEqual(self.app.get_ai_settings().target_area, "upper_body")
+
+    def test_long_ai_model_summary_keeps_target_and_strength_visible(self):
+        self.app.ai_model_var.set("Custom · " + ("long-model-name-" * 12) + ".onnx")
+        self.app._refresh_section_summaries()
+
+        summary = self.app.ai_section_summary_var.get()
+        self.assertLessEqual(len(summary), 72)
+        self.assertIn("Head", summary)
+        self.assertIn("Strength", summary)
+        self.assertIn("Center 320", summary)
+
+    def test_main_dashboard_excludes_ai_runtime_readouts(self):
+        visible = set(widget_texts(self.app.dashboard_content))
+        self.assertNotIn("AI RUNTIME", visible)
+        self.assertNotIn(self.app.ai_fps_var.get(), visible)
+        self.assertNotIn(self.app.ai_provider_var.get(), visible)
+        self.assertNotIn(self.app.ai_cadence_var.get(), visible)
+
+    def test_theme_action_exists_once_inside_settings(self):
+        self.assertTrue(
+            self._is_descendant(self.app.theme_button, self.app.settings_section.body)
+        )
+        self.assertFalse(self._is_descendant(self.app.theme_button, self.app.topbar_frame))
+        self.assertEqual(self.app.theme_button.cget("text"), "Switch to Dark Mode")
+        self.app.theme_button.invoke()
+        self.assertEqual(self.app.theme_button.cget("text"), "Switch to Light Mode")
+        self.assertIn("Dark", self.app.settings_section_summary_var.get())
+
+    def test_session_actions_and_sound_previews_use_compact_labels(self):
+        self.assertEqual(self.app.reconnect_button.cget("text"), "Reconnect")
+        self.assertEqual(self.app.test_button.cget("text"), "Test 3s")
+        self.assertEqual(self.app.test_on_button.cget("text"), "Play Armed Cue")
+        self.assertEqual(self.app.test_off_button.cget("text"), "Play Disabled Cue")
+
+    def test_numeric_controls_still_pair_slider_and_exact_entry(self):
+        self.app.open_overlay_customizer()
+        pairs = (
+            (self.app.pulse_size_px_scale, self.app.pulse_size_px_entry),
+            (self.app.pulse_rate_hz_scale, self.app.pulse_rate_hz_entry),
+            (self.app.ai_confidence_scale, self.app.ai_confidence_entry),
+            (self.app.ai_aim_strength_scale, self.app.ai_aim_strength_entry),
+            (self.app.ai_smoothing_scale, self.app.ai_smoothing_entry),
+            (self.app.ai_max_step_scale, self.app.ai_max_step_entry),
+            (self.app.overlay_box_width_scale, self.app.overlay_box_width_entry),
+            (self.app.overlay_hud_offset_x_scale, self.app.overlay_hud_offset_x_entry),
+            (self.app.overlay_hud_offset_y_scale, self.app.overlay_hud_offset_y_entry),
+            (self.app.overlay_hud_font_size_scale, self.app.overlay_hud_font_size_entry),
+            (self.app.sound_volume_scale, self.app.sound_volume_entry),
+        )
+        for slider, entry in pairs:
+            self.assertIsInstance(slider, LiquidSlider)
+            self.assertIsInstance(entry, ttk.Entry)
+            self.assertEqual(int(entry.cget("width")), 5)
+
+    def test_fixed_runtime_dock_keeps_stop_visible_at_bottom_of_dashboard(self):
+        self.app.deiconify()
+        for section in self.app.sections:
+            section.set_expanded(True)
+        self.app.update()
+        self.app.dashboard_scroll_canvas.yview_moveto(1.0)
+        self.app.update()
+        self.assertTrue(self.app.footer_frame.winfo_ismapped())
+        self.assertTrue(self.app.runtime_frame.winfo_ismapped())
+        self.assertTrue(self.app.stop_button.winfo_ismapped())
+        self.assertIs(self.app.stop_button.master, self.app.runtime_frame)
+        self.assertLessEqual(
+            self.app.stop_button.winfo_rooty() + self.app.stop_button.winfo_height(),
+            self.app.winfo_rooty() + self.app.winfo_height(),
+        )
+
+    def test_mouse_wheel_on_dashboard_control_scrolls_shared_canvas(self):
+        self.app.deiconify()
+        for section in self.app.sections:
+            section.set_expanded(True)
+        self.app.update()
+        self.app.dashboard_scroll_canvas.yview_moveto(0.0)
+        before = self.app.dashboard_scroll_canvas.yview()
+
+        self.app.pulse_size_px_entry.event_generate("<MouseWheel>", delta=-120)
+        self.app.update()
+
+        self.assertGreater(self.app.dashboard_scroll_canvas.yview()[0], before[0])
+
+    def test_mouse_wheel_on_fixed_runtime_control_does_not_scroll_dashboard(self):
+        self.app.deiconify()
+        for section in self.app.sections:
+            section.set_expanded(True)
+        self.app.update()
+        self.app.dashboard_scroll_canvas.yview_moveto(0.0)
+        before = self.app.dashboard_scroll_canvas.yview()
+
+        self.app.stop_button.event_generate("<MouseWheel>", delta=-120)
+        self.app.update()
+
+        self.assertEqual(self.app.dashboard_scroll_canvas.yview(), before)
+
+    def test_each_existing_control_belongs_to_its_approved_section(self):
+        self.app.open_overlay_customizer()
+        ownership = {
+            self.app.control_section.body: (
+                self.app.jitter_source_button, self.app.ai_source_button,
+                self.app.trigger_combo, self.app.modifier_combo,
+                self.app.hotkey_button, self.app.preset_combo,
+                self.app.device_label, self.app.reconnect_button,
+                self.app.test_button,
+            ),
+            self.app.jitter_section.body: (
+                self.app.pulse_size_px_scale, self.app.pulse_size_px_entry,
+                self.app.pulse_rate_hz_scale, self.app.pulse_rate_hz_entry,
+                self.app.ramp_mode_combo,
+            ),
+            self.app.ai_section.body: (
+                self.app.ai_confidence_scale, self.app.ai_confidence_entry,
+                self.app.ai_aim_strength_scale, self.app.ai_aim_strength_entry,
+                self.app.ai_smoothing_scale, self.app.ai_smoothing_entry,
+                self.app.ai_max_step_scale, self.app.ai_max_step_entry,
+                self.app.target_area_combo, self.app.capture_mode_combo,
+                self.app.model_browse_button,
+                self.app.use_default_model_button, self.app.ai_curve_canvas,
+                self.app.ai_curve_reset_button,
+            ),
+            self.app.overlay_section.body: (
+                self.app.overlay_button, self.app.overlay_customize_button,
+            ),
+            self.app.settings_section.body: (
+                self.app.sound_enabled_check, self.app.sound_volume_scale,
+                self.app.sound_volume_entry, self.app.test_on_button,
+                self.app.test_off_button, self.app.theme_button,
+            ),
+        }
+        for section_body, widgets in ownership.items():
+            for widget in widgets:
+                with self.subTest(section=section_body, widget=widget):
+                    self.assertTrue(self._is_descendant(widget, section_body))
+
+        customizer = self.app.overlay_custom_window
+        custom_controls = (
+            self.app.overlay_reset_button,
+            self.app.overlay_color_button,
+            self.app.overlay_head_button,
+            self.app.overlay_player_button,
+            self.app.overlay_box_width_scale,
+            self.app.overlay_box_width_entry,
+            self.app.overlay_label_mode_combo,
+            self.app.overlay_hud_button,
+            self.app.overlay_hud_color_button,
+            self.app.overlay_hud_corner_combo,
+            self.app.overlay_hud_offset_x_scale,
+            self.app.overlay_hud_offset_y_scale,
+            self.app.overlay_hud_font_size_scale,
+        )
+        for widget in custom_controls:
+            with self.subTest(widget=widget):
+                self.assertTrue(self._is_descendant(widget, customizer))
+                self.assertFalse(
+                    self._is_descendant(widget, self.app.dashboard_content)
+                )
 
     def test_curve_exact_edit_updates_live_snapshot_and_schedules_save(self):
         self.app._cancel_after("_save_after_id")
@@ -944,7 +2192,7 @@ class JitterLayoutTests(unittest.TestCase):
 
         self.assertEqual(
             app.get_ai_settings(),
-            AimSettings(0.5, 0.6, 0.7, 30, (0.0, 0.12, 0.42, 0.68, 1.0)),
+            AimSettings(0.5, 0.6, 0.7, 30, (0.0, 0.16, 0.42, 0.68, 0.95)),
         )
 
     def test_scalar_edit_preserves_fractional_curve_from_last_valid_snapshot(self):
@@ -974,7 +2222,7 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertNotIn("response_curve", self.app.ai_vars)
         self.assertEqual(
             {index: variable.get() for index, variable in self.app.ai_curve_vars.items()},
-            {1: "12", 2: "35", 3: "68", 4: "100"},
+            {1: "16", 2: "38", 3: "68", 4: "95"},
         )
         self.assertEqual(set(self.app.ai_curve_entries), {1, 2, 3, 4})
         self.assertTrue(self.app.ai_curve_canvas.find_withtag("ai-curve-node-0"))
@@ -1011,7 +2259,7 @@ class JitterLayoutTests(unittest.TestCase):
 
         self.assertEqual(
             self.app.get_ai_settings().response_curve,
-            (0.0, 0.0, 0.35, 0.68, 1.0),
+            (0.0, 0.0, 0.38, 0.68, 1.0),
         )
         self.assertEqual(
             self.app.ai_curve_entries[1].cget("style"),
@@ -1102,7 +2350,7 @@ class JitterLayoutTests(unittest.TestCase):
 
         self.assertEqual(
             self.app.get_ai_settings().response_curve,
-            (0.0, 0.3, 0.35, 0.7, 1.0),
+            (0.0, 0.3, 0.38, 0.7, 0.95),
         )
         for entry in self.app.ai_curve_entries.values():
             self.assertEqual(entry.cget("style"), "Liquid.Entry.TEntry")
@@ -1114,13 +2362,13 @@ class JitterLayoutTests(unittest.TestCase):
 
         self.app._curve_dragged(SimpleNamespace(y=10000))
         self.app._curve_drag_ended()
-        self.assertEqual(self.app.get_ai_settings().response_curve[2], 0.12)
+        self.assertEqual(self.app.get_ai_settings().response_curve[2], 0.16)
         self.assertEqual(self.app.get_ai_settings().response_curve[0], 0.0)
 
     def test_curve_real_canvas_drag_survives_redraw_until_release(self):
         self.app.deiconify()
-        self.app.select_page(1)
-        self.app.motion_scroll_canvas.yview_moveto(1.0)
+        self.app.ai_section.set_expanded(True)
+        self.app.dashboard_scroll_canvas.yview_moveto(1.0)
         self.app.update()
         canvas = self.app.ai_curve_canvas
         node_bounds = canvas.bbox("ai-curve-node-2")
@@ -1159,6 +2407,7 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertEqual(canvas.itemcget("ai-curve-sample", "fill"), "#63E6FF")
 
     def test_curve_sample_is_unsmoothed_response_curve_polyline(self):
+        self.app.ai_section.set_expanded(True)
         self.app.update_idletasks()
         canvas = self.app.ai_curve_canvas
         actual = canvas.coords("ai-curve-sample")
@@ -1249,9 +2498,7 @@ class JitterLayoutTests(unittest.TestCase):
 
     def test_theme_toggle_applies_dark_palette_and_persists_choice(self):
         style = ttk.Style(self.app)
-        self.assertEqual(self.app.theme_button.icon, "☾")
-        self.assertEqual(self.app.theme_tooltip_text,
-                         "Switch to Dark Mode")
+        self.assertEqual(self.app.theme_button.cget("text"), "Switch to Dark Mode")
         self.app.toggle_theme()
         self.app.update_idletasks()
 
@@ -1261,16 +2508,7 @@ class JitterLayoutTests(unittest.TestCase):
                          "#EEF8FF")
         self.assertEqual(self.app.pulse_size_px_scale.cget("background"),
                          "#172232")
-        self.assertEqual(self.app.theme_button.icon, "☀")
-        self.assertEqual(self.app.theme_tooltip_text,
-                         "Switch to Light Mode")
-        self.assertEqual(self.app.theme_button.accessible_name,
-                         "Switch to Light Mode")
-        self.assertEqual(self.app.nav.cget("background"), "#0D1420")
-        self.assertEqual(self.app.nav.itemcget("glass", "fill"), "#172232")
-        self.assertEqual(self.app.nav.itemcget("lens", "fill"), "#63E6FF")
-        self.assertEqual(self.app.theme_button.itemcget("surface", "fill"),
-                         "#202F43")
+        self.assertEqual(self.app.theme_button.cget("text"), "Switch to Light Mode")
 
         self.app._cancel_after("_save_after_id")
         self.app.save_config()
@@ -1322,19 +2560,6 @@ class JitterLayoutTests(unittest.TestCase):
             "model_path", "model_name", "model_input_size", "input_size",
         ):
             self.assertFalse(hasattr(self.store.saved[-1], name))
-
-    def test_navigation_palette_api_tracks_the_active_theme(self):
-        palette_builder = getattr(self.app, "_navigation_palette", None)
-        self.assertIsNotNone(palette_builder)
-        self.assertEqual(
-            palette_builder()["background"],
-            "#F2F7FA",
-        )
-        self.app.toggle_theme()
-        self.assertEqual(
-            palette_builder()["background"],
-            "#0D1420",
-        )
 
     def test_every_numeric_control_uses_liquid_slider(self):
         numeric_keys = ("pulse_size_px", "pulse_rate_hz")
@@ -1396,93 +2621,6 @@ class JitterLayoutTests(unittest.TestCase):
         )
         self.assertLessEqual(label_right, card_right)
 
-    def test_shell_uses_persistent_rail_and_console_columns(self):
-        self.assertIs(self.app.navigation_rail.master, self.app.shell)
-        self.assertIs(self.app.console_workspace.master, self.app.shell)
-        self.assertEqual(int(self.app.navigation_rail.grid_info()["column"]), 0)
-        self.assertEqual(int(self.app.console_workspace.grid_info()["column"]), 1)
-        self.assertEqual(int(self.app.navigation_rail.cget("width")), 176)
-        self.assertEqual(self.app.nav.orientation, "vertical")
-        self.app.deiconify()
-        self.app.update()
-        self.assertEqual(self.app.navigation_rail.winfo_width(), 176)
-
-    def test_rail_owns_identity_connection_navigation_and_mini_actions(self):
-        for widget in (
-            self.app.rail_identity,
-            self.app.connection_indicator,
-            self.app.nav,
-            self.app.navigation_actions,
-        ):
-            with self.subTest(widget=str(widget)):
-                self.assertTrue(
-                    self._is_descendant(widget, self.app.navigation_rail)
-                )
-        for button in (
-            self.app.reconnect_button,
-            self.app.test_button,
-            self.app.theme_button,
-        ):
-            with self.subTest(button=str(button)):
-                self.assertIs(button.master, self.app.navigation_actions)
-        self.assertEqual(
-            self.app.navigation_actions.pack_info()["side"],
-            "bottom",
-        )
-
-    def test_workspace_keeps_page_footer_runtime_order(self):
-        widgets = (
-            self.app.page_host,
-            self.app.footer_frame,
-            self.app.runtime_frame,
-        )
-        self.assertEqual(
-            [int(widget.grid_info()["row"]) for widget in widgets],
-            [0, 1, 2],
-        )
-        for widget in widgets:
-            with self.subTest(widget=str(widget)):
-                self.assertIs(widget.master, self.app.console_workspace)
-
-    def test_split_console_shell_preserves_semantic_layers_in_both_themes(self):
-        """Fails if the shell drops its graded and rounded Canvas surfaces."""
-        shell = getattr(self.app, "shell", None)
-        self.assertIsInstance(shell, tk.Canvas)
-        self.app.deiconify()
-        self.app.update()
-
-        required_tags = (
-            "rail-surface",
-            "workspace-band",
-            "rounded-surface",
-            "floating-panel",
-            "floating-panel-rail",
-            "floating-panel-page",
-            "floating-panel-runtime",
-        )
-        themed_layers = {}
-        for theme in ("light", "dark"):
-            with self.subTest(theme=theme):
-                self.assertEqual(self.app.theme_var.get(), theme)
-                for tag in required_tags:
-                    self.assertTrue(shell.find_withtag(tag), tag)
-                self.assertFalse(shell.find_withtag("panel-highlight"))
-                for item in shell.find_withtag("floating-panel"):
-                    self.assertTrue(shell.itemcget(item, "outline"))
-                    self.assertEqual(float(shell.itemcget(item, "width")), 1.0)
-                rail_fill = shell.itemcget(
-                    shell.find_withtag("rail-surface")[0], "fill"
-                )
-                workspace_fills = tuple(
-                    shell.itemcget(item, "fill")
-                    for item in shell.find_withtag("workspace-band")
-                )
-                self.assertNotIn(rail_fill, workspace_fills)
-                themed_layers[theme] = (rail_fill, workspace_fills)
-            self.app.toggle_theme()
-            self.app.update()
-        self.assertNotEqual(themed_layers["light"], themed_layers["dark"])
-
     def test_connection_indicator_has_glow_and_semantic_state_tags(self):
         """Fails if connection state returns to a text-only indicator."""
         indicator = getattr(self.app, "connection_indicator", None)
@@ -1501,32 +2639,7 @@ class JitterLayoutTests(unittest.TestCase):
         connected_fill = indicator.itemcget("status-marker", "fill")
         self.assertEqual(len({disconnected_fill, connecting_fill, connected_fill}), 3)
 
-    def test_navigation_contains_control_motion_and_settings(self):
-        self.assertEqual(self.app.nav.labels, ("Control", "Motion", "Settings"))
-        self.assertEqual(
-            self.app.pages,
-            (self.app.control_page, self.app.motion_page, self.app.settings_page),
-        )
-        self.assertFalse(hasattr(self.app, "advanced_page"))
-        self.assertFalse(hasattr(self.app, "advanced_canvas"))
-        for widget in (
-            self.app.trigger_combo,
-            self.app.modifier_combo,
-            self.app.preset_combo,
-            self.app.hotkey_button,
-            self.app.device_label,
-        ):
-            with self.subTest(widget=str(widget)):
-                self.assertTrue(self._is_descendant(widget, self.app.control_page))
-        for widget in (
-            self.app.pulse_size_px_entry,
-            self.app.pulse_rate_hz_entry,
-            self.app.ramp_mode_combo,
-        ):
-            with self.subTest(widget=str(widget)):
-                self.assertTrue(self._is_descendant(widget, self.app.motion_page))
-
-    def test_settings_page_exposes_persisted_sound_controls(self):
+    def test_settings_section_exposes_persisted_sound_controls(self):
         self.assertTrue(self.app.sound_enabled_var.get())
         self.assertEqual(self.app.sound_volume_var.get(), "70")
         self.assertEqual(self.app.sound_volume_scale.from_, 0.0)
@@ -1539,7 +2652,7 @@ class JitterLayoutTests(unittest.TestCase):
             self.app.test_off_button,
         ):
             with self.subTest(widget=str(widget)):
-                self.assertTrue(self._is_descendant(widget, self.app.settings_page))
+                self.assertTrue(self._is_descendant(widget, self.app.settings_section.body))
 
     def test_sound_preview_uses_two_compact_labeled_rows(self):
         actions = self.app.test_on_button.master
@@ -1556,8 +2669,8 @@ class JitterLayoutTests(unittest.TestCase):
         ]
         self.assertEqual(len(separators), 1)
 
-        self.assertEqual(self.app.test_on_button.cget("text"), "\u25b6")
-        self.assertEqual(self.app.test_off_button.cget("text"), "\u25b6")
+        self.assertEqual(self.app.test_on_button.cget("text"), "Play Armed Cue")
+        self.assertEqual(self.app.test_off_button.cget("text"), "Play Disabled Cue")
         self.assertEqual(
             self.app.test_on_button.cget("style"),
             "Liquid.CompactPrimary.TButton",
@@ -1566,9 +2679,6 @@ class JitterLayoutTests(unittest.TestCase):
             self.app.test_off_button.cget("style"),
             "Liquid.CompactSecondary.TButton",
         )
-        self.assertEqual(int(self.app.test_on_button.cget("width")), 2)
-        self.assertEqual(int(self.app.test_off_button.cget("width")), 2)
-
         armed_grid = labels["ARMED CUE"].grid_info()
         disabled_grid = labels["DISABLED CUE"].grid_info()
         on_grid = self.app.test_on_button.grid_info()
@@ -1601,56 +2711,6 @@ class JitterLayoutTests(unittest.TestCase):
 
         self.assertEqual(self.app.sound_player.played[-2:], [True, False])
         self.assertEqual(self.app.sound_player.forced[-2:], [True, True])
-
-    def test_settings_page_uses_header_and_three_to_two_dashboard(self):
-        self.assertEqual(self.app.settings_title_label.cget("text"), "SETTINGS")
-        self.assertTrue(
-            self._is_descendant(
-                self.app.settings_title_label, self.app.settings_page
-            )
-        )
-        self.assertEqual(
-            tuple(
-                int(self.app.settings_content.grid_columnconfigure(column)[
-                    "weight"
-                ])
-                for column in (0, 1)
-            ),
-            (3, 2),
-        )
-        self.assertEqual(
-            int(self.app.sound_feedback_card.grid_info()["column"]), 0
-        )
-        self.assertEqual(
-            int(self.app.sound_preview_card.grid_info()["column"]), 1
-        )
-        self.assertTrue(
-            self._is_descendant(
-                self.app.sound_preview_card, self.app.settings_content
-            )
-        )
-
-    def test_settings_has_no_duplicate_theme_controls(self):
-        self.app.deiconify()
-        self.app.select_page(2)
-        self.app.update()
-        self.assertTrue(self.app.settings_page.winfo_ismapped())
-        self.assertTrue(self.app.stop_button.winfo_ismapped())
-        visible_text = set(widget_texts(self.app.settings_page))
-        self.assertNotIn("APPEARANCE", visible_text)
-        self.assertNotIn("Dark", visible_text)
-        self.assertNotIn("Light", visible_text)
-        self.assertTrue(
-            self._is_descendant(
-                self.app.theme_button, self.app.navigation_actions
-            )
-        )
-        self.assertLessEqual(
-            self.app.stop_button.winfo_rooty()
-            + self.app.stop_button.winfo_height()
-            - self.app.winfo_rooty(),
-            self.app.winfo_height(),
-        )
 
     def test_settings_small_text_meets_contrast_in_both_themes(self):
         style = ttk.Style(self.app)
@@ -1701,7 +2761,7 @@ class JitterLayoutTests(unittest.TestCase):
                 )
             self.app.toggle_theme()
 
-    def test_motion_page_exposes_only_paired_pulse_controls(self):
+    def test_jitter_section_exposes_only_paired_pulse_controls(self):
         self.assertEqual(
             set(self.app.motion_vars),
             {"pulse_size_px", "pulse_rate_hz", "ramp_mode"},
@@ -1843,8 +2903,8 @@ class JitterLayoutTests(unittest.TestCase):
         modifier_card = self.app.modifier_combo.master
         self.assertIs(trigger_card.master, self.app.control_bindings_card)
         self.assertIs(modifier_card.master, self.app.control_bindings_card)
-        self.assertEqual(int(trigger_card.grid_info()["row"]), 2)
-        self.assertEqual(int(modifier_card.grid_info()["row"]), 2)
+        self.assertEqual(int(trigger_card.grid_info()["row"]), 1)
+        self.assertEqual(int(modifier_card.grid_info()["row"]), 1)
         self.assertEqual(
             (int(trigger_card.grid_info()["column"]),
              int(modifier_card.grid_info()["column"])),
@@ -1859,58 +2919,6 @@ class JitterLayoutTests(unittest.TestCase):
             ),
             (1, 1),
         )
-
-    def test_navigation_uses_compact_equal_button_layout(self):
-        self.assertEqual(int(self.app.nav.cget("height")), 168)
-        first = self.app.nav._item_bounds(0)
-        second = self.app.nav._item_bounds(1)
-        self.assertEqual(first[3] - first[1], second[3] - second[1])
-
-    def test_split_console_control_uses_exact_three_to_two_columns(self):
-        self.assertEqual(
-            int(self.app.control_bindings_card.grid_info()["column"]), 0
-        )
-        self.assertEqual(
-            int(self.app.control_device_card.grid_info()["column"]), 1
-        )
-        self.assertEqual(
-            tuple(
-                int(self.app.control_page.grid_columnconfigure(column)["weight"])
-                for column in (0, 1)
-            ),
-            (3, 2),
-        )
-        for widget in (
-            self.app.trigger_combo,
-            self.app.modifier_combo,
-            self.app.hotkey_button,
-        ):
-            self.assertTrue(
-                self._is_descendant(widget, self.app.control_bindings_card)
-            )
-        self.assertTrue(
-            self._is_descendant(self.app.preset_combo,
-                                self.app.control_device_card)
-        )
-        self.assertTrue(
-            self._is_descendant(self.app.device_label,
-                                self.app.control_device_card)
-        )
-
-    def test_control_page_uses_dashboard_header_and_surface_cards(self):
-        self.assertEqual(self.app.control_title_label.cget("text"), "CONTROL")
-        self.assertEqual(
-            int(self.app.control_title_label.master.grid_info()["row"]), 0
-        )
-        for card in (
-            self.app.control_bindings_card,
-            self.app.control_device_card,
-        ):
-            with self.subTest(card=str(card)):
-                self.assertEqual(
-                    card.cget("style"), "Liquid.SettingsCard.TFrame"
-                )
-                self.assertEqual(int(card.grid_info()["row"]), 1)
 
     def test_split_console_device_summary_stays_inside_device_card(self):
         """Fails if real Makcu diagnostics overflow the Device card."""
@@ -1978,127 +2986,11 @@ class JitterLayoutTests(unittest.TestCase):
         self.assertEqual(self.app.device_status_var.get(), "Makcu on COM6")
         self.assertTrue(any(payload in line for line in captured.output))
 
-    def test_split_console_motion_uses_exact_three_to_two_columns(self):
-        self.assertEqual(int(self.app.motion_hero_card.grid_info()["column"]), 0)
-        self.assertEqual(
-            int(self.app.motion_summary_card.grid_info()["column"]), 1
-        )
-        self.assertEqual(
-            tuple(
-                int(self.app.motion_page.grid_columnconfigure(column)["weight"])
-                for column in (0, 1)
-            ),
-            (3, 2),
-        )
-        for key in ("pulse_size_px", "pulse_rate_hz"):
-            for suffix in ("scale", "entry"):
-                with self.subTest(key=key, suffix=suffix):
-                    self.assertTrue(
-                        self._is_descendant(
-                            getattr(self.app, f"{key}_{suffix}"),
-                            self.app.motion_hero_card,
-                        )
-                    )
-        self.assertTrue(
-            self._is_descendant(
-                self.app.motion_summary_label, self.app.motion_summary_card
-            )
-        )
-        self.app.deiconify()
-        self.app.select_page(1)
-        self.app.update()
-        self.assertAlmostEqual(
-            self.app.motion_hero_card.winfo_width()
-            / self.app.motion_summary_card.winfo_width(),
-            1.5,
-            delta=0.03,
-        )
-
-    def test_motion_page_uses_dashboard_header_and_live_readouts(self):
-        self.assertEqual(self.app.motion_title_label.cget("text"), "MOTION")
-        self.assertEqual(
-            int(self.app.motion_title_label.master.grid_info()["row"]), 0
-        )
-        for card in (
-            self.app.motion_hero_card,
-            self.app.motion_summary_card,
-        ):
-            with self.subTest(card=str(card)):
-                self.assertEqual(
-                    card.cget("style"), "Liquid.SettingsCard.TFrame"
-                )
-                self.assertEqual(int(card.grid_info()["row"]), 0)
-        for card in (
-            self.app.ai_settings_card,
-            self.app.ai_status_card,
-        ):
-            with self.subTest(card=str(card)):
-                self.assertEqual(int(card.grid_info()["row"]), 1)
-        for readout, variable in (
-            (
-                self.app.motion_size_readout,
-                self.app.motion_snapshot_size_var,
-            ),
-            (
-                self.app.motion_rate_readout,
-                self.app.motion_snapshot_rate_var,
-            ),
-            (
-                self.app.motion_ramp_readout,
-                self.app.motion_snapshot_ramp_var,
-            ),
-        ):
-            with self.subTest(readout=str(readout)):
-                self.assertTrue(
-                    self._is_descendant(readout, self.app.motion_summary_card)
-                )
-                self.assertEqual(
-                    readout.cget("textvariable"), str(variable)
-                )
-
-    def test_motion_snapshot_text_is_not_clipped_at_fixed_window_size(self):
-        self.app.deiconify()
-        self.app.select_page(1)
-        self.app.update()
-        labels = {}
-        for widget in descendant_widgets(self.app.motion_summary_frame):
-            if isinstance(widget, ttk.Label):
-                labels[str(widget.cget("text"))] = widget
-        for text in ("PULSE SIZE", "PULSE RATE", "RAMP MODE"):
-            with self.subTest(text=text):
-                self.assertGreaterEqual(
-                    labels[text].winfo_width(), labels[text].winfo_reqwidth()
-                )
-        self.assertLessEqual(
-            int(self.app.motion_summary_label.cget("wraplength")),
-            self.app.motion_summary_frame.winfo_width(),
-        )
-        self.assertLessEqual(
-            self.app.motion_summary_frame.winfo_reqheight(),
-            self.app.motion_summary_frame.winfo_height(),
-        )
-        snapshot_copy = next(
-            widget
-            for widget in self.app.motion_summary_card.winfo_children()
-            if isinstance(widget, ttk.Label)
-            and str(widget.cget("text")).startswith("The immutable profile")
-        )
-        self.assertLessEqual(
-            int(snapshot_copy.cget("wraplength")),
-            self.app.motion_summary_frame.winfo_width(),
-        )
-
-    def test_motion_page_has_snapshot_backed_live_summary(self):
+    def test_jitter_section_has_snapshot_backed_live_summary(self):
         """Fails if Motion lacks a visible summary of the active snapshot."""
         summary_var = getattr(self.app, "motion_summary_var", None)
         self.assertIsInstance(summary_var, tk.StringVar)
-        self.assertTrue(
-            self._is_descendant(self.app.motion_summary_label, self.app.motion_page)
-        )
-        self.assertEqual(
-            self.app.motion_summary_label.cget("textvariable"),
-            str(summary_var),
-        )
+        self.assertIs(self.app.jitter_section.summary, summary_var)
         self.assertEqual(
             summary_var.get(),
             "2 px paired pulse at 60 Hz | Smooth",
@@ -2147,50 +3039,9 @@ class JitterLayoutTests(unittest.TestCase):
             MotionSettings(4.0, 45.0, "Instant"),
         )
 
-    def test_mini_actions_are_liquid_icon_buttons(self):
-        for button in (self.app.reconnect_button, self.app.test_button,
-                       self.app.theme_button):
-            self.assertIsInstance(button, LiquidIconButton)
-            self.assertIs(button.master, self.app.navigation_actions)
-        self.assertEqual(
-            [button.icon for button in (
-                self.app.reconnect_button,
-                self.app.test_button,
-                self.app.theme_button,
-            )],
-            ["↻", "▶", "☾"],
-        )
-
-    def test_split_console_keeps_actions_footer_runtime_and_stop_on_every_page(self):
-        self.app.deiconify()
-        self.app.update()
-        for index in range(2):
-            with self.subTest(index=index):
-                self.app.select_page(index)
-                self.app.update_idletasks()
-                self.assertTrue(all(widget.winfo_ismapped() for widget in (
-                    self.app.navigation_actions,
-                    self.app.reconnect_button,
-                    self.app.test_button,
-                    self.app.theme_button,
-                    self.app.footer_frame,
-                    self.app.runtime_frame,
-                    self.app.stop_button,
-                )))
-
-    def test_stop_is_visible_on_every_navigation_page(self):
-        self.app.deiconify()
-        for index in range(2):
-            with self.subTest(index=index):
-                self.app.select_page(index)
-                self.app.update()
-                self.assertEqual(self.app.stop_button.winfo_ismapped(), 1)
-
     def test_split_console_close_cancels_all_widget_callbacks_before_service_close(self):
         self.app.deiconify()
         self.app.update()
-        self.app.nav.select(1)
-        self.assertIsNotNone(self.app.nav._animation_after_id)
         sliders = [
             widget for widget in self._descendants(self.app)
             if isinstance(widget, LiquidSlider)
@@ -2199,21 +3050,13 @@ class JitterLayoutTests(unittest.TestCase):
         for slider in sliders:
             slider._schedule_hide_bubble()
             self.assertIsNotNone(slider._bubble_after_id)
-        self.app._show_action_tooltip(
-            SimpleNamespace(widget=self.app.reconnect_button),
-            self.app.reconnect_tooltip_text,
-        )
-        self.app._show_theme_tooltip()
         callback_states_at_service_close = []
         original_close = self.service.close
 
         def observe_service_close():
             callback_states_at_service_close.append((
                 self.app._closing,
-                self.app.nav._animation_after_id,
                 tuple(slider._bubble_after_id for slider in sliders),
-                self.app._action_tooltip,
-                self.app._theme_tooltip,
             ))
             original_close()
 
@@ -2221,62 +3064,34 @@ class JitterLayoutTests(unittest.TestCase):
         self.app.close_app()
         self.assertEqual(
             callback_states_at_service_close,
-            [(True, None, tuple(None for _slider in sliders), None, None)],
+            [(True, tuple(None for _slider in sliders))],
         )
-        self.assertIsNone(self.app.nav._animation_after_id)
 
     def test_invalid_motion_edit_does_not_change_page(self):
-        self.app.select_page(1)
+        self.app.jitter_section.set_expanded(True)
         self.app.pulse_size_px_var.set("not-a-number")
         self.app._motion_changed("pulse_size_px")
-        self.assertEqual(self.app.nav.selected_index, 1)
+        self.assertTrue(self.app.jitter_section.expanded)
         self.assertTrue(self.app.footer_var.get().startswith("Invalid value for "))
 
-    def test_mini_actions_keep_icon_button_size_and_tooltips(self):
-        for button in (self.app.reconnect_button, self.app.test_button,
-                       self.app.theme_button):
+    def test_session_and_theme_actions_use_labeled_ttk_buttons(self):
+        labels = {
+            self.app.reconnect_button: "Reconnect",
+            self.app.test_button: "Test 3s",
+            self.app.theme_button: "Switch to Dark Mode",
+        }
+        for button, label in labels.items():
             with self.subTest(button=str(button)):
-                self.assertEqual(int(button.cget("width")), 34)
-                self.assertEqual(button.pack_info()["side"], "left")
-        self.assertEqual(self.app.reconnect_tooltip_text, "Reconnect Makcu")
-        self.assertEqual(self.app.test_tooltip_text, "Test Run 3s")
-        self.assertEqual(self.app.reconnect_button.accessible_name,
-                         "Reconnect Makcu")
-        self.assertEqual(self.app.test_button.accessible_name, "Test Run 3s")
-        self.assertEqual(self.app.theme_button.accessible_name,
-                         "Switch to Dark Mode")
-        self.assertTrue(self.app.reconnect_button.bind("<Enter>"))
-        self.assertTrue(self.app.test_button.bind("<Enter>"))
+                self.assertEqual(button.cget("text"), label)
+                self.assertEqual(button.winfo_manager(), "grid")
 
-        event = SimpleNamespace(widget=self.app.reconnect_button)
-        self.app._show_action_tooltip(event, self.app.reconnect_tooltip_text)
-        tooltip = self.app._action_tooltip
-        self.assertEqual(tooltip.winfo_children()[0].cget("text"),
-                         "Reconnect Makcu")
-        self.app._hide_action_tooltip()
-        self.assertIsNone(self.app._action_tooltip)
-
-    def test_mini_action_tooltips_are_available_from_keyboard_focus(self):
+    def test_theme_action_activates_from_keyboard_focus(self):
+        self.app.settings_section.set_expanded(True)
         self.app.deiconify()
         self.app.update()
-        cases = (
-            (self.app.reconnect_button, "Reconnect Makcu", "_action_tooltip"),
-            (self.app.test_button, "Test Run 3s", "_action_tooltip"),
-            (self.app.theme_button, "Switch to Dark Mode", "_theme_tooltip"),
-        )
-        for button, expected_text, tooltip_attribute in cases:
-            with self.subTest(button=str(button)):
-                self.assertTrue(button.bind("<FocusIn>"))
-                self.assertTrue(button.bind("<FocusOut>"))
-                button.event_generate("<FocusIn>")
-                tooltip = getattr(self.app, tooltip_attribute)
-                self.assertIsNotNone(tooltip)
-                self.assertEqual(
-                    tooltip.winfo_children()[0].cget("text"),
-                    expected_text,
-                )
-                button.event_generate("<FocusOut>")
-                self.assertIsNone(getattr(self.app, tooltip_attribute))
+        self.app.theme_button.focus_set()
+        self.app.theme_button.invoke()
+        self.assertEqual(self.app.theme_button.cget("text"), "Switch to Light Mode")
 
     def test_split_console_page_and_theme_changes_preserve_state_and_geometry(self):
         self.app.pulse_size_px_var.set("4")
@@ -2299,15 +3114,12 @@ class JitterLayoutTests(unittest.TestCase):
         )
         expected_geometry = self.app.geometry()
 
-        for index in (1, 0):
-            with self.subTest(index=index):
-                self.app.select_page(index)
+        for section in (self.app.jitter_section, self.app.control_section):
+            with self.subTest(section=section.title):
+                section.set_expanded(True)
                 self.app.toggle_theme()
                 self.app.update_idletasks()
-                self.assertEqual(self.app.nav.selected_index, index)
-                self.assertEqual(
-                    self.app.page_host.grid_slaves(), [self.app.pages[index]]
-                )
+                self.assertTrue(section.expanded)
                 self.assertEqual(self.app.motion_summary_var.get(), expected_summary)
                 self.assertEqual(
                     {
@@ -2352,30 +3164,10 @@ class JitterLayoutTests(unittest.TestCase):
                     self._is_descendant(widget, self.app.console_workspace)
                 )
 
-    def test_identity_shows_connection_and_control_shows_device_summary(self):
-        self.assertTrue(self._is_descendant(self.app.device_label,
-                                            self.app.control_page))
-        self.assertTrue(self._is_descendant(self.app.connection_label,
-                                            self.app.identity_frame))
-        self.assertFalse(self._is_descendant(self.app.reconnect_button,
-                                             self.app.identity_frame))
-
-    def test_theme_toggle_lives_in_navigation_not_identity(self):
-        self.assertIs(self.app.theme_button.master, self.app.navigation_actions)
-        self.assertFalse(self._is_descendant(self.app.theme_button,
-                                             self.app.identity_frame))
-        self.assertEqual(self.app.theme_button.pack_info()["side"], "left")
-
-    def test_theme_icon_tooltip_appears_on_hover_and_is_removed(self):
-        self.app._show_theme_tooltip()
-        tooltip = self.app._theme_tooltip
-        self.assertIsNotNone(tooltip)
-        self.assertEqual(tooltip.winfo_children()[0].cget("text"),
-                         "Switch to Dark Mode")
-
-        self.app._hide_theme_tooltip()
-        self.assertIsNone(self.app._theme_tooltip)
-        self.assertEqual(tooltip.winfo_exists(), 0)
+    def test_theme_action_updates_its_label(self):
+        self.assertEqual(self.app.theme_button.cget("text"), "Switch to Dark Mode")
+        self.app.theme_button.invoke()
+        self.assertEqual(self.app.theme_button.cget("text"), "Switch to Light Mode")
 
     def test_runtime_group_keeps_stop_always_visible(self):
         self.assertTrue(self._is_descendant(self.app.stop_button,
@@ -2407,11 +3199,16 @@ class JitterLayoutTests(unittest.TestCase):
 
     def test_combobox_popups_use_liquid_colors_in_both_themes(self):
         """Fails if classic Tk popup Listboxes ignore the active theme."""
+        self.app.open_overlay_customizer()
         combos = (
             self.app.trigger_combo,
             self.app.modifier_combo,
             self.app.preset_combo,
             self.app.ramp_mode_combo,
+            self.app.target_area_combo,
+            self.app.capture_mode_combo,
+            self.app.overlay_label_mode_combo,
+            self.app.overlay_hud_corner_combo,
         )
         for expected in (
             ("#FFFFFF", "#263640", "#55DDF6", "#07252C"),
@@ -2457,6 +3254,9 @@ class JitterLayoutTests(unittest.TestCase):
                         "none",
                     )
             self.app.toggle_theme()
+
+        self.app.close_overlay_customizer()
+        self.app._apply_combobox_popup_palette()
 
     def test_light_disabled_secondary_button_remains_readable(self):
         """Fails if disabled secondary text drops below readable contrast."""
@@ -2529,21 +3329,23 @@ class JitterLayoutTests(unittest.TestCase):
                     )
             self.app.toggle_theme()
 
-    def test_mini_icon_contrast_across_themes_and_interaction_states(self):
-        """Fails if a mini-action symbol lacks non-text contrast."""
+    def test_labeled_action_text_contrast_across_themes_and_interaction_states(self):
+        """Fails if compact action labels become unreadable."""
         for theme in ("light", "dark"):
-            palette = self.app._icon_palette()
             cases = (
-                ("normal", "icon", "surface"),
-                ("hover", "icon", "surface_hover"),
-                ("pressed", "icon", "surface_pressed"),
-                ("disabled", "icon_disabled", "surface_disabled"),
+                ("Liquid.Primary.TButton", None),
+                ("Liquid.Primary.TButton", "active"),
+                ("Liquid.Secondary.TButton", None),
+                ("Liquid.Secondary.TButton", "active"),
             )
-            for state, icon_role, surface_role in cases:
-                with self.subTest(theme=theme, state=state):
+            style = ttk.Style(self.app)
+            for widget_style, state in cases:
+                with self.subTest(theme=theme, state=state or "normal"):
+                    states = () if state is None else (state,)
                     self.assertGreaterEqual(
                         contrast_ratio(
-                            palette[icon_role], palette[surface_role]
+                            style.lookup(widget_style, "foreground", states),
+                            style.lookup(widget_style, "background", states),
                         ),
                         3.0,
                     )
@@ -2613,18 +3415,8 @@ class JitterLayoutTests(unittest.TestCase):
             "Jitter OFF", "AI Aim OFF", "Enable Selected", "Overlay OFF", "STOP"
         ):
             self.assertIn(expected, texts)
-        self.assertEqual(self.app.reconnect_button.icon, "↻")
-        self.assertEqual(self.app.test_button.icon, "▶")
-    def test_page_selection_does_not_change_outer_geometry(self):
-        self.app.update_idletasks()
-        before = self.app.geometry().split("+")[0]
-        self.app.select_page(1)
-        self.app.update_idletasks()
-        after = self.app.geometry().split("+")[0]
-        self.assertEqual(after, before)
-
-
-class JitterRuntimeTests(JitterLayoutTests):
+        self.assertEqual(self.app.reconnect_button.cget("text"), "Reconnect")
+        self.assertEqual(self.app.test_button.cget("text"), "Test 3s")
     def drain_ui_queue(self):
         self.app._cancel_after("_ui_pump_after_id")
         self.app._drain_ui_queue()
@@ -2639,12 +3431,16 @@ class JitterRuntimeTests(JitterLayoutTests):
             path = Path(directory) / "custom.onnx"
             path.write_bytes(b"model")
             self.model_dialog_result = str(path)
+            resets_before_switch = self.ai.reset_targeting_calls
             self.app.model_browse_button.invoke()
             choice, token = self.model_validator.start_calls[-1]
 
             self.assertIn("model_switch", self.service.cancel_reasons)
             self.assertEqual(self.ai.stop_calls[-1], "Model switch")
-            self.assertEqual(self.ai.reset_targeting_calls, 1)
+            self.assertEqual(
+                self.ai.reset_targeting_calls,
+                resets_before_switch + 1,
+            )
             self.assertFalse(self.app._ai_ready)
             self.assertEqual(self.app.ai_zoom_var.get(), "1.0×")
             self.assertTrue(self.app.master_armed)
@@ -2663,7 +3459,7 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.assertEqual(self.app._model_switch.phase, "starting_candidate")
         self.assertFalse(self.app._normal_motion_started)
 
-        self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        self.handle_current_ai_event(AiEvent("ready", "DmlExecutionProvider"))
         self.assertEqual(
             self.app.ai_model_var.get(),
             "Custom · custom.onnx · 640×640",
@@ -2676,6 +3472,254 @@ class JitterRuntimeTests(JitterLayoutTests):
         ))
         self.drain_ui_queue()
         self.assertTrue(self.app._normal_motion_started)
+
+    def test_model_candidate_waits_for_physical_worker_retirement(self):
+        self.prepare_armed_sources(MotionSources(False, True))
+        self.ai.retire_immediately = False
+        choice, token = self.begin_custom_model_switch("retiring-candidate.onnx")
+        starts = len(self.ai.start_calls)
+        validated = self.validated_model_choice(choice, 640)
+
+        self.model_validator.emit(
+            ModelValidationEvent("ready", token, validated)
+        )
+        self.drain_ui_queue()
+
+        self.assertEqual(len(self.ai.start_calls), starts)
+        self.assertIsNotNone(self.app._model_switch)
+        self.assertEqual(self.app._model_switch.phase, "starting_candidate")
+        self.assertEqual(self.app._model_choice, self.app._model_switch.previous)
+
+        self.drain_ui_queue()
+        self.assertEqual(len(self.ai.start_calls), starts)
+
+        self.ai.finish_retirement()
+        self.drain_ui_queue()
+
+        self.assertEqual(len(self.ai.start_calls), starts + 1)
+        self.assertEqual(self.ai.start_calls[-1][2], validated.path)
+        self.assertEqual(self.ai.start_calls[-1][3], CENTER_320)
+        self.assertEqual(self.app._model_switch.phase, "starting_candidate")
+
+        self.handle_current_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        self.assertIsNone(self.app._model_switch)
+        self.assertEqual(self.app._model_choice, validated)
+
+    def test_capture_restart_disables_and_guards_model_changes(self):
+        self.app.toggle_overlay()
+        self.ai.emit(AiEvent("ready", "DmlExecutionProvider"))
+        self.drain_ui_queue()
+        self.ai.retire_immediately = False
+
+        self.app.capture_mode_var.set("Full Display")
+        self.app._capture_mode_changed()
+        validation_calls = list(self.model_validator.start_calls)
+        self.model_dialog_result = str(Path("blocked-during-capture.onnx"))
+
+        self.assertEqual(
+            str(self.app.model_browse_button.cget("state")), "disabled"
+        )
+        self.app.browse_ai_model()
+        self.app.use_default_ai_model()
+
+        self.assertEqual(self.model_validator.start_calls, validation_calls)
+        self.assertIsNone(self.app._model_switch)
+        self.assertTrue(self.app._capture_mode_switching)
+
+    def test_conflicting_capture_and_model_pending_starts_fail_closed(self):
+        self.prepare_armed_sources(MotionSources(False, True))
+        self.app.toggle_overlay()
+        self.ai.retire_immediately = False
+        choice, token = self.begin_custom_model_switch("conflict.onnx")
+        self.model_validator.emit(
+            ModelValidationEvent(
+                "ready", token, self.validated_model_choice(choice)
+            )
+        )
+        self.drain_ui_queue()
+        starts = len(self.ai.start_calls)
+        self.assertEqual(self.app._model_switch.phase, "starting_candidate")
+
+        self.app._capture_mode_switching = True
+        self.app._capture_restart_pending = True
+        self.ai.finish_retirement()
+        with self.assertLogs(level="ERROR"):
+            self.drain_ui_queue()
+
+        self.assertEqual(len(self.ai.start_calls), starts)
+        self.assertFalse(self.app._capture_restart_pending)
+        self.assertFalse(self.app._capture_mode_switching)
+        self.assertIsNone(self.app._model_start_pending)
+        self.assertIsNone(self.app._model_switch)
+        self.assertFalse(self.app.overlay_visible)
+
+    def test_stale_ready_generation_cannot_commit_model_candidate(self):
+        self.prepare_armed_sources(MotionSources(False, True))
+        old_generation = self.ai.active_generation
+        choice, token = self.begin_custom_model_switch("generation-bound.onnx")
+        validated = self.validated_model_choice(choice)
+        self.model_validator.emit(
+            ModelValidationEvent("ready", token, validated)
+        )
+        self.drain_ui_queue()
+        candidate_generation = self.ai.active_generation
+        previous = self.app._model_switch.previous
+
+        self.app.handle_ai_event(
+            AiEvent(
+                "ready",
+                "DmlExecutionProvider",
+                generation=old_generation,
+            )
+        )
+
+        self.assertIsNotNone(self.app._model_switch)
+        self.assertEqual(self.app._model_switch.phase, "starting_candidate")
+        self.assertEqual(self.app._model_choice, previous)
+        self.assertFalse(self.app._ai_ready)
+
+        self.app.handle_ai_event(
+            AiEvent(
+                "ready",
+                "DmlExecutionProvider",
+                generation=candidate_generation,
+            )
+        )
+        self.assertIsNone(self.app._model_switch)
+        self.assertEqual(self.app._model_choice, validated)
+
+    def test_generationless_ready_cannot_commit_active_model_candidate(self):
+        self.prepare_armed_sources(MotionSources(False, True))
+        choice, token = self.begin_custom_model_switch(
+            "generationless-ready.onnx"
+        )
+        validated = self.validated_model_choice(choice)
+        self.model_validator.emit(
+            ModelValidationEvent("ready", token, validated)
+        )
+        self.drain_ui_queue()
+        candidate_generation = self.ai.active_generation
+        switch = self.app._model_switch
+        previous = switch.previous
+        state_before = (
+            self.app._ai_ready,
+            self.app._ai_provider,
+            self.app.ai_status_var.get(),
+            self.app.ai_fps_var.get(),
+            self.app.ai_provider_var.get(),
+            self.app.footer_var.get(),
+            self.app.master_armed,
+            self.app.jitter_selected,
+            self.app.ai_selected,
+            self.app.overlay_visible,
+            self.app._normal_motion_started,
+        )
+
+        self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+
+        self.assertIs(self.app._model_switch, switch)
+        self.assertEqual(self.app._model_switch.phase, "starting_candidate")
+        self.assertEqual(self.app._model_choice, previous)
+        self.assertEqual(
+            (
+                self.app._ai_ready,
+                self.app._ai_provider,
+                self.app.ai_status_var.get(),
+                self.app.ai_fps_var.get(),
+                self.app.ai_provider_var.get(),
+                self.app.footer_var.get(),
+                self.app.master_armed,
+                self.app.jitter_selected,
+                self.app.ai_selected,
+                self.app.overlay_visible,
+                self.app._normal_motion_started,
+            ),
+            state_before,
+        )
+
+        self.app.handle_ai_event(
+            AiEvent(
+                "ready",
+                "DmlExecutionProvider",
+                generation=candidate_generation,
+            )
+        )
+        self.assertIsNone(self.app._model_switch)
+        self.assertEqual(self.app._model_choice, validated)
+        self.assertTrue(self.app._ai_ready)
+
+    def test_generationless_error_cannot_roll_back_active_model_candidate(self):
+        self.prepare_armed_sources(MotionSources(False, True))
+        choice, token = self.begin_custom_model_switch(
+            "generationless-error.onnx"
+        )
+        self.model_validator.emit(
+            ModelValidationEvent(
+                "ready", token, self.validated_model_choice(choice)
+            )
+        )
+        self.drain_ui_queue()
+        candidate_generation = self.ai.active_generation
+        switch = self.app._model_switch
+        starts_before = len(self.ai.start_calls)
+        state_before = (
+            self.app._capture_restart_pending,
+            self.app._capture_mode_switching,
+            self.app._ai_ready,
+            self.app._ai_provider,
+            self.app._ai_runtime_active,
+            self.app.ai_status_var.get(),
+            self.app.footer_var.get(),
+            self.app.master_armed,
+            self.app.jitter_selected,
+            self.app.ai_selected,
+            self.app.overlay_visible,
+        )
+
+        self.app.handle_ai_event(AiEvent("error", "candidate failed"))
+
+        self.assertIs(self.app._model_switch, switch)
+        self.assertEqual(self.app._model_switch.phase, "starting_candidate")
+        self.assertIsNone(self.app._model_switch.failure)
+        self.assertEqual(len(self.ai.start_calls), starts_before)
+        self.assertEqual(
+            (
+                self.app._capture_restart_pending,
+                self.app._capture_mode_switching,
+                self.app._ai_ready,
+                self.app._ai_provider,
+                self.app._ai_runtime_active,
+                self.app.ai_status_var.get(),
+                self.app.footer_var.get(),
+                self.app.master_armed,
+                self.app.jitter_selected,
+                self.app.ai_selected,
+                self.app.overlay_visible,
+            ),
+            state_before,
+        )
+
+        with self.assertLogs(level="ERROR"):
+            self.app.handle_ai_event(
+                AiEvent(
+                    "error",
+                    "candidate failed",
+                    generation=candidate_generation,
+                )
+            )
+        self.assertEqual(self.app._model_switch.phase, "starting_rollback")
+        self.assertEqual(self.app._model_switch.failure, "candidate failed")
+        self.assertEqual(len(self.ai.start_calls), starts_before + 1)
+
+    def test_generationless_ready_remains_valid_without_active_lifecycle(self):
+        self.app._ai_runtime_active = True
+        self.assertIsNone(self.app._active_ai_lifecycle)
+
+        self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+
+        self.assertTrue(self.app._ai_ready)
+        self.assertEqual(self.app._ai_provider, "DmlExecutionProvider")
+        self.assertEqual(self.app.ai_status_var.get(), "Ready (DirectML)")
 
     def test_model_controls_remain_available_for_each_active_demand(self):
         for sources, overlay in (
@@ -2705,7 +3749,7 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.drain_ui_queue()
         self.assertEqual(self.ai.start_calls[-1][2], self.app._model_choice.path)
         self.assertEqual(self.app._model_switch.phase, "starting_rollback")
-        self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        self.handle_current_ai_event(AiEvent("ready", "DmlExecutionProvider"))
         self.assertIsNone(self.app._model_switch)
         self.assertEqual(
             self.app.footer_var.get(),
@@ -2723,9 +3767,57 @@ class JitterRuntimeTests(JitterLayoutTests):
             "ready", token, self.validated_model_choice(choice)
         ))
         self.drain_ui_queue()
-        self.app.handle_ai_event(AiEvent("error", "RuntimeError: AI service failed"))
+        self.handle_current_ai_event(
+            AiEvent("error", "RuntimeError: AI service failed")
+        )
         self.assertEqual(self.app._model_switch.phase, "starting_rollback")
         self.assertEqual(self.ai.start_calls[-1][2], self.app._model_switch.previous.path)
+
+    def test_model_rollback_waits_for_candidate_worker_retirement(self):
+        self.app.capture_mode_var.set("Full Display")
+        self.app._capture_mode_changed()
+        self.prepare_armed_sources(MotionSources(False, True))
+        choice, token = self.begin_custom_model_switch("retiring-rollback.onnx")
+        self.model_validator.emit(
+            ModelValidationEvent(
+                "ready", token, self.validated_model_choice(choice)
+            )
+        )
+        self.drain_ui_queue()
+        previous = self.app._model_switch.previous
+        self.assertEqual(self.app._model_switch.phase, "starting_candidate")
+        starts = len(self.ai.start_calls)
+        self.ai.retire_immediately = False
+
+        with self.assertLogs(level="ERROR"):
+            self.handle_current_ai_event(
+                AiEvent("error", "candidate failed")
+            )
+
+        self.assertEqual(len(self.ai.start_calls), starts)
+        self.assertIsNotNone(self.app._model_switch)
+        self.assertEqual(self.app._model_switch.phase, "starting_rollback")
+        self.assertEqual(self.app._model_switch.failure, "candidate failed")
+
+        self.drain_ui_queue()
+        self.assertEqual(len(self.ai.start_calls), starts)
+
+        self.ai.finish_retirement()
+        self.drain_ui_queue()
+
+        self.assertEqual(len(self.ai.start_calls), starts + 1)
+        self.assertEqual(self.ai.start_calls[-1][2], previous.path)
+        self.assertEqual(self.ai.start_calls[-1][3], FULL_DISPLAY)
+        rollback_starts = [
+            call
+            for call in self.ai.start_calls[starts:]
+            if call[2] == previous.path
+        ]
+        self.assertEqual(len(rollback_starts), 1)
+
+        self.handle_current_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        self.assertIsNone(self.app._model_switch)
+        self.assertEqual(self.app._model_choice, previous)
 
     def test_reconcile_preserves_started_candidate_until_its_ready_event(self):
         self.prepare_armed_sources(MotionSources(False, True))
@@ -2742,7 +3834,7 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.assertIsNotNone(self.app._model_switch)
         self.assertEqual(self.app._model_switch.phase, "starting_candidate")
         self.assertEqual(self.app._model_choice, previous)
-        self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        self.handle_current_ai_event(AiEvent("ready", "DmlExecutionProvider"))
         self.assertIsNone(self.app._model_switch)
         self.assertEqual(self.app._model_choice, validated)
 
@@ -2778,7 +3870,7 @@ class JitterRuntimeTests(JitterLayoutTests):
             "ready", token, self.validated_model_choice(choice)
         ))
         self.drain_ui_queue()
-        self.app.handle_ai_event(AiEvent("error", "candidate failed"))
+        self.handle_current_ai_event(AiEvent("error", "candidate failed"))
         previous = self.app._model_switch.previous
         self.app.queue_ai_event(AiEvent("ready", "DmlExecutionProvider"))
 
@@ -2810,7 +3902,9 @@ class JitterRuntimeTests(JitterLayoutTests):
                 )
                 self.drain_ui_queue()
                 if phase == "rollback":
-                    self.app.handle_ai_event(AiEvent("error", "candidate failed"))
+                    self.handle_current_ai_event(
+                        AiEvent("error", "candidate failed")
+                    )
                 previous = self.app._model_switch.previous
                 starts_before_stop = len(self.ai.start_calls)
                 self.ai.stop_exception = RuntimeError("stop failed")
@@ -2848,10 +3942,10 @@ class JitterRuntimeTests(JitterLayoutTests):
             "ready", token, self.validated_model_choice(choice)
         ))
         self.drain_ui_queue()
-        self.app.handle_ai_event(AiEvent("error", "candidate failed"))
+        self.handle_current_ai_event(AiEvent("error", "candidate failed"))
         starts_before_failure = len(self.ai.start_calls)
         with self.assertLogs(level="ERROR"):
-            self.app.handle_ai_event(AiEvent("error", "rollback failed"))
+            self.handle_current_ai_event(AiEvent("error", "rollback failed"))
         self.assertEqual(len(self.ai.start_calls), starts_before_failure)
         self.assertIsNone(self.app._model_switch)
         self.assertFalse(self.app.ai_selected)
@@ -3018,6 +4112,73 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.assertEqual(self.app._model_choice, previous)
         self.assertEqual(self.ai.start_calls[-1][2], previous.path)
 
+    def test_disconnect_with_overlay_defers_previous_model_until_retirement(self):
+        self.app.capture_mode_var.set("Full Display")
+        self.app._capture_mode_changed()
+        self.prepare_armed_sources(MotionSources(False, True))
+        self.app.toggle_overlay()
+        previous = self.app._model_choice
+        choice, token = self.begin_custom_model_switch("disconnect-retiring.onnx")
+        self.model_validator.emit(
+            ModelValidationEvent(
+                "ready", token, self.validated_model_choice(choice)
+            )
+        )
+        self.drain_ui_queue()
+        self.ai.retire_immediately = False
+        starts = len(self.ai.start_calls)
+        self.service.connected = False
+
+        self.app._handle_disconnect("Device disconnected")
+
+        self.assertTrue(self.app.overlay_visible)
+        self.assertFalse(self.app.master_armed)
+        self.assertIsNone(self.app._model_switch)
+        self.assertEqual(self.app._model_choice, previous)
+        self.assertEqual(len(self.ai.start_calls), starts)
+        self.assertIsNotNone(getattr(self.app, "_deferred_ai_start", None))
+
+        self.ai.finish_retirement()
+        self.drain_ui_queue()
+
+        self.assertEqual(len(self.ai.start_calls), starts + 1)
+        self.assertEqual(self.ai.start_calls[-1][2], previous.path)
+        self.assertEqual(self.ai.start_calls[-1][3], FULL_DISPLAY)
+        self.assertTrue(self.app.overlay_visible)
+
+    def test_cancelled_model_switch_defers_previous_model_until_retirement(self):
+        self.app.capture_mode_var.set("Full Display")
+        self.app._capture_mode_changed()
+        self.prepare_armed_sources(MotionSources(False, True))
+        self.app.toggle_overlay()
+        previous = self.app._model_choice
+        choice, token = self.begin_custom_model_switch("cancel-retiring.onnx")
+        self.model_validator.emit(
+            ModelValidationEvent(
+                "ready", token, self.validated_model_choice(choice)
+            )
+        )
+        self.drain_ui_queue()
+        self.ai.retire_immediately = False
+        starts = len(self.ai.start_calls)
+
+        self.app.toggle_ai_source()
+
+        self.assertTrue(self.app.overlay_visible)
+        self.assertFalse(self.app.ai_selected)
+        self.assertIsNone(self.app._model_switch)
+        self.assertEqual(self.app._model_choice, previous)
+        self.assertEqual(len(self.ai.start_calls), starts)
+        self.assertIsNotNone(getattr(self.app, "_deferred_ai_start", None))
+
+        self.ai.finish_retirement()
+        self.drain_ui_queue()
+
+        self.assertEqual(len(self.ai.start_calls), starts + 1)
+        self.assertEqual(self.ai.start_calls[-1][2], previous.path)
+        self.assertEqual(self.ai.start_calls[-1][3], FULL_DISPLAY)
+        self.assertTrue(self.app.overlay_visible)
+
     def test_close_invalidates_switch_token_before_validator_is_closed(self):
         choice, token = self.begin_custom_model_switch("close.onnx")
         starts = len(self.ai.start_calls)
@@ -3050,13 +4211,13 @@ class JitterRuntimeTests(JitterLayoutTests):
             str(self.app.model_browse_button.cget("state")), "disabled"
         )
 
-        self.app.handle_ai_event(AiEvent("error", "candidate failed"))
+        self.handle_current_ai_event(AiEvent("error", "candidate failed"))
         self.assertEqual(self.app._model_switch.phase, "starting_rollback")
         self.assertEqual(
             str(self.app.use_default_model_button.cget("state")), "disabled"
         )
 
-        self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        self.handle_current_ai_event(AiEvent("ready", "DmlExecutionProvider"))
         self.assertIsNone(self.app._model_switch)
         self.assertEqual(
             str(self.app.model_browse_button.cget("state")), "normal"
@@ -3107,10 +4268,10 @@ class JitterRuntimeTests(JitterLayoutTests):
             "ready", token, self.validated_model_choice(choice)
         ))
         self.drain_ui_queue()
-        self.app.handle_ai_event(AiEvent("error", "candidate failed"))
+        self.handle_current_ai_event(AiEvent("error", "candidate failed"))
 
         with self.assertLogs(level="ERROR"):
-            self.app.handle_ai_event(AiEvent("error", "rollback failed"))
+            self.handle_current_ai_event(AiEvent("error", "rollback failed"))
 
         self.assertIsNone(self.app._model_switch)
         self.assertGreater(self.app._model_switch_token, token)
@@ -3133,7 +4294,9 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.ai.start_result = False
 
         with self.assertLogs(level="ERROR"):
-            self.app.handle_ai_event(AiEvent("error", "candidate failed"))
+            self.handle_current_ai_event(
+                AiEvent("error", "candidate failed")
+            )
 
         self.assertIsNone(self.app._model_switch)
         self.assertGreater(self.app._model_switch_token, token)
@@ -3146,7 +4309,7 @@ class JitterRuntimeTests(JitterLayoutTests):
             str(self.app.model_browse_button.cget("state")), "normal"
         )
 
-    def test_candidate_error_contains_stop_failure_and_starts_one_rollback(self):
+    def test_candidate_error_contains_stop_failure_and_defers_one_rollback(self):
         self.prepare_armed_sources(MotionSources(False, True))
         choice, token = self.begin_custom_model_switch("stop-error.onnx")
         self.model_validator.emit(ModelValidationEvent(
@@ -3159,12 +4322,20 @@ class JitterRuntimeTests(JitterLayoutTests):
 
         failure = None
         try:
-            self.app.handle_ai_event(AiEvent("error", "candidate failed"))
+            self.handle_current_ai_event(AiEvent("error", "candidate failed"))
         except RuntimeError as error:
             failure = error
 
         self.assertIsNone(failure)
         self.assertEqual(self.app._model_switch.phase, "starting_rollback")
+        self.assertEqual(len(self.ai.start_calls), starts_before_error)
+
+        self.drain_ui_queue()
+        self.assertEqual(len(self.ai.start_calls), starts_before_error)
+
+        self.ai.finish_retirement()
+        self.drain_ui_queue()
+
         self.assertEqual(len(self.ai.start_calls), starts_before_error + 1)
         self.assertEqual(self.ai.start_calls[-1][2], previous.path)
         self.assertEqual(self.app._model_switch.token, token)
@@ -3190,7 +4361,9 @@ class JitterRuntimeTests(JitterLayoutTests):
                 )
                 self.drain_ui_queue()
                 if overlay:
-                    self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+                    self.handle_current_ai_event(
+                        AiEvent("ready", "DmlExecutionProvider")
+                    )
 
                 self.app.use_default_ai_model()
                 default, default_token = self.model_validator.start_calls[-1]
@@ -3199,7 +4372,9 @@ class JitterRuntimeTests(JitterLayoutTests):
                 )
                 self.drain_ui_queue()
                 if overlay:
-                    self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+                    self.handle_current_ai_event(
+                        AiEvent("ready", "DmlExecutionProvider")
+                    )
 
                 self.assertTrue(self.app._normal_motion_started)
                 self.assertEqual(self.service.active_motion_generation, motion_generation)
@@ -3278,27 +4453,386 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.app.set_master(True)
         if sources.ai:
             self.app.handle_ai_event(
-                AiEvent("ready", "DmlExecutionProvider")
+                AiEvent(
+                    "ready",
+                    "DmlExecutionProvider",
+                    generation=self.ai.active_generation,
+                )
             )
         if gate_active:
             self.app.handle_service_event(
                 ServiceEvent("button", ("Left", True))
             )
 
+    def begin_ai_trigger_epoch(self):
+        self.prepare_armed_sources(MotionSources(False, True))
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        epoch = self.app.get_trigger_lock_epoch()
+        self.assertIsInstance(epoch, int)
+        return epoch
+
+    def test_ai_runtime_receives_thread_safe_trigger_epoch_provider(self):
+        self.service.connected = True
+        self.app.toggle_ai_source()
+        self.app.set_master(True)
+        provider = self.ai.trigger_epoch_providers[-1]
+        self.assertIs(provider.__self__, self.app)
+        self.assertIs(provider.__func__, self.app.get_trigger_lock_epoch.__func__)
+        self.assertIsNone(provider())
+
+    def test_ai_worker_trigger_epoch_provider_reads_only_snapshot_state(self):
+        self.service.connected = True
+        self.app.toggle_ai_source()
+        self.app.set_master(True)
+        provider = self.ai.trigger_epoch_providers[-1]
+        self.app._publish_trigger_lock_epoch(73, "normal")
+        results = []
+        errors = []
+        completed = threading.Event()
+
+        def forbid_tk_access(*_args, **_kwargs):
+            raise AssertionError("AI worker provider accessed Tk state")
+
+        def read_epoch_from_worker():
+            try:
+                results.append(provider())
+            except BaseException as exc:
+                errors.append(exc)
+            finally:
+                completed.set()
+
+        with (
+            mock.patch.object(
+                self.app.trigger_var,
+                "get",
+                side_effect=forbid_tk_access,
+            ),
+            mock.patch.object(
+                self.app.master_button,
+                "cget",
+                side_effect=forbid_tk_access,
+            ),
+        ):
+            worker = threading.Thread(target=read_epoch_from_worker, daemon=True)
+            worker.start()
+            completed_in_time = completed.wait(1.0)
+            worker.join(1.0)
+
+        self.assertTrue(completed_in_time, "AI worker provider hung")
+        self.assertFalse(worker.is_alive(), "AI worker provider did not retire")
+        self.assertEqual(errors, [])
+        self.assertEqual(results, [73])
+
+    def test_raw_trigger_release_and_repress_creates_new_epoch(self):
+        self.prepare_armed_sources(MotionSources(False, True))
+        self.handle_current_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        first = self.app.get_trigger_lock_epoch()
+        self.assertIsInstance(first, int)
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        self.assertEqual(self.app.get_trigger_lock_epoch(), first)
+        self.app.handle_service_event(ServiceEvent("button", ("Left", False)))
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        self.assertGreater(self.app.get_trigger_lock_epoch(), first)
+
+    def test_stale_queued_trigger_down_preserves_physical_latch_only(self):
+        self.service.connected = True
+        self.app.ai_selected = True
+        self.app.queue_service_event(
+            ServiceEvent("button", ("Left", True))
+        )
+
+        self.app.set_master(True)
+        self.drain_ui_queue()
+
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+        self.assertFalse(self.app.trigger_gate.trigger_held)
+        self.assertFalse(self.app._normal_motion_started)
+
+        self.app.queue_service_event(
+            ServiceEvent("button", ("Left", True))
+        )
+        self.drain_ui_queue()
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+
+        self.app.queue_service_event(
+            ServiceEvent("button", ("Left", False))
+        )
+        self.drain_ui_queue()
+        self.app.queue_service_event(
+            ServiceEvent("button", ("Left", True))
+        )
+        self.drain_ui_queue()
+        self.assertIsInstance(self.app.get_trigger_lock_epoch(), int)
+
+    def test_stale_queued_trigger_release_updates_physical_latch(self):
+        self.prepare_armed_sources(MotionSources(False, True))
+        self.app.queue_service_event(
+            ServiceEvent("button", ("Left", True))
+        )
+        self.drain_ui_queue()
+        first = self.app.get_trigger_lock_epoch()
+        self.assertIsInstance(first, int)
+
+        self.app.queue_service_event(
+            ServiceEvent("button", ("Left", False))
+        )
+        self.app.set_master(False)
+        self.drain_ui_queue()
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+        self.assertFalse(self.app.trigger_gate.trigger_held)
+
+        self.app.set_master(True)
+        self.app.queue_service_event(
+            ServiceEvent("button", ("Left", True))
+        )
+        self.drain_ui_queue()
+        next_epoch = self.app.get_trigger_lock_epoch()
+        self.assertIsInstance(next_epoch, int)
+        self.assertGreater(next_epoch, first)
+
+    def test_modifier_release_repress_keeps_raw_trigger_epoch(self):
+        self.app.modifier_var.set("Right")
+        self.app.on_bindings_changed()
+        self.prepare_armed_sources(MotionSources(False, True))
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        epoch = self.app.get_trigger_lock_epoch()
+        self.app.handle_service_event(ServiceEvent("button", ("Right", True)))
+        self.app.handle_service_event(ServiceEvent("button", ("Right", False)))
+        self.app.handle_service_event(ServiceEvent("button", ("Right", True)))
+        self.assertEqual(self.app.get_trigger_lock_epoch(), epoch)
+        self.app.handle_service_event(ServiceEvent("button", ("Left", False)))
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+
+    def test_press_while_master_disabled_requires_new_raw_press_after_enable(self):
+        self.service.connected = True
+        self.app.ai_selected = True
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+        self.app.set_master(True)
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+        self.app.handle_service_event(ServiceEvent("button", ("Left", False)))
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        self.assertIsInstance(self.app.get_trigger_lock_epoch(), int)
+
+    def test_press_while_ai_unselected_requires_new_press_after_source_addition(self):
+        self.prepare_armed_sources(MotionSources(True, False))
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+        self.app.toggle_ai_source()
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+        self.app.handle_service_event(ServiceEvent("button", ("Left", False)))
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        self.assertIsInstance(self.app.get_trigger_lock_epoch(), int)
+
+    def test_press_while_disconnected_cannot_acquire_after_reconnect(self):
+        self.prepare_armed_sources(MotionSources(False, True))
+        self.service.connected = False
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+        self.service.connected = True
+        self.app.handle_service_event(ServiceEvent("reconnected", "Makcu"))
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+
+    def test_stop_clears_trigger_epoch_before_runtime_cancellation(self):
+        self.begin_ai_trigger_epoch()
+        self.app.emergency_stop("test stop")
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+
+    def test_disconnect_clears_trigger_epoch(self):
+        self.begin_ai_trigger_epoch()
+        self.app.handle_service_event(ServiceEvent("disconnected", "lost"))
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+
+    def test_binding_change_clears_trigger_epoch(self):
+        self.begin_ai_trigger_epoch()
+        self.app.trigger_var.set("Mouse4")
+        self.app.on_bindings_changed()
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+
+    def test_ai_source_removal_clears_trigger_epoch(self):
+        self.begin_ai_trigger_epoch()
+        self.app.toggle_ai_source()
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+
+    def test_adding_or_removing_jitter_clears_normal_ai_epoch(self):
+        epoch = self.begin_ai_trigger_epoch()
+        self.app.toggle_jitter_source()
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+        self.app.handle_service_event(ServiceEvent("button", ("Left", False)))
+
+        self.app.close_app()
+        self.make_app()
+        self.prepare_armed_sources(MotionSources(True, True))
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        self.assertIsInstance(self.app.get_trigger_lock_epoch(), int)
+        self.app.toggle_jitter_source()
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+
+    def test_confidence_and_target_area_changes_invalidate_active_epoch(self):
+        epoch = self.begin_ai_trigger_epoch()
+        self.app.ai_vars["confidence"].set("0.30")
+        self.app._ai_changed("confidence")
+        self.assertEqual(self.ai.invalidated_trigger_epochs[-1], epoch)
+        self.assertEqual(self.app.get_trigger_lock_epoch(), epoch)
+        self.app.target_area_var.set("Chest")
+        self.app._target_area_changed()
+        self.assertEqual(self.ai.invalidated_trigger_epochs[-1], epoch)
+        self.assertEqual(self.app.get_trigger_lock_epoch(), epoch)
+
+    def test_motion_only_ai_settings_do_not_invalidate_active_epoch(self):
+        epoch = self.begin_ai_trigger_epoch()
+        baseline = list(self.ai.invalidated_trigger_epochs)
+        for key, value in (
+            ("aim_strength", "0.40"),
+            ("smoothing", "0.60"),
+            ("max_step", "19"),
+        ):
+            self.app.ai_vars[key].set(value)
+            self.app._ai_changed(key)
+        self.app._reset_ai_curve()
+        self.assertEqual(self.ai.invalidated_trigger_epochs, baseline)
+        self.assertEqual(self.app.get_trigger_lock_epoch(), epoch)
+
+    def test_ai_test_run_creates_one_synthetic_epoch_and_clears_it(self):
+        self.prepare_armed_sources(MotionSources(False, True))
+        self.app.start_test_run()
+        epoch = self.app.get_trigger_lock_epoch()
+        self.assertIsInstance(epoch, int)
+        self.assertFalse(self.app._begin_test_motion(self.app._test_generation))
+        self.assertEqual(self.app.get_trigger_lock_epoch(), epoch)
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        self.assertEqual(self.app.get_trigger_lock_epoch(), epoch)
+        self.app.handle_service_event(ServiceEvent("button", ("Left", False)))
+        self.assertEqual(self.app.get_trigger_lock_epoch(), epoch)
+        self.app._restore_after_test()
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+
+    def test_trigger_held_through_test_completion_requires_release_repress(self):
+        self.prepare_armed_sources(MotionSources(False, True))
+        self.app.start_test_run()
+        synthetic = self.app.get_trigger_lock_epoch()
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        self.assertEqual(self.app.get_trigger_lock_epoch(), synthetic)
+
+        self.app._restore_after_test()
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+        self.app.handle_service_event(ServiceEvent("button", ("Left", False)))
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        self.assertGreater(self.app.get_trigger_lock_epoch(), synthetic)
+
+    def test_target_reset_finishes_before_new_epoch_is_exposed(self):
+        self.prepare_armed_sources(MotionSources(False, True))
+        observed_epochs = []
+        motion_observations = []
+        original_reset = self.ai.reset_targeting
+        original_motion_start = self.service.start_composite_motion_source
+
+        def recording_reset():
+            observed_epochs.append(self.app.get_trigger_lock_epoch())
+            return original_reset()
+
+        def recording_motion_start(*args, **kwargs):
+            motion_observations.append(
+                (
+                    self.app.get_trigger_lock_epoch(),
+                    self.ai.snapshot,
+                )
+            )
+            return original_motion_start(*args, **kwargs)
+
+        self.ai.reset_targeting = recording_reset
+        self.service.start_composite_motion_source = recording_motion_start
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        self.assertEqual(observed_epochs, [None])
+        self.assertIsInstance(self.app.get_trigger_lock_epoch(), int)
+        self.assertEqual(
+            motion_observations,
+            [(self.app.get_trigger_lock_epoch(), None)],
+        )
+
+    def test_master_and_hotkey_disable_clear_active_epoch(self):
+        self.begin_ai_trigger_epoch()
+        self.app.set_master(False)
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+
+        self.app.close_app()
+        self.make_app()
+        self.begin_ai_trigger_epoch()
+        self.app._cancel_after("_ui_pump_after_id")
+        self.app._hotkey_pressed()
+        self.drain_ui_queue()
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+
+    def test_ai_error_and_close_clear_active_epoch(self):
+        self.begin_ai_trigger_epoch()
+        with self.assertLogs(level="ERROR"):
+            self.handle_current_ai_event(
+                AiEvent("error", "RuntimeError: detector failed")
+            )
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+
+        self.app.close_app()
+        self.make_app()
+        self.begin_ai_trigger_epoch()
+        self.app.close_app()
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+
+    def test_reconnect_during_held_trigger_cannot_reacquire(self):
+        self.begin_ai_trigger_epoch()
+        self.app.reconnect()
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+        self.service.connected = True
+        self.app.handle_service_event(ServiceEvent("reconnected", "Makcu"))
+        self.app.set_master(True)
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        self.assertIsNone(self.app.get_trigger_lock_epoch())
+
+    def test_capture_switch_invalidates_but_keeps_exposed_epoch(self):
+        epoch = self.begin_ai_trigger_epoch()
+        self.app.capture_mode_var.set("Full Display")
+        self.app._capture_mode_changed()
+        self.assertEqual(self.ai.invalidated_trigger_epochs[-1], epoch)
+        self.assertEqual(self.app.get_trigger_lock_epoch(), epoch)
+
+    def test_model_switch_invalidates_but_keeps_exposed_epoch(self):
+        epoch = self.begin_ai_trigger_epoch()
+        self.begin_custom_model_switch("strict-lock.onnx")
+        self.assertEqual(self.ai.invalidated_trigger_epochs[-1], epoch)
+        self.assertEqual(self.app.get_trigger_lock_epoch(), epoch)
+
     def test_adaptive_zoom_gate_requires_connected_normal_ai_movement_gate(self):
         self.service.connected = True
         self.app.toggle_ai_source()
         self.app.set_master(True)
         self.assertFalse(self.app.get_adaptive_zoom_gate())
-        _settings_provider, zoom_provider, model_path = self.ai.start_calls[-1]
+        (
+            _settings_provider,
+            zoom_provider,
+            model_path,
+            capture_mode,
+        ) = self.ai.start_calls[-1]
         self.assertEqual(model_path, self.app._model_choice.path)
+        self.assertEqual(capture_mode, CENTER_320)
         self.assertIs(zoom_provider.__self__, self.app)
         self.assertIs(
             zoom_provider.__func__, self.app.get_adaptive_zoom_gate.__func__
         )
         self.assertFalse(zoom_provider())
 
-        self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        self.handle_current_ai_event(AiEvent("ready", "DmlExecutionProvider"))
         self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
         self.assertTrue(self.app.get_adaptive_zoom_gate())
 
@@ -3352,7 +4886,7 @@ class JitterRuntimeTests(JitterLayoutTests):
     def test_ai_error_clears_zoom_gate(self):
         self.prepare_armed_sources(MotionSources(False, True), gate_active=True)
         with self.assertLogs(level="ERROR"):
-            self.app.handle_ai_event(AiEvent("error", "failed"))
+            self.handle_current_ai_event(AiEvent("error", "failed"))
         self.assertFalse(self.app.get_adaptive_zoom_gate())
 
     def test_stop_clears_zoom_gate(self):
@@ -3365,17 +4899,16 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.app.close_app()
         self.assertFalse(self.app.get_adaptive_zoom_gate())
 
-    def test_zoom_metric_starts_one_x_and_tracks_valid_events(self):
+    def test_zoom_runtime_value_starts_one_x_and_tracks_valid_events(self):
         self.assertEqual(self.app.ai_zoom_var.get(), "1.0×")
-        self.assertIn("ZOOM", widget_texts(self.app))
         self.app.handle_ai_event(AiEvent("zoom", 2.0))
         self.assertEqual(self.app.ai_zoom_var.get(), "1.0×")
         self.prepare_armed_sources(MotionSources(False, True), gate_active=True)
-        self.app.handle_ai_event(AiEvent("zoom", 1.5))
+        self.handle_current_ai_event(AiEvent("zoom", 1.5))
         self.assertEqual(self.app.ai_zoom_var.get(), "1.5×")
-        self.app.handle_ai_event(AiEvent("zoom", 2.0))
+        self.handle_current_ai_event(AiEvent("zoom", 2.0))
         self.assertEqual(self.app.ai_zoom_var.get(), "2.0×")
-        self.app.handle_ai_event(AiEvent("zoom", "invalid"))
+        self.handle_current_ai_event(AiEvent("zoom", "invalid"))
         self.assertEqual(self.app.ai_zoom_var.get(), "1.0×")
 
     def test_stop_disconnect_and_ai_stop_reset_zoom_metric(self):
@@ -3390,9 +4923,65 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.app.handle_ai_event(AiEvent("stopped", "manual"))
         self.assertEqual(self.app.ai_zoom_var.get(), "1.0×")
 
+    def test_generationless_stopped_cannot_clear_active_ai_lifecycle(self):
+        self.prepare_armed_sources(
+            MotionSources(False, True), gate_active=True
+        )
+        self.handle_current_ai_event(AiEvent("fps", 37.25))
+        self.handle_current_ai_event(AiEvent("zoom", 1.5))
+        self.app._capture_restart_pending = True
+        self.app._capture_mode_switching = True
+        state_before = self.ai_runtime_event_state()
+
+        self.app.handle_ai_event(AiEvent("stopped", "unowned"))
+
+        self.assertEqual(self.ai_runtime_event_state(), state_before)
+
+    def test_mismatched_stopped_cannot_clear_active_ai_lifecycle(self):
+        self.prepare_armed_sources(
+            MotionSources(False, True), gate_active=True
+        )
+        self.handle_current_ai_event(AiEvent("fps", 37.25))
+        self.handle_current_ai_event(AiEvent("zoom", 1.5))
+        self.app._capture_restart_pending = True
+        self.app._capture_mode_switching = True
+        state_before = self.ai_runtime_event_state()
+
+        self.app.handle_ai_event(
+            AiEvent(
+                "stopped",
+                "stale",
+                generation=self.ai.active_generation + 1,
+            )
+        )
+
+        self.assertEqual(self.ai_runtime_event_state(), state_before)
+
+    def test_matching_stopped_clears_active_ai_lifecycle(self):
+        self.prepare_armed_sources(
+            MotionSources(False, True), gate_active=True
+        )
+        self.handle_current_ai_event(AiEvent("fps", 37.25))
+        self.handle_current_ai_event(AiEvent("zoom", 1.5))
+        self.app._capture_restart_pending = True
+        self.app._capture_mode_switching = True
+
+        self.handle_current_ai_event(AiEvent("stopped", "current"))
+
+        self.assertFalse(self.app._capture_restart_pending)
+        self.assertFalse(self.app._capture_mode_switching)
+        self.assertFalse(self.app._ai_ready)
+        self.assertIsNone(self.app._ai_provider)
+        self.assertFalse(self.app._ai_runtime_active)
+        self.assertIsNone(self.app._active_ai_lifecycle)
+        self.assertEqual(self.app.ai_status_var.get(), "Stopped")
+        self.assertEqual(self.app.ai_fps_var.get(), "0 FPS")
+        self.assertEqual(self.app.ai_provider_var.get(), "No provider")
+        self.assertEqual(self.app.ai_zoom_var.get(), "1.0×")
+
     def test_trigger_release_resets_zoom_metric_without_waiting_for_ai_frame(self):
         self.prepare_armed_sources(MotionSources(False, True), gate_active=True)
-        self.app.handle_ai_event(AiEvent("zoom", 1.5))
+        self.handle_current_ai_event(AiEvent("zoom", 1.5))
         self.assertEqual(self.app.ai_zoom_var.get(), "1.5×")
         self.app.handle_service_event(ServiceEvent("button", ("Left", False)))
         self.assertFalse(self.app.get_adaptive_zoom_gate())
@@ -3402,7 +4991,9 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.prepare_armed_sources(MotionSources(False, True), gate_active=True)
         self.app._cancel_after("_ui_pump_after_id")
         self.app.handle_service_event(ServiceEvent("button", ("Left", False)))
-        self.app.queue_ai_event(AiEvent("zoom", 2.0))
+        self.app.queue_ai_event(
+            AiEvent("zoom", 2.0, generation=self.ai.active_generation)
+        )
         self.drain_ui_queue()
 
         self.assertFalse(self.app.get_adaptive_zoom_gate())
@@ -3411,7 +5002,9 @@ class JitterRuntimeTests(JitterLayoutTests):
     def test_stale_queued_zoom_event_cannot_change_metric_after_stop(self):
         self.prepare_armed_sources(MotionSources(False, True), gate_active=True)
         self.app._cancel_after("_ui_pump_after_id")
-        self.app.queue_ai_event(AiEvent("zoom", 2.0))
+        self.app.queue_ai_event(
+            AiEvent("zoom", 2.0, generation=self.ai.active_generation)
+        )
         self.app.emergency_stop("Stopped")
         self.drain_ui_queue()
         self.assertEqual(self.app.ai_zoom_var.get(), "1.0×")
@@ -3420,7 +5013,14 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.prepare_armed_sources(MotionSources(False, True), gate_active=True)
         self.app._cancel_after("_ui_pump_after_id")
         old_revision = self.app._ai_targeting_revision
-        self.app.queue_ai_event(AiEvent("zoom", 2.0, old_revision))
+        self.app.queue_ai_event(
+            AiEvent(
+                "zoom",
+                2.0,
+                old_revision,
+                generation=self.ai.active_generation,
+            )
+        )
 
         self.app.target_area_var.set("Chest")
         self.app._target_area_changed()
@@ -3437,7 +5037,7 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.overlay.hide_error = RuntimeError("clear failed")
 
         with self.assertLogs(level="ERROR"):
-            self.app.handle_ai_event(
+            self.handle_current_ai_event(
                 AiEvent("error", "RuntimeError: AI service failed")
             )
 
@@ -3467,7 +5067,7 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.prepare_armed_sources(MotionSources(False, True))
 
         with self.assertLogs(level="ERROR"):
-            self.app.handle_ai_event(
+            self.handle_current_ai_event(
                 AiEvent("error", "RuntimeError: AI service failed")
             )
 
@@ -3484,7 +5084,7 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.overlay.hide_error = RuntimeError("clear failed")
 
         with self.assertLogs(level="ERROR"):
-            self.app.handle_ai_event(
+            self.handle_current_ai_event(
                 AiEvent("error", "RuntimeError: overlay detector failed")
             )
 
@@ -3508,7 +5108,7 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.app.toggle_overlay()
 
         with self.assertLogs(level="ERROR"):
-            self.app.handle_ai_event(
+            self.handle_current_ai_event(
                 AiEvent("error", "RuntimeError: overlay detector failed")
             )
 
@@ -3518,7 +5118,7 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.assertEqual(self.app._expected_motion_generation, generation)
         self.assertEqual(self.service.active_motion_generation, generation)
         self.assertNotIn("ai_error", self.service.cancel_reasons)
-        self.assertFalse(self.app.test_button._enabled)
+        self.assertEqual(str(self.app.test_button.cget("state")), "disabled")
 
         self.service.motion_active = False
         self.service.active_motion_generation = None
@@ -3543,7 +5143,9 @@ class JitterRuntimeTests(JitterLayoutTests):
 
     def test_disconnect_recovery_start_failure_hides_existing_overlay(self):
         self.app.toggle_overlay()
-        self.app.handle_ai_event(AiEvent("stopped", "worker ended"))
+        self.handle_current_ai_event(AiEvent("stopped", "worker ended"))
+        self.ai.active_generation = None
+        self.ai.finish_retirement()
         self.ai.start_result = False
         self.overlay.hide_error = RuntimeError("clear failed")
 
@@ -3687,7 +5289,7 @@ class JitterRuntimeTests(JitterLayoutTests):
 
                 if sources.ai:
                     self.assertEqual(self.service.composite_motion_calls, [])
-                    app.handle_ai_event(
+                    self.handle_current_ai_event(
                         AiEvent("ready", "DmlExecutionProvider")
                     )
                 self.assertEqual(
@@ -3699,12 +5301,66 @@ class JitterRuntimeTests(JitterLayoutTests):
                     3.0,
                 )
 
+    def test_ai_test_run_waits_for_physical_ai_retirement_before_starting(self):
+        self.app.capture_mode_var.set("Full Display")
+        self.app._capture_mode_changed()
+        self.app.toggle_overlay()
+        self.ai.emit(AiEvent("ready", "DmlExecutionProvider"))
+        self.drain_ui_queue()
+        self.ai.retire_immediately = False
+        self.app.toggle_overlay()
+        self.service.connected = True
+        self.app.ai_selected = True
+        starts = len(self.ai.start_calls)
+
+        self.app.start_test_run()
+
+        self.assertEqual(self.app._motion_mode, "test_ai_loading")
+        self.assertTrue(self.app._test_start_pending)
+        self.assertEqual(self.app.footer_var.get(), "Loading AI for Test Run")
+        self.assertEqual(len(self.ai.start_calls), starts)
+        self.assertIsNotNone(getattr(self.app, "_deferred_ai_start", None))
+
+        self.ai.finish_retirement()
+        self.drain_ui_queue()
+
+        self.assertEqual(len(self.ai.start_calls), starts + 1)
+        self.assertEqual(self.ai.start_calls[-1][2], self.app._model_choice.path)
+        self.assertEqual(self.ai.start_calls[-1][3], FULL_DISPLAY)
+        self.ai.emit(AiEvent("ready", "DmlExecutionProvider"))
+        self.drain_ui_queue()
+        self.assertEqual(self.app._motion_mode, "test_ai")
+        self.assertEqual(
+            self.service.composite_motion_calls[-1].sources,
+            MotionSources(False, True),
+        )
+
+    def test_deferred_ai_test_start_failure_uses_test_abort_policy(self):
+        self.app.toggle_overlay()
+        self.ai.emit(AiEvent("ready", "DmlExecutionProvider"))
+        self.drain_ui_queue()
+        self.ai.retire_immediately = False
+        self.app.toggle_overlay()
+        self.service.connected = True
+        self.app.ai_selected = True
+
+        self.app.start_test_run()
+        self.ai.start_result = False
+        self.ai.finish_retirement()
+        with self.assertLogs(level="ERROR"):
+            self.drain_ui_queue()
+
+        self.assertIsNone(self.app._motion_mode)
+        self.assertFalse(self.app._test_start_pending)
+        self.assertEqual(self.app.footer_var.get(), "AI Test Run could not start")
+        self.assertEqual(self.service.composite_motion_calls, [])
+
     def test_ai_test_run_provider_reads_live_curve_with_zoom_disabled(self):
         self.service.connected = True
         self.app.ai_selected = True
 
         self.app.start_test_run()
-        self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        self.handle_current_ai_event(AiEvent("ready", "DmlExecutionProvider"))
         call = self.service.composite_motion_calls[-1]
 
         self.assertFalse(self.app.get_adaptive_zoom_gate())
@@ -3734,7 +5390,7 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.assertTrue(self.app._test_waiting_for_motion_stop)
         self.assertFalse(self.app.master_armed)
 
-        self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        self.handle_current_ai_event(AiEvent("ready", "DmlExecutionProvider"))
         self.assertEqual(len(self.service.composite_motion_calls), 1)
         self.app.handle_service_event(ServiceEvent(
             "motion_stopped", "test_run", retiring + 100
@@ -3773,7 +5429,7 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.assertFalse(self.app._test_waiting_for_motion_stop)
         self.assertEqual(self.app._motion_mode, "test_combined_loading")
 
-        self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        self.handle_current_ai_event(AiEvent("ready", "DmlExecutionProvider"))
 
         self.assertEqual(len(self.service.composite_motion_calls), 2)
         self.assertEqual(
@@ -3818,7 +5474,7 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.assertFalse(self.app.master_armed)
         self.assertEqual(self.app.runtime_state_var.get(), "TESTING")
 
-        self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        self.handle_current_ai_event(AiEvent("ready", "DmlExecutionProvider"))
 
         self.assertEqual(self.app._motion_mode, "test_ai")
         self.assertFalse(self.app.master_armed)
@@ -3898,6 +5554,8 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.assertEqual(self.service.composite_motion_calls, [])
 
     def test_overlay_poll_renders_detection_snapshot_with_injected_clock(self):
+        self.app.ai_fps_var.set("73.5 FPS")
+        self.app.ai_provider_var.set("DirectML")
         self.app.toggle_overlay()
 
         self.assertEqual(
@@ -3906,18 +5564,134 @@ class JitterRuntimeTests(JitterLayoutTests):
         )
         self.assertEqual(
             self.overlay.render_options[-1],
-            ("#ff2b2b", True),
+            (
+                "#ff2b2b",
+                True,
+                ("73.5 FPS", "DirectML", "1.0×"),
+            ),
         )
         self.assertIsNotNone(self.app._overlay_after_id)
 
+    def test_overlay_poll_uses_display_derived_capture_cadence(self):
+        self.app.close_app()
+        app = self.make_app(
+            runtime_cadence=RuntimeCadence(240, 240, 1000),
+        )
+
+        with mock.patch.object(
+            app,
+            "after",
+            return_value="overlay-poll",
+        ) as after:
+            app.toggle_overlay()
+
+        after.assert_called_once_with(4, app._poll_overlay)
+
+    def test_overlay_poll_skips_duplicate_frame_but_renders_new_sequence(self):
+        self.app.close_app()
+        app = self.make_app(clock=lambda: 10.1)
+        first = DetectionFrameSnapshot(1, 10.0, (), None)
+        self.ai.detection_snapshot = first
+
+        with mock.patch.object(app, "after", return_value="overlay-poll"):
+            app.toggle_overlay()
+            self.assertEqual(len(self.overlay.rendered), 1)
+
+            app._cancel_after("_overlay_after_id")
+            app._poll_overlay()
+            self.assertEqual(len(self.overlay.rendered), 1)
+
+            app._cancel_after("_overlay_after_id")
+            self.ai.detection_snapshot = DetectionFrameSnapshot(
+                2,
+                10.0,
+                (),
+                None,
+            )
+            app._poll_overlay()
+
+        self.assertEqual(len(self.overlay.rendered), 2)
+
+    def test_overlay_poll_renders_once_when_frame_becomes_stale(self):
+        self.app.close_app()
+        now = [10.10]
+        app = self.make_app(clock=lambda: now[0])
+        self.ai.detection_snapshot = DetectionFrameSnapshot(
+            1,
+            10.0,
+            (),
+            None,
+        )
+
+        with mock.patch.object(app, "after", return_value="overlay-poll"):
+            app.toggle_overlay()
+            self.assertEqual(len(self.overlay.rendered), 1)
+
+            app._cancel_after("_overlay_after_id")
+            now[0] = 10.151
+            app._poll_overlay()
+            self.assertEqual(len(self.overlay.rendered), 2)
+
+            app._cancel_after("_overlay_after_id")
+            now[0] = 10.20
+            app._poll_overlay()
+
+        self.assertEqual(len(self.overlay.rendered), 2)
+
+    def test_overlay_poll_redraws_when_runtime_or_style_changes(self):
+        self.app.close_app()
+        app = self.make_app(clock=lambda: 10.1)
+        self.ai.detection_snapshot = DetectionFrameSnapshot(
+            1,
+            10.0,
+            (),
+            None,
+        )
+
+        with mock.patch.object(app, "after", return_value="overlay-poll"):
+            app.toggle_overlay()
+            self.assertEqual(len(self.overlay.rendered), 1)
+
+            app._cancel_after("_overlay_after_id")
+            app._poll_overlay()
+            self.assertEqual(len(self.overlay.rendered), 1)
+
+            app._cancel_after("_overlay_after_id")
+            app.ai_fps_var.set("60 FPS")
+            app._poll_overlay()
+            self.assertEqual(len(self.overlay.rendered), 2)
+
+            app._cancel_after("_overlay_after_id")
+            app.overlay_player_visible = False
+            app._poll_overlay()
+
+        self.assertEqual(len(self.overlay.rendered), 3)
+
+    def test_overlay_poll_publishes_complete_default_runtime_style(self):
+        self.app.toggle_overlay()
+
+        self.assertEqual(
+            self.overlay.styles[-1],
+            OverlayStyle(
+                box_color="#ff2b2b",
+                show_heads=True,
+                hud_color="#ff2b2b",
+            ),
+        )
+
     def test_head_boxes_off_reaches_overlay_render(self):
+        self.app.open_overlay_customizer()
         self.app.overlay_head_button.invoke()
 
         self.app.toggle_overlay()
 
         self.assertEqual(
             self.overlay.render_options[-1],
-            ("#ff2b2b", False),
+            (
+                "#ff2b2b",
+                False,
+                ("0 FPS", "No provider", "1.0×"),
+            ),
         )
 
     def test_overlay_render_error_turns_off_overlay_and_final_ai_demand(self):
@@ -3946,7 +5720,7 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.app.toggle_jitter_source()
         self.app.toggle_ai_source()
         self.app.toggle_master()
-        self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        self.handle_current_ai_event(AiEvent("ready", "DmlExecutionProvider"))
         self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
 
         self.assertEqual(
@@ -3970,7 +5744,7 @@ class JitterRuntimeTests(JitterLayoutTests):
         ))
         self.assertEqual(len(self.service.composite_motion_calls), 1)
 
-        self.app.handle_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        self.handle_current_ai_event(AiEvent("ready", "DmlExecutionProvider"))
         self.service.motion_active = False
         self.service.active_motion_generation = None
         self.app.handle_service_event(ServiceEvent(
@@ -3984,6 +5758,54 @@ class JitterRuntimeTests(JitterLayoutTests):
             self.service.active_motion_generation,
             retiring,
         )
+
+    def test_stale_trigger_release_blocks_source_change_retirement_restart(self):
+        self.prepare_armed_sources(
+            MotionSources(True, False), gate_active=True
+        )
+        retiring = self.service.active_motion_generation
+        self.app.queue_service_event(
+            ServiceEvent("button", ("Left", False))
+        )
+
+        self.app.toggle_ai_source()
+        self.assertIsNotNone(self.app._deferred_motion_action)
+        self.handle_current_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        self.service.emit(ServiceEvent(
+            "motion_stopped", "sources_changed", retiring
+        ))
+        self.drain_ui_queue()
+
+        self.assertNotIn("Left", self.app._physical_buttons_down)
+        self.assertEqual(len(self.service.composite_motion_calls), 1)
+        self.assertFalse(self.app.trigger_gate.active)
+        self.assertIsNone(self.app._deferred_motion_action)
+        self.assertFalse(self.app._normal_motion_started)
+
+    def test_stale_modifier_release_blocks_source_change_retirement_restart(self):
+        self.app.modifier_var.set("Right")
+        self.app.on_bindings_changed()
+        self.prepare_armed_sources(MotionSources(True, False))
+        self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
+        self.app.handle_service_event(ServiceEvent("button", ("Right", True)))
+        retiring = self.service.active_motion_generation
+        self.app.queue_service_event(
+            ServiceEvent("button", ("Right", False))
+        )
+
+        self.app.toggle_ai_source()
+        self.assertIsNotNone(self.app._deferred_motion_action)
+        self.handle_current_ai_event(AiEvent("ready", "DmlExecutionProvider"))
+        self.service.emit(ServiceEvent(
+            "motion_stopped", "sources_changed", retiring
+        ))
+        self.drain_ui_queue()
+
+        self.assertNotIn("Right", self.app._physical_buttons_down)
+        self.assertEqual(len(self.service.composite_motion_calls), 1)
+        self.assertFalse(self.app.trigger_gate.active)
+        self.assertIsNone(self.app._deferred_motion_action)
+        self.assertFalse(self.app._normal_motion_started)
 
     def test_removing_final_source_disarms_master_and_preserves_selection(self):
         self.service.connected = True
@@ -4134,7 +5956,7 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.assertIsNone(self.app._deferred_motion_action)
         self.assertFalse(self.app.master_armed)
         self.assertEqual(self.app.runtime_state_var.get(), "DISABLED")
-        self.assertTrue(self.app.test_button._enabled)
+        self.assertEqual(str(self.app.test_button.cget("state")), "normal")
         self.service.emit(ServiceEvent(
             "motion_stopped", "trigger_released", retiring
         ))
@@ -4258,7 +6080,7 @@ class JitterRuntimeTests(JitterLayoutTests):
 
         self.assertEqual(str(self.app.jitter_source_button.cget("state")), "disabled")
         self.assertEqual(str(self.app.ai_source_button.cget("state")), "disabled")
-        self.assertFalse(self.app.test_button._enabled)
+        self.assertEqual(str(self.app.test_button.cget("state")), "disabled")
         self.assertEqual(str(self.app.overlay_button.cget("state")), "normal")
         self.assertEqual(str(self.app.stop_button.cget("state")), "normal")
         self.app.toggle_jitter_source()
@@ -4286,12 +6108,12 @@ class JitterRuntimeTests(JitterLayoutTests):
         self.app.start_test_run()
 
         with self.assertLogs(level="ERROR"):
-            self.app.handle_ai_event(AiEvent("error", "capture failed"))
+            self.handle_current_ai_event(AiEvent("error", "capture failed"))
 
         self.assertIsNone(self.app._motion_mode)
         self.assertFalse(self.app.master_armed)
         self.assertFalse(self.app.ai_selected)
-        self.assertTrue(self.app.test_button._enabled)
+        self.assertEqual(str(self.app.test_button.cget("state")), "normal")
 
     def test_current_makcu_motion_error_stops_runtime_but_preserves_sources(self):
         self.prepare_armed_sources(
@@ -4372,10 +6194,82 @@ class JitterRuntimeTests(JitterLayoutTests):
     def test_runtime_status_and_ai_metrics_use_concise_vocabulary(self):
         self.prepare_armed_sources(MotionSources(False, True))
         self.assertEqual(self.app.runtime_state_var.get(), "ARMED")
-        self.app.handle_ai_event(AiEvent("fps", 37.25))
+        self.handle_current_ai_event(AiEvent("fps", 37.25))
         self.assertEqual(self.app.ai_fps_var.get(), "37.2 FPS")
         self.assertEqual(self.app.ai_provider_var.get(), "DirectML")
         self.app.handle_service_event(ServiceEvent("button", ("Left", True)))
         self.assertEqual(self.app.runtime_state_var.get(), "MOVING")
         self.app.emergency_stop("Stopped")
         self.assertEqual(self.app.runtime_state_var.get(), "DISABLED")
+
+    def test_expansion_and_theme_changes_preserve_values_and_outer_geometry(self):
+        self.app.deiconify()
+        self.app.update()
+        expected_geometry = self.app.geometry()
+        expected_motion = self.app.get_motion_settings()
+        expected_ai = self.app.get_ai_settings()
+        expected_bindings = (
+            self.app.trigger_var.get(),
+            self.app.modifier_var.get(),
+            self.app.hotkey_name_var.get(),
+        )
+        for section in self.app.sections:
+            section.set_expanded(True)
+        self.app.toggle_theme()
+        self.app.dashboard_scroll_canvas.yview_moveto(1.0)
+        self.app.update_idletasks()
+        self.assertEqual(self.app.geometry(), expected_geometry)
+        self.assertEqual(self.app.get_motion_settings(), expected_motion)
+        self.assertEqual(self.app.get_ai_settings(), expected_ai)
+        self.assertEqual(
+            (
+                self.app.trigger_var.get(),
+                self.app.modifier_var.get(),
+                self.app.hotkey_name_var.get(),
+            ),
+            expected_bindings,
+        )
+
+    def test_section_expansion_is_not_serialized(self):
+        self.app.ai_section.set_expanded(True)
+        self.app.settings_section.set_expanded(True)
+        self.app._cancel_after("_save_after_id")
+        self.app.save_config()
+        saved = self.store.saved[-1]
+        self.assertFalse(hasattr(saved, "section_state"))
+        self.assertFalse(hasattr(saved, "expanded_sections"))
+
+    def test_all_sections_expanded_create_scroll_without_moving_fixed_controls(self):
+        self.app.deiconify()
+        for section in self.app.sections:
+            section.set_expanded(True)
+        self.app.update()
+        scrollregion = tuple(
+            float(value)
+            for value in self.app.tk.splitlist(
+                self.app.dashboard_scroll_canvas.cget("scrollregion")
+            )
+        )
+        self.assertGreater(scrollregion[3] - scrollregion[1],
+                           self.app.dashboard_scroll_canvas.winfo_height())
+        self.assertTrue(self.app.footer_frame.winfo_ismapped())
+        self.assertTrue(self.app.runtime_frame.winfo_ismapped())
+        self.assertTrue(self.app.stop_button.winfo_ismapped())
+        fixed_positions = (
+            self.app.footer_frame.winfo_rooty(),
+            self.app.runtime_frame.winfo_rooty(),
+            self.app.stop_button.winfo_rooty(),
+        )
+        self.app.dashboard_scroll_canvas.yview_moveto(1.0)
+        self.app.update()
+        self.assertEqual(
+            (
+                self.app.footer_frame.winfo_rooty(),
+                self.app.runtime_frame.winfo_rooty(),
+                self.app.stop_button.winfo_rooty(),
+            ),
+            fixed_positions,
+        )
+        self.assertTrue(self.app.footer_frame.winfo_ismapped())
+        self.assertTrue(self.app.runtime_frame.winfo_ismapped())
+        self.assertTrue(self.app.stop_button.winfo_ismapped())

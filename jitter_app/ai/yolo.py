@@ -104,12 +104,9 @@ def decode_single_class_yolo(
     if not raw_indices.size:
         return ()
     kept = _nms_keep_positions(boxes, confidences, raw_indices)
-    scale = LOGICAL_FRAME_SIZE / input_size
     detections = []
     for position in kept:
-        x1, y1, x2, y2 = np.clip(
-            boxes[position] * scale, 0.0, LOGICAL_FRAME_SIZE
-        )
+        x1, y1, x2, y2 = np.clip(boxes[position], 0.0, input_size)
         if x2 <= x1 or y2 <= y1:
             continue
         detections.append(Detection(

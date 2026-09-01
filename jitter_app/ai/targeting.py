@@ -14,7 +14,7 @@ AIM_LIMITS: dict[str, tuple[float, float]] = {
 }
 
 RESPONSE_CURVE_X = (0.0, 0.25, 0.5, 0.75, 1.0)
-DEFAULT_RESPONSE_CURVE = (0.0, 0.12, 0.35, 0.68, 1.0)
+DEFAULT_RESPONSE_CURVE = (0.0, 0.16, 0.38, 0.68, 0.95)
 TARGET_AREAS = ("head", "upper_body", "chest")
 
 
@@ -35,6 +35,8 @@ class TargetSnapshot:
     target_class: str
     aim_x: float
     aim_y: float
+    frame_width: int = 320
+    frame_height: int = 320
 
 
 @dataclass(frozen=True)
@@ -43,6 +45,12 @@ class DetectionFrameSnapshot:
     captured_at: float
     detections: tuple[Detection, ...]
     selected_index: int | None
+    frame_width: int = 320
+    frame_height: int = 320
+    output_width: int | None = None
+    output_height: int | None = None
+    capture_left: int = 0
+    capture_top: int = 0
 
 
 @dataclass(frozen=True)
@@ -53,10 +61,10 @@ class DetectionAnalysis:
 
 @dataclass(frozen=True)
 class AimSettings:
-    confidence: float = 0.35
+    confidence: float = 0.25
     aim_strength: float = 0.35
-    smoothing: float = 0.65
-    max_step: int = 20
+    smoothing: float = 0.58
+    max_step: int = 18
     response_curve: tuple[float, float, float, float, float] = DEFAULT_RESPONSE_CURVE
     target_area: str = "head"
 
@@ -257,12 +265,41 @@ def analyze_detections(
     sequence: int,
     captured_at: float,
     previous: TargetSnapshot | None = None,
+    frame_width: int = 320,
+    frame_height: int = 320,
+    output_width: int | None = None,
+    output_height: int | None = None,
+    capture_left: int = 0,
+    capture_top: int = 0,
 ) -> DetectionAnalysis:
     """Select the nearest supported aim point from this frame only.
 
     ``previous`` remains accepted for API compatibility but intentionally has
     no influence on current-frame selection.
     """
+    if (
+        type(frame_width) is not int
+        or frame_width <= 0
+        or type(frame_height) is not int
+        or frame_height <= 0
+    ):
+        raise ValueError("frame dimensions must be positive integers")
+    if output_width is None and output_height is None:
+        if capture_left != 0 or capture_top != 0:
+            raise ValueError("capture viewport must fit the primary output")
+    elif (
+        type(output_width) is not int
+        or output_width <= 0
+        or type(output_height) is not int
+        or output_height <= 0
+        or type(capture_left) is not int
+        or capture_left < 0
+        or type(capture_top) is not int
+        or capture_top < 0
+        or capture_left + frame_width > output_width
+        or capture_top + frame_height > output_height
+    ):
+        raise ValueError("capture viewport must fit the primary output")
     accepted = tuple(
         detection
         for detection in detections
@@ -279,17 +316,34 @@ def analyze_detections(
     selected_index = None
     target = None
     if candidates:
+        center_x = frame_width / 2.0
+        center_y = frame_height / 2.0
         selected_index, selected = min(
             candidates,
             key=lambda item: math.hypot(
-                item[1][1] - 160.0, item[1][2] - 160.0
+                item[1][1] - center_x, item[1][2] - center_y
             ),
         )
-        target = TargetSnapshot(sequence, captured_at, *selected)
+        target = TargetSnapshot(
+            sequence,
+            captured_at,
+            *selected,
+            frame_width,
+            frame_height,
+        )
     return DetectionAnalysis(
         target=target,
         frame=DetectionFrameSnapshot(
-            sequence, captured_at, accepted, selected_index
+            sequence,
+            captured_at,
+            accepted,
+            selected_index,
+            frame_width,
+            frame_height,
+            output_width,
+            output_height,
+            capture_left,
+            capture_top,
         ),
     )
 
@@ -301,6 +355,8 @@ def select_target(
     sequence: int,
     captured_at: float,
     previous: TargetSnapshot | None = None,
+    frame_width: int = 320,
+    frame_height: int = 320,
 ) -> TargetSnapshot | None:
     return analyze_detections(
         detections,
@@ -308,6 +364,8 @@ def select_target(
         sequence=sequence,
         captured_at=captured_at,
         previous=previous,
+        frame_width=frame_width,
+        frame_height=frame_height,
     ).target
 
 
@@ -327,6 +385,7 @@ class AimMovementEngine:
         self.reset()
 
     def reset(self) -> None:
+        self._frame_geometry = None
         self._settled_sequence = None
         self._last_sequence = None
         self._remaining_x = self._remaining_y = 0.0
@@ -344,6 +403,18 @@ class AimMovementEngine:
         if snapshot is None:
             self.reset()
             return 0, 0
+        if (
+            type(snapshot.frame_width) is not int
+            or snapshot.frame_width <= 0
+            or type(snapshot.frame_height) is not int
+            or snapshot.frame_height <= 0
+        ):
+            self.reset()
+            return 0, 0
+        geometry = (snapshot.frame_width, snapshot.frame_height)
+        if geometry != self._frame_geometry:
+            self.reset()
+            self._frame_geometry = geometry
         if snapshot.sequence == self._settled_sequence:
             return 0, 0
         fresh_sequence = snapshot.sequence != self._last_sequence
@@ -357,9 +428,16 @@ class AimMovementEngine:
         if fresh_sequence:
             self._settled_sequence = None
             self._last_sequence = snapshot.sequence
-            self._remaining_x = snapshot.aim_x - self.CENTER
-            self._remaining_y = snapshot.aim_y - self.CENTER
-            self._fraction_x = self._fraction_y = 0.0
+            center_x = snapshot.frame_width / 2.0
+            center_y = snapshot.frame_height / 2.0
+            next_remaining_x = snapshot.aim_x - center_x
+            next_remaining_y = snapshot.aim_y - center_y
+            if self._fraction_x * next_remaining_x <= 0.0:
+                self._fraction_x = 0.0
+            if self._fraction_y * next_remaining_y <= 0.0:
+                self._fraction_y = 0.0
+            self._remaining_x = next_remaining_x
+            self._remaining_y = next_remaining_y
             self._target_captured_at = snapshot.captured_at
 
         radius = math.hypot(self._remaining_x, self._remaining_y)
@@ -377,10 +455,13 @@ class AimMovementEngine:
             dt = max(0.0, min(self.MAX_DT_S, now - self._previous_tick))
         self._previous_tick = now
 
-        normalized = min(1.0, radius / self.REFERENCE_RADIUS)
+        center_x = snapshot.frame_width / 2.0
+        center_y = snapshot.frame_height / 2.0
+        reference_radius = math.hypot(center_x, center_y)
+        normalized = min(1.0, radius / reference_radius)
         curve_distance = (
             response_curve_value(settings.response_curve, normalized)
-            * self.REFERENCE_RADIUS
+            * reference_radius
         )
         reference_step = min(
             float(settings.max_step), curve_distance * settings.aim_strength
@@ -411,15 +492,27 @@ class AimMovementEngine:
         total_y = self._velocity_y * dt + self._fraction_y
         candidate_x = math.trunc(total_x)
         candidate_y = math.trunc(total_y)
-        self._fraction_x = total_x - candidate_x
-        self._fraction_y = total_y - candidate_y
+        next_fraction_x = total_x - candidate_x
+        next_fraction_y = total_y - candidate_y
         report_x = self._clamp_report(candidate_x, self._remaining_x, settings.max_step)
         report_y = self._clamp_report(candidate_y, self._remaining_y, settings.max_step)
         self._remaining_x -= report_x
         self._remaining_y -= report_y
+        self._fraction_x = (
+            next_fraction_x
+            if next_fraction_x * self._remaining_x > 0.0
+            else 0.0
+        )
+        self._fraction_y = (
+            next_fraction_y
+            if next_fraction_y * self._remaining_y > 0.0
+            else 0.0
+        )
         if math.hypot(self._remaining_x, self._remaining_y) <= self.DEAD_ZONE:
             settled_sequence = self._last_sequence
+            settled_geometry = self._frame_geometry
             self.reset()
+            self._frame_geometry = settled_geometry
             self._settled_sequence = settled_sequence
         return report_x, report_y
 

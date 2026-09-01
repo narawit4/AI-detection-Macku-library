@@ -1,14 +1,24 @@
 """Generation-safe capture and inference worker for AI aim mode."""
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 import logging
+import math
 from pathlib import Path
 import threading
 import time
 from typing import Any
 
-from .capture import DxcamCapture
+import numpy as np
+
+from .capture import (
+    CENTER_320,
+    FULL_DISPLAY,
+    CapturedFrame,
+    DxcamCapture,
+    centered_region,
+    validated_capture_mode,
+)
 from .detection import OnnxDetector, model_resource_path
 from .targeting import (
     AimSettings,
@@ -17,6 +27,12 @@ from .targeting import (
     TargetSnapshot,
     analyze_detections,
     validated_target_area,
+)
+from .tracking import (
+    STRICT_LOCK_LOST,
+    STRICT_LOCK_TRACKING,
+    StrictTriggerLockState,
+    observe_strict_trigger_lock,
 )
 from .zoom import (
     ZoomStabilityState,
@@ -30,6 +46,8 @@ from .zoom import (
 
 
 LOGGER = logging.getLogger(__name__)
+_CAPTURE_GEOMETRY_ERROR = "AI captured frame geometry is inconsistent"
+_CAPTURE_TIMESTAMP_ERROR = "AI captured frame timestamp is inconsistent"
 
 
 @dataclass(frozen=True)
@@ -37,6 +55,105 @@ class AiEvent:
     kind: str
     payload: Any = None
     targeting_revision: int | None = None
+    generation: int | None = field(default=None, compare=False)
+
+
+def _validate_captured_frame(
+    captured: CapturedFrame,
+    generation_mode: str,
+) -> tuple[np.ndarray, int, int, int, int, int, int]:
+    def fail() -> None:
+        raise ValueError(_CAPTURE_GEOMETRY_ERROR)
+
+    if not isinstance(captured, CapturedFrame):
+        fail()
+    try:
+        captured_mode = validated_capture_mode(captured.mode)
+    except ValueError:
+        fail()
+    if captured_mode != generation_mode:
+        fail()
+    frame = captured.pixels
+    if (
+        not isinstance(frame, np.ndarray)
+        or frame.ndim != 3
+        or frame.shape[0] <= 0
+        or frame.shape[1] <= 0
+        or frame.shape[2] != 3
+        or frame.dtype != np.uint8
+    ):
+        fail()
+    frame_height, frame_width = frame.shape[:2]
+    if (
+        type(captured.output_width) is not int
+        or captured.output_width <= 0
+        or type(captured.output_height) is not int
+        or captured.output_height <= 0
+        or type(captured.capture_left) is not int
+        or captured.capture_left < 0
+        or type(captured.capture_top) is not int
+        or captured.capture_top < 0
+        or type(captured.capture_width) is not int
+        or captured.capture_width <= 0
+        or type(captured.capture_height) is not int
+        or captured.capture_height <= 0
+        or frame_width != captured.capture_width
+        or frame_height != captured.capture_height
+        or captured.capture_left + captured.capture_width > captured.output_width
+        or captured.capture_top + captured.capture_height > captured.output_height
+    ):
+        fail()
+    if generation_mode == CENTER_320:
+        try:
+            expected_region = centered_region(
+                captured.output_width,
+                captured.output_height,
+            )
+        except ValueError:
+            fail()
+        if (
+            captured.capture_left,
+            captured.capture_top,
+            captured.capture_left + captured.capture_width,
+            captured.capture_top + captured.capture_height,
+        ) != expected_region:
+            fail()
+    elif (
+        generation_mode == FULL_DISPLAY
+        and (
+            captured.capture_left != 0
+            or captured.capture_top != 0
+            or captured.capture_width != captured.output_width
+            or captured.capture_height != captured.output_height
+        )
+    ):
+        fail()
+    return (
+        frame,
+        frame_width,
+        frame_height,
+        captured.output_width,
+        captured.output_height,
+        captured.capture_left,
+        captured.capture_top,
+    )
+
+
+def _validated_capture_timestamp(
+    captured_at: float | None,
+    observed_at: float,
+) -> float:
+    if captured_at is None:
+        return observed_at
+    if (
+        isinstance(captured_at, bool)
+        or not isinstance(captured_at, (int, float))
+        or (isinstance(captured_at, float) and not math.isfinite(captured_at))
+        or captured_at < 0.0
+        or captured_at > observed_at
+    ):
+        raise ValueError(_CAPTURE_TIMESTAMP_ERROR)
+    return float(captured_at)
 
 
 class AiService:
@@ -47,7 +164,7 @@ class AiService:
         event_sink: Callable[[AiEvent], None],
         model_path: Path | str | None = None,
         detector_factory: Callable[[Path | str], Any] = OnnxDetector,
-        capture_factory: Callable[[], Any] | None = None,
+        capture_factory: Callable[[str], Any] | None = None,
         clock: Callable[[], float] = time.perf_counter,
         capture_fps: int = 120,
     ) -> None:
@@ -59,18 +176,20 @@ class AiService:
         self._capture_factory = (
             capture_factory
             if capture_factory is not None
-            else lambda: DxcamCapture(target_fps=capture_fps)
+            else lambda mode: DxcamCapture(mode=mode, target_fps=capture_fps)
         )
         self._clock = clock
         self._lock = threading.Lock()
         self._event_lock = threading.RLock()
         self._generation = 0
         self._stop_event: threading.Event | None = None
+        self._worker_thread: threading.Thread | None = None
         self._running = False
         self._closed = False
         self._latest: TargetSnapshot | None = None
         self._latest_detection: DetectionFrameSnapshot | None = None
         self._targeting_revision = 0
+        self._claimed_trigger_epoch: int | None = None
         self._status = "stopped"
         self._provider: str | None = None
 
@@ -89,6 +208,18 @@ class AiService:
         with self._lock:
             return self._running
 
+    @property
+    def worker_active(self) -> bool:
+        """Whether a worker still owns generation-local runtime resources."""
+        with self._lock:
+            worker = self._worker_thread
+            if worker is None:
+                return False
+            if worker.is_alive():
+                return True
+            self._worker_thread = None
+            return False
+
     def latest_snapshot(self) -> TargetSnapshot | None:
         with self._lock:
             return self._latest
@@ -97,20 +228,46 @@ class AiService:
         with self._lock:
             return self._latest_detection
 
+    def current_targeting_revision(self) -> int:
+        """Return the epoch used to invalidate fetched movement targets."""
+        with self._lock:
+            return self._targeting_revision
+
     def reset_targeting(self) -> int:
         """Immediately invalidate movement output without stopping inference."""
         with self._lock:
-            self._targeting_revision += 1
-            self._latest = None
-            if self._latest_detection is not None:
-                frame = self._latest_detection
-                self._latest_detection = DetectionFrameSnapshot(
-                    frame.sequence,
-                    frame.captured_at,
-                    frame.detections,
-                    None,
-                )
-            return self._targeting_revision
+            return self._reset_targeting_locked()
+
+    @staticmethod
+    def _validated_trigger_epoch(raw: object) -> int | None:
+        return raw if type(raw) is int and raw > 0 else None
+
+    def _claim_trigger_epoch_locked(self, epoch: int) -> bool:
+        if (
+            self._claimed_trigger_epoch is not None
+            and epoch <= self._claimed_trigger_epoch
+        ):
+            return False
+        self._claimed_trigger_epoch = epoch
+        return True
+
+    def invalidate_trigger_lock(self, trigger_epoch: int | None) -> int:
+        """Invalidate AI publication and consume a supplied Trigger epoch."""
+        with self._lock:
+            epoch = self._validated_trigger_epoch(trigger_epoch)
+            if epoch is not None:
+                self._claim_trigger_epoch_locked(epoch)
+            return self._reset_targeting_locked()
+
+    def _reset_targeting_locked(self) -> int:
+        self._targeting_revision += 1
+        self._latest = None
+        if self._latest_detection is not None:
+            self._latest_detection = replace(
+                self._latest_detection,
+                selected_index=None,
+            )
+        return self._targeting_revision
 
     def _clear_snapshots_locked(self) -> None:
         self._latest = None
@@ -120,9 +277,16 @@ class AiService:
         self,
         settings_provider: Callable[[], AimSettings],
         zoom_gate_provider: Callable[[], bool] | None = None,
+        trigger_epoch_provider: Callable[[], int | None] | None = None,
         *,
         model_path: Path | str | None = None,
+        capture_mode: str = CENTER_320,
     ) -> int | None:
+        managed_trigger_lock = trigger_epoch_provider is not None
+        resolved_trigger_epoch_provider = trigger_epoch_provider
+        if resolved_trigger_epoch_provider is None:
+            resolved_trigger_epoch_provider = lambda: None
+        generation_capture_mode = validated_capture_mode(capture_mode)
         if zoom_gate_provider is None:
             zoom_gate_provider = lambda: False
         with self._lock:
@@ -130,6 +294,11 @@ class AiService:
                 return None
             if self._running:
                 return self._generation
+            retiring_worker = self._worker_thread
+            if retiring_worker is not None:
+                if retiring_worker.is_alive():
+                    return None
+                self._worker_thread = None
             self._generation += 1
             generation = self._generation
             stop_event = threading.Event()
@@ -142,6 +311,7 @@ class AiService:
         self._emit_current(AiEvent("loading"), generation, stop_event)
         start_error = None
         failure_generation = None
+        worker: threading.Thread | None = None
         with self._lock:
             if not self._is_current_locked(generation, stop_event):
                 return generation
@@ -153,14 +323,20 @@ class AiService:
                         stop_event,
                         settings_provider,
                         zoom_gate_provider,
+                        resolved_trigger_epoch_provider,
+                        managed_trigger_lock,
                         model_path,
+                        generation_capture_mode,
                     ),
                     name=f"AiInference-{generation}",
                     daemon=True,
                 )
+                self._worker_thread = worker
                 worker.start()
             except Exception as error:
                 stop_event.set()
+                if worker is not None and self._worker_thread is worker:
+                    self._worker_thread = None
                 self._generation += 1
                 failure_generation = self._generation
                 self._running = False
@@ -251,7 +427,7 @@ class AiService:
     ) -> None:
         with self._event_lock:
             if self._is_current(generation, stop_event):
-                self._emit(event)
+                self._emit(replace(event, generation=generation))
 
     def _emit_stopped_current(self, event: AiEvent, generation: int) -> None:
         with self._event_lock:
@@ -263,7 +439,7 @@ class AiService:
                     and self._status == "stopped"
                 )
             if current:
-                self._emit(event)
+                self._emit(replace(event, generation=generation))
 
     def _emit_status_current(
         self,
@@ -280,7 +456,7 @@ class AiService:
                     and self._status == status
                 )
             if current:
-                self._emit(event)
+                self._emit(replace(event, generation=generation))
 
     def _emit(self, event: AiEvent) -> None:
         try:
@@ -294,8 +470,13 @@ class AiService:
         stop_event: threading.Event,
         settings_provider: Callable[[], AimSettings],
         zoom_gate_provider: Callable[[], bool],
+        trigger_epoch_provider: Callable[[], int | None],
+        managed_trigger_lock: bool,
         generation_model_path: Path | str | None,
+        generation_capture_mode: str,
     ) -> None:
+        lock_state = StrictTriggerLockState()
+        active_trigger_epoch: int | None = None
         capture = None
         try:
             if not self._is_current(generation, stop_event):
@@ -308,7 +489,7 @@ class AiService:
             detector = self._detector_factory(model_path)
             if not self._is_current(generation, stop_event):
                 return
-            capture = self._capture_factory()
+            capture = self._capture_factory(generation_capture_mode)
             capture.start()
             provider = detector.provider
             with self._lock:
@@ -322,19 +503,102 @@ class AiService:
             stability = ZoomStabilityState()
             active_target_area: str | None = None
             active_targeting_revision: int | None = None
+            active_trigger_revision: int | None = None
+            warned_invalid_epochs: set[tuple[type[object], str]] = set()
             refinement_enabled = True
             published_factor = 1.0
             fps_started_at = self._clock()
             completed_inferences = 0
+
+            def read_trigger_epoch() -> int | None:
+                raw_epoch = trigger_epoch_provider()
+                trigger_epoch = self._validated_trigger_epoch(raw_epoch)
+                if raw_epoch is not None and trigger_epoch is None:
+                    try:
+                        rendered = repr(raw_epoch)
+                    except Exception:
+                        rendered = "<unrepresentable>"
+                    warning_key = (type(raw_epoch), rendered)
+                    if warning_key not in warned_invalid_epochs:
+                        warned_invalid_epochs.add(warning_key)
+                        LOGGER.warning(
+                            "AI Trigger epoch provider returned invalid %s: %s",
+                            type(raw_epoch).__name__,
+                            rendered,
+                        )
+                return trigger_epoch
+
+            def discard_inflight_frame() -> bool:
+                with self._lock:
+                    if not self._is_current_locked(generation, stop_event):
+                        return False
+                    self._latest = None
+                    if self._latest_detection is not None:
+                        self._latest_detection = replace(
+                            self._latest_detection,
+                            selected_index=None,
+                        )
+                    return True
+
             while self._is_current(generation, stop_event):
-                frame = capture.read()
-                if frame is None:
+                captured = capture.read()
+                if captured is None:
                     stop_event.wait(0.001)
                     continue
-                captured_at = self._clock()
+                (
+                    frame,
+                    frame_width,
+                    frame_height,
+                    output_width,
+                    output_height,
+                    capture_left,
+                    capture_top,
+                ) = _validate_captured_frame(
+                    captured,
+                    generation_capture_mode,
+                )
+                observed_at = self._clock()
+                captured_at = _validated_capture_timestamp(
+                    captured.captured_at,
+                    observed_at,
+                )
                 sequence += 1
-                with self._lock:
-                    targeting_revision = self._targeting_revision
+                trigger_epoch = None
+                if managed_trigger_lock:
+                    trigger_epoch = read_trigger_epoch()
+                    epoch_changed = trigger_epoch != active_trigger_epoch
+                    claimed_epoch = False
+                    with self._lock:
+                        if not self._is_current_locked(generation, stop_event):
+                            return
+                        targeting_revision = self._targeting_revision
+                        if epoch_changed and trigger_epoch is not None:
+                            claimed_epoch = self._claim_trigger_epoch_locked(
+                                trigger_epoch
+                            )
+                    if epoch_changed:
+                        active_trigger_epoch = trigger_epoch
+                        active_trigger_revision = targeting_revision
+                        if trigger_epoch is None:
+                            lock_state = StrictTriggerLockState()
+                        elif claimed_epoch:
+                            lock_state = StrictTriggerLockState()
+                        else:
+                            lock_state = StrictTriggerLockState(
+                                epoch=trigger_epoch,
+                                mode=STRICT_LOCK_LOST,
+                            )
+                    elif targeting_revision != active_trigger_revision:
+                        active_trigger_revision = targeting_revision
+                        if trigger_epoch is not None:
+                            lock_state = replace(
+                                lock_state,
+                                epoch=trigger_epoch,
+                                mode=STRICT_LOCK_LOST,
+                            )
+                else:
+                    with self._lock:
+                        targeting_revision = self._targeting_revision
                 settings = settings_provider()
                 target_area = validated_target_area(settings.target_area)
                 if (
@@ -349,12 +613,39 @@ class AiService:
                 base_detections = detector.detect(frame)
                 if not self._is_current(generation, stop_event):
                     return
-                base_analysis = analyze_detections(
-                    base_detections,
-                    settings,
-                    sequence=sequence,
-                    captured_at=captured_at,
-                )
+                if (
+                    managed_trigger_lock
+                    and read_trigger_epoch() != trigger_epoch
+                ):
+                    if not discard_inflight_frame():
+                        return
+                    continue
+                analysis_arguments = {
+                    "sequence": sequence,
+                    "captured_at": captured_at,
+                    "frame_width": frame_width,
+                    "frame_height": frame_height,
+                    "output_width": output_width,
+                    "output_height": output_height,
+                    "capture_left": capture_left,
+                    "capture_top": capture_top,
+                }
+                if managed_trigger_lock:
+                    strict_observation = observe_strict_trigger_lock(
+                        lock_state,
+                        base_detections,
+                        settings,
+                        trigger_epoch=trigger_epoch,
+                        **analysis_arguments,
+                    )
+                    lock_state = strict_observation.state
+                    base_analysis = strict_observation.analysis
+                else:
+                    base_analysis = analyze_detections(
+                        base_detections,
+                        settings,
+                        **analysis_arguments,
+                    )
                 factor = 1.0
                 published = base_analysis
                 gate_active = bool(zoom_gate_provider())
@@ -366,7 +657,18 @@ class AiService:
                         base_analysis.target,
                         captured_at,
                     )
-                if refinement_enabled and gate_active:
+                if (
+                    managed_trigger_lock
+                    and read_trigger_epoch() != trigger_epoch
+                ):
+                    if not discard_inflight_frame():
+                        return
+                    continue
+                if (
+                    refinement_enabled
+                    and gate_active
+                    and base_analysis.target is not None
+                ):
                     try:
                         selected = base_analysis.frame.selected_index
                         if selected is not None and base_analysis.target is not None:
@@ -429,21 +731,58 @@ class AiService:
                         refinement_enabled = False
                         factor = 1.0
                         published = base_analysis
+                if (
+                    managed_trigger_lock
+                    and read_trigger_epoch() != trigger_epoch
+                ):
+                    if not discard_inflight_frame():
+                        return
+                    continue
+                publication_epoch = (
+                    read_trigger_epoch() if managed_trigger_lock else None
+                )
+                published_current_frame = False
                 with self._lock:
                     if not self._is_current_locked(generation, stop_event):
                         return
-                    if targeting_revision != self._targeting_revision:
+                    if (
+                        targeting_revision != self._targeting_revision
+                        or (
+                            managed_trigger_lock
+                            and publication_epoch != trigger_epoch
+                        )
+                    ):
                         factor = 1.0
                         self._latest = None
-                        self._latest_detection = DetectionFrameSnapshot(
-                            published.frame.sequence,
-                            published.frame.captured_at,
-                            published.frame.detections,
-                            None,
-                        )
+                        if managed_trigger_lock:
+                            if self._latest_detection is not None:
+                                self._latest_detection = replace(
+                                    self._latest_detection,
+                                    selected_index=None,
+                                )
+                        else:
+                            self._latest_detection = replace(
+                                published.frame,
+                                selected_index=None,
+                            )
+                            published_current_frame = True
                     else:
-                        self._latest = published.target
+                        if managed_trigger_lock:
+                            self._latest = (
+                                published.target
+                                if (
+                                    trigger_epoch is not None
+                                    and lock_state.mode
+                                    == STRICT_LOCK_TRACKING
+                                )
+                                else None
+                            )
+                        else:
+                            self._latest = published.target
                         self._latest_detection = published.frame
+                        published_current_frame = True
+                if not published_current_frame:
+                    continue
                 if factor != published_factor:
                     self._emit_current(
                         AiEvent("zoom", factor, targeting_revision),

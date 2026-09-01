@@ -2,14 +2,24 @@ import unittest
 
 import numpy as np
 
-from jitter_app.ai.capture import DxcamCapture, centered_region
+from jitter_app.ai.capture import (
+    CENTER_320,
+    CapturedFrame,
+    FULL_DISPLAY,
+    DxcamCapture,
+    centered_region,
+    full_output_region,
+    validated_capture_mode,
+)
 
 
 class FakeCamera:
-    def __init__(self, width=1920, height=1080, frame=None):
+    def __init__(self, width=1920, height=1080, frame=None, timestamp=12.25):
         self.width = width
         self.height = height
         self.frame = frame
+        self.timestamp = timestamp
+        self.returned_frame = None
         self.start_kwargs = None
         self.started = False
         self.stop_calls = 0
@@ -21,7 +31,16 @@ class FakeCamera:
 
     def get_latest_frame(self, **kwargs):
         self.get_latest_frame_kwargs = kwargs
-        return self.frame
+        if self.frame is None:
+            return None
+        self.returned_frame = (
+            np.array(self.frame, copy=True, order="C")
+            if kwargs.get("copy")
+            else self.frame
+        )
+        if kwargs.get("with_timestamp"):
+            return self.returned_frame, self.timestamp
+        return self.returned_frame
 
     def stop(self):
         self.stop_calls += 1
@@ -41,17 +60,49 @@ class RecordingCameraFactory:
 
 
 class CaptureTests(unittest.TestCase):
-    def test_centered_region(self):
+    def test_capture_modes_are_strict(self):
+        self.assertEqual(validated_capture_mode(CENTER_320), CENTER_320)
+        self.assertEqual(validated_capture_mode(FULL_DISPLAY), FULL_DISPLAY)
+        for invalid in (None, "", "center", "CENTER_320", 320, True):
+            with self.subTest(invalid=invalid):
+                with self.assertRaisesRegex(
+                    ValueError, "^Unsupported AI capture mode$"
+                ):
+                    validated_capture_mode(invalid)
+
+    def test_centered_region_restores_exact_320_geometry(self):
         self.assertEqual(centered_region(1920, 1080), (800, 380, 1120, 700))
-
-    def test_centered_region_rejects_output_smaller_than_capture(self):
-        with self.assertRaisesRegex(ValueError, "Primary output is smaller"):
+        self.assertEqual(centered_region(1919, 1079), (799, 379, 1119, 699))
+        self.assertEqual(centered_region(320, 320), (0, 0, 320, 320))
+        with self.assertRaisesRegex(ValueError, "smaller than"):
             centered_region(319, 1080)
-        with self.assertRaisesRegex(ValueError, "Primary output is smaller"):
-            centered_region(1920, 319)
+        invalid_values = (0, -1, True, 1.5, "320")
+        for invalid in invalid_values:
+            with self.subTest(field="width", invalid=invalid):
+                with self.assertRaisesRegex(ValueError, "positive integers"):
+                    centered_region(invalid, 1080)
+            with self.subTest(field="height", invalid=invalid):
+                with self.assertRaisesRegex(ValueError, "positive integers"):
+                    centered_region(1920, invalid)
+            with self.subTest(field="size", invalid=invalid):
+                with self.assertRaisesRegex(ValueError, "positive integers"):
+                    centered_region(1920, 1080, invalid)
 
-    def test_capture_uses_numpy_rgb_backend_and_owned_frames(self):
-        camera = FakeCamera(frame=np.zeros((320, 320, 3), dtype=np.uint8))
+    def test_full_output_region_requires_positive_integer_geometry(self):
+        self.assertEqual(full_output_region(1920, 1080), (0, 0, 1920, 1080))
+        for width, height in (
+            (0, 1080),
+            (1920, 0),
+            (True, 1080),
+            (1920, 1.5),
+        ):
+            with self.subTest(width=width, height=height):
+                with self.assertRaisesRegex(ValueError, "positive integers"):
+                    full_output_region(width, height)
+
+    def test_default_capture_requests_center_320_and_returns_atomic_geometry(self):
+        source = np.zeros((320, 320, 3), dtype=np.uint8)
+        camera = FakeCamera(width=1920, height=1080, frame=source)
         factory = RecordingCameraFactory(camera)
         capture = DxcamCapture(camera_factory=factory, target_fps=165)
 
@@ -65,19 +116,145 @@ class CaptureTests(unittest.TestCase):
         self.assertEqual(camera.start_kwargs, {
             "region": (800, 380, 1120, 700), "target_fps": 165,
         })
-        self.assertEqual(camera.get_latest_frame_kwargs, {"copy": True})
-        self.assertTrue(frame.flags.owndata)
-        self.assertEqual(frame.shape, (320, 320, 3))
-        self.assertEqual(frame.dtype, np.uint8)
+        self.assertEqual(
+            camera.get_latest_frame_kwargs,
+            {"copy": True, "with_timestamp": True},
+        )
+        self.assertIsInstance(frame, CapturedFrame)
+        self.assertIs(frame.pixels, camera.returned_frame)
+        self.assertEqual(frame.captured_at, 12.25)
+        self.assertEqual(
+            (
+                frame.output_width,
+                frame.output_height,
+                frame.capture_left,
+                frame.capture_top,
+                frame.capture_width,
+                frame.capture_height,
+                frame.mode,
+            ),
+            (1920, 1080, 800, 380, 320, 320, CENTER_320),
+        )
+        self.assertTrue(frame.pixels.flags.owndata)
+        self.assertTrue(frame.pixels.flags.c_contiguous)
+        self.assertFalse(np.shares_memory(frame.pixels, source))
+        self.assertEqual(frame.pixels.shape, (320, 320, 3))
+        self.assertEqual(frame.pixels.dtype, np.uint8)
 
-    def test_read_skips_empty_and_malformed_frames(self):
-        for frame in (None, np.zeros((320, 320), dtype=np.uint8),
-                      np.zeros((320, 320, 4), dtype=np.uint8)):
-            with self.subTest(shape=None if frame is None else frame.shape):
+    def test_read_defensively_copies_borrowed_or_noncontiguous_frame(self):
+        class BorrowedFrameCamera(FakeCamera):
+            def __init__(self):
+                super().__init__()
+                self.storage = np.zeros((320, 640, 3), dtype=np.uint8)
+                self.view = self.storage[:, ::2, :]
+
+            def get_latest_frame(self, **kwargs):
+                self.get_latest_frame_kwargs = kwargs
+                return self.view, 4.5
+
+        camera = BorrowedFrameCamera()
+        capture = DxcamCapture(camera_factory=RecordingCameraFactory(camera))
+        capture.start()
+
+        frame = capture.read()
+
+        self.assertTrue(frame.pixels.flags.owndata)
+        self.assertTrue(frame.pixels.flags.c_contiguous)
+        np.testing.assert_array_equal(frame.pixels, camera.view)
+        self.assertFalse(np.shares_memory(frame.pixels, camera.view))
+        self.assertEqual(frame.captured_at, 4.5)
+
+    def test_read_rejects_malformed_timestamped_results(self):
+        valid_frame = np.zeros((320, 320, 3), dtype=np.uint8)
+        malformed_results = (
+            valid_frame,
+            (valid_frame,),
+            (valid_frame, 1.0, "extra"),
+            (valid_frame, True),
+            (valid_frame, -1.0),
+            (valid_frame, float("nan")),
+            (valid_frame, float("inf")),
+        )
+
+        class ResultCamera(FakeCamera):
+            def __init__(self, result):
+                super().__init__()
+                self.result = result
+
+            def get_latest_frame(self, **kwargs):
+                self.get_latest_frame_kwargs = kwargs
+                return self.result
+
+        for result in malformed_results:
+            with self.subTest(result_type=type(result), result=result):
+                camera = ResultCamera(result)
+                capture = DxcamCapture(camera_factory=RecordingCameraFactory(camera))
+                capture.start()
+                with self.assertRaises(ValueError):
+                    capture.read()
+
+    def test_full_display_capture_requests_native_output(self):
+        source = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        camera = FakeCamera(width=1920, height=1080, frame=source)
+        capture = DxcamCapture(
+            camera_factory=RecordingCameraFactory(camera),
+            mode=FULL_DISPLAY,
+        )
+
+        capture.start()
+        captured = capture.read()
+
+        self.assertEqual(camera.start_kwargs["region"], (0, 0, 1920, 1080))
+        self.assertEqual(captured.pixels.shape, (1080, 1920, 3))
+        self.assertEqual(captured.mode, FULL_DISPLAY)
+
+    def test_read_rejects_rgb_frame_that_does_not_match_capture_region(self):
+        camera = FakeCamera(
+            width=1920,
+            height=1080,
+            frame=np.zeros((320, 320, 3), dtype=np.uint8),
+        )
+        capture = DxcamCapture(
+            camera_factory=RecordingCameraFactory(camera),
+            mode=FULL_DISPLAY,
+        )
+        capture.start()
+
+        with self.assertRaisesRegex(
+            ValueError, "^AI capture frame must match capture region$"
+        ):
+            capture.read()
+
+    def test_read_preserves_none_as_no_new_frame(self):
+        camera = FakeCamera(frame=None)
+        capture = DxcamCapture(camera_factory=RecordingCameraFactory(camera))
+        capture.start()
+
+        self.assertIsNone(capture.read())
+
+    def test_read_rejects_every_non_none_malformed_frame(self):
+        malformed_frames = (
+            object(),
+            np.zeros((320, 320), dtype=np.uint8),
+            np.zeros((320, 320, 4), dtype=np.uint8),
+            np.zeros((0, 320, 3), dtype=np.uint8),
+            np.zeros((320, 0, 3), dtype=np.uint8),
+            np.zeros((320, 320, 3), dtype=np.float32),
+            np.zeros((320, 320, 3), dtype=np.bool_),
+        )
+        for frame in malformed_frames:
+            with self.subTest(
+                frame_type=type(frame),
+                shape=getattr(frame, "shape", None),
+            ):
                 camera = FakeCamera(frame=frame)
                 capture = DxcamCapture(camera_factory=RecordingCameraFactory(camera))
                 capture.start()
-                self.assertIsNone(capture.read())
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "^AI capture frame must be nonempty RGB uint8$",
+                ):
+                    capture.read()
 
     def test_close_stops_and_releases_once_when_started(self):
         camera = FakeCamera(frame=np.zeros((320, 320, 3), dtype=np.uint8))
