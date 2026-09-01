@@ -679,14 +679,40 @@ def _strict_unique_initial_candidate(
     center_x = frame_width / 2.0
     center_y = frame_height / 2.0
     distances = tuple(
-        (candidate.target.aim_x - center_x) ** 2
-        + (candidate.target.aim_y - center_y) ** 2
+        _strict_squared_distance(
+            candidate.target.aim_x,
+            candidate.target.aim_y,
+            center_x,
+            center_y,
+        )
         for candidate in candidates
     )
+    candidates = tuple(
+        candidate
+        for candidate, distance in zip(candidates, distances)
+        if distance is not None
+    )
+    distances = tuple(distance for distance in distances if distance is not None)
+    if not candidates:
+        return None
     closest = min(distances)
     if distances.count(closest) != 1:
         return None
     return candidates[distances.index(closest)]
+
+
+def _strict_squared_distance(
+    first_x: float,
+    first_y: float,
+    second_x: float,
+    second_y: float,
+) -> float | None:
+    delta_x = first_x - second_x
+    delta_y = first_y - second_y
+    if not _strict_is_finite(delta_x, delta_y):
+        return None
+    distance_squared = delta_x * delta_x + delta_y * delta_y
+    return distance_squared if _strict_is_finite(distance_squared) else None
 
 
 def _strict_prediction(

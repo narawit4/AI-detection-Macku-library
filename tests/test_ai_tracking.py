@@ -703,6 +703,17 @@ class StrictTriggerLockTests(unittest.TestCase):
                 self.assertIsNone(result.analysis.target)
                 self.assertIsNone(result.analysis.frame.selected_index)
 
+    def test_oversized_finite_geometry_fails_closed_during_acquisition(self):
+        oversized = Detection(0, 0, 1e200, 10, .9, 7)
+
+        result = self.observe(StrictTriggerLockState(), (oversized,), 1)
+
+        self.assertEqual(result.state.mode, "lost")
+        self.assertEqual(result.state.epoch, 1)
+        self.assertIsNone(result.analysis.target)
+        self.assertIsNone(result.analysis.frame.selected_index)
+        self.assertEqual(result.analysis.frame.detections, (oversized,))
+
     def test_non_finite_capture_time_fails_closed(self):
         result = self.observe(
             StrictTriggerLockState(),
