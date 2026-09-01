@@ -736,6 +736,27 @@ class StrictTriggerLockTests(unittest.TestCase):
         self.assertIsNone(continued.analysis.frame.selected_index)
         self.assertEqual(continued.analysis.frame.detections, (oversized,))
 
+    def test_nonfinite_continuation_radius_latches_lost(self):
+        base = Detection(-6e307, -5e-309, 6e307, 5e-309, .9, 7)
+        shifted = Detection(
+            -6e307 + 1e300,
+            -5e-309,
+            6e307 + 1e300,
+            5e-309,
+            .9,
+            7,
+        )
+
+        acquired = self.observe(StrictTriggerLockState(), (base,), 1)
+        continued = self.observe(acquired.state, (shifted,), 2)
+
+        self.assertEqual(acquired.state.mode, "tracking")
+        self.assertEqual(continued.state.mode, "lost")
+        self.assertEqual(continued.state.epoch, 1)
+        self.assertIsNone(continued.analysis.target)
+        self.assertIsNone(continued.analysis.frame.selected_index)
+        self.assertEqual(continued.analysis.frame.detections, (shifted,))
+
     def test_non_finite_capture_time_fails_closed(self):
         result = self.observe(
             StrictTriggerLockState(),
