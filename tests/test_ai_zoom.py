@@ -404,6 +404,18 @@ class ZoomCompositionTests(unittest.TestCase):
         )
         self.assertEqual(result.frame.detections[2], self.base_player().frame.detections[2])
 
+    def test_multiple_compatible_refinements_fail_back_to_base(self):
+        result = compose_zoom_refinement(
+            self.base_player(),
+            (
+                Detection(70, 35, 90, 55, .92, 7),
+                Detection(74, 39, 94, 59, .93, 7),
+            ),
+            ZoomTransform(80, 40, 160, 160, 320, 320, 2.0),
+            AimSettings(confidence=.35),
+        )
+        self.assertIsNone(result)
+
     def test_refinement_preserves_capture_viewport(self):
         original = self.base_player()
         base = DetectionAnalysis(
@@ -451,7 +463,7 @@ class ZoomCompositionTests(unittest.TestCase):
             ),
         )
         matching_base = Detection(35, 35, 45, 45, 0.92, 7)
-        nearer_crosshair = Detection(57, 57, 67, 67, 0.95, 7)
+        nearer_crosshair = Detection(85, 85, 95, 95, 0.95, 7)
 
         result = compose_zoom_refinement(
             base,

@@ -96,6 +96,22 @@ class ControlledCapture(FakeCapture):
         return super().read()
 
 
+class FrameCompletionCapture(ControlledCapture):
+    def __init__(self, frames, **kwargs):
+        frame_count = len(frames)
+        super().__init__(frames, **kwargs)
+        self._delivered_count = 0
+        self.processed = [threading.Event() for _ in range(frame_count)]
+
+    def read(self):
+        if self._delivered_count:
+            self.processed[self._delivered_count - 1].set()
+        frame = super().read()
+        if frame is not None:
+            self._delivered_count += 1
+        return frame
+
+
 class CountingCapture(FakeCapture):
     def __init__(self, frames=None, start_error=None, read_error=None):
         super().__init__(frames)
@@ -607,6 +623,311 @@ class AiServiceTests(unittest.TestCase):
             lambda: service.latest_detection_snapshot() is not None
             and service.latest_detection_snapshot().sequence == sequence
         ))
+
+    def start_managed_sequence(self, outputs, epoch):
+        capture = ControlledCapture([
+            rgb_frame(index + 1) for index in range(len(outputs))
+        ])
+        service = AiService(
+            lambda _event: None,
+            detector_factory=lambda _path: SequenceDetector(outputs),
+            capture_factory=lambda _mode: capture,
+        )
+        self.addCleanup(service.close)
+        service.start(AimSettings, lambda: False, lambda: epoch["value"])
+        return service, capture
+
+    def test_managed_idle_keeps_overlay_selection_but_no_movement_target(self):
+        epoch = {"value": None}
+        capture = ControlledCapture([rgb_frame(150)])
+        service = AiService(
+            lambda _event: None,
+            detector_factory=lambda _path: FakeDetector(),
+            capture_factory=lambda _mode: capture,
+        )
+        self.addCleanup(service.close)
+        service.start(
+            AimSettings,
+            lambda: False,
+            lambda: epoch["value"],
+        )
+        capture.release_frame()
+        self.assertTrue(wait_until(
+            lambda: service.latest_detection_snapshot() is not None
+        ))
+        self.assertIsNone(service.latest_snapshot())
+        self.assertEqual(service.latest_detection_snapshot().selected_index, 0)
+
+    def test_omitted_epoch_provider_preserves_legacy_stateless_publication(self):
+        capture = ControlledCapture([rgb_frame(150)])
+        service = AiService(
+            lambda _event: None,
+            detector_factory=lambda _path: FakeDetector(),
+            capture_factory=lambda _mode: capture,
+        )
+        self.addCleanup(service.close)
+        service.start(AimSettings, lambda: False)
+        capture.release_frame()
+        self.assertTrue(wait_until(lambda: service.latest_snapshot() is not None))
+
+    def test_epoch_acquires_once_and_missing_frame_latches_lost(self):
+        target = (Detection(145, 145, 165, 165, .9, 7),)
+        epoch = {"value": 1}
+        service, capture = self.start_managed_sequence(
+            (target, (), target, target), epoch,
+        )
+        capture.release_frame()
+        self.assertTrue(wait_until(lambda: service.latest_snapshot() is not None))
+        capture.release_frame()
+        self.assertTrue(wait_until(lambda: service.latest_snapshot() is None))
+        capture.release_frame()
+        self.assertTrue(wait_until(
+            lambda: service.latest_detection_snapshot().sequence >= 3
+        ))
+        self.assertIsNone(service.latest_snapshot())
+        epoch["value"] = 2
+        capture.release_frame()
+        self.assertTrue(wait_until(
+            lambda: service.latest_snapshot() is not None
+            and service.latest_snapshot().sequence == 4
+        ))
+
+    def test_same_epoch_cannot_be_claimed_by_successor_generation(self):
+        target = (Detection(145, 145, 165, 165, .9, 7),)
+        epoch = {"value": 1}
+        capture_one = ControlledCapture([rgb_frame(1)])
+        capture_two = ControlledCapture([rgb_frame(2)])
+        capture_three = ControlledCapture([rgb_frame(3)])
+        captures = [capture_one, capture_two, capture_three]
+        detectors = [SequenceDetector([target]) for _ in range(3)]
+        service = AiService(
+            lambda _event: None,
+            detector_factory=lambda _path: detectors.pop(0),
+            capture_factory=lambda _mode: captures.pop(0),
+        )
+        self.addCleanup(service.close)
+
+        service.start(AimSettings, lambda: False, lambda: epoch["value"])
+        capture_one.release_frame()
+        self.assertTrue(wait_until(lambda: service.latest_snapshot() is not None))
+        service.stop("generation_one_complete")
+        self.assertTrue(wait_until(lambda: not service.worker_active))
+
+        service.start(AimSettings, lambda: False, lambda: epoch["value"])
+        capture_two.release_frame()
+        self.assertTrue(wait_until(
+            lambda: service.latest_detection_snapshot() is not None
+        ))
+        self.assertIsNone(service.latest_snapshot())
+        service.stop("same_epoch_rejected")
+        self.assertTrue(wait_until(lambda: not service.worker_active))
+
+        epoch["value"] = 2
+        service.start(AimSettings, lambda: False, lambda: epoch["value"])
+        capture_three.release_frame()
+        self.assertTrue(wait_until(lambda: service.latest_snapshot() is not None))
+
+    def test_release_during_blocking_base_inference_discards_result(self):
+        epoch = {"value": 1}
+        capture = FrameCompletionCapture([rgb_frame(1)])
+        detector = BlockingDetector()
+        service = AiService(
+            lambda _event: None,
+            detector_factory=lambda _path: detector,
+            capture_factory=lambda _mode: capture,
+        )
+        self.addCleanup(service.close)
+        service.start(AimSettings, lambda: False, lambda: epoch["value"])
+        capture.release_frame()
+        self.assertTrue(detector.entered.wait(1.0))
+        epoch["value"] = None
+        detector.release.set()
+        self.assertTrue(capture.processed[0].wait(1.0))
+        self.assertIsNone(service.latest_snapshot())
+        self.assertIsNone(service.latest_detection_snapshot())
+
+    def test_invalidate_unclaimed_epoch_prevents_later_acquisition(self):
+        target = (Detection(145, 145, 165, 165, .9, 7),)
+        epoch = {"value": 1}
+        service, capture = self.start_managed_sequence((target,), epoch)
+        service.invalidate_trigger_lock(1)
+        capture.release_frame()
+        self.assertTrue(wait_until(
+            lambda: service.latest_detection_snapshot() is not None
+        ))
+        self.assertIsNone(service.latest_snapshot())
+
+    def test_invalidation_during_blocking_inference_discards_result(self):
+        epoch = {"value": 1}
+        capture = FrameCompletionCapture([rgb_frame(1)])
+        detector = BlockingDetector()
+        service = AiService(
+            lambda _event: None,
+            detector_factory=lambda _path: detector,
+            capture_factory=lambda _mode: capture,
+        )
+        self.addCleanup(service.close)
+        service.start(AimSettings, lambda: False, lambda: epoch["value"])
+        capture.release_frame()
+        self.assertTrue(detector.entered.wait(1.0))
+        service.invalidate_trigger_lock(1)
+        detector.release.set()
+        self.assertTrue(capture.processed[0].wait(1.0))
+        self.assertIsNone(service.latest_snapshot())
+        self.assertIsNone(service.latest_detection_snapshot())
+
+    def test_older_epoch_cannot_be_reclaimed_after_a_newer_claim(self):
+        target = (Detection(145, 145, 165, 165, .9, 7),)
+        epoch = {"value": 1}
+        service, capture = self.start_managed_sequence(
+            (target, target, target), epoch,
+        )
+        capture.release_frame()
+        self.assertTrue(wait_until(
+            lambda: service.latest_snapshot() is not None
+            and service.latest_snapshot().sequence == 1
+        ))
+        epoch["value"] = 2
+        capture.release_frame()
+        self.assertTrue(wait_until(
+            lambda: service.latest_snapshot() is not None
+            and service.latest_snapshot().sequence == 2
+        ))
+        epoch["value"] = 1
+        self.release_and_wait(capture, service, 3)
+        self.assertIsNone(service.latest_snapshot())
+        self.assertIsNone(service.latest_detection_snapshot().selected_index)
+
+    def test_release_during_second_inference_preserves_prior_frame_only(self):
+        target = (Detection(145, 145, 165, 165, .9, 7),)
+        entered = threading.Event()
+        release = threading.Event()
+
+        def block_second_call():
+            entered.set()
+            release.wait(1.0)
+
+        detector = SequentialDetector(
+            (target, target), second_call_hook=block_second_call,
+        )
+        capture = FrameCompletionCapture([rgb_frame(1), rgb_frame(2)])
+        epoch = {"value": 1}
+        service = AiService(
+            lambda _event: None,
+            detector_factory=lambda _path: detector,
+            capture_factory=lambda _mode: capture,
+        )
+        self.addCleanup(service.close)
+        service.start(AimSettings, lambda: False, lambda: epoch["value"])
+
+        capture.release_frame()
+        self.assertTrue(capture.processed[0].wait(1.0))
+        before = service.latest_detection_snapshot()
+        self.assertEqual(before.sequence, 1)
+        self.assertEqual(before.selected_index, 0)
+
+        capture.release_frame()
+        self.assertTrue(entered.wait(1.0))
+        epoch["value"] = None
+        release.set()
+        self.assertTrue(capture.processed[1].wait(1.0))
+        after = service.latest_detection_snapshot()
+        self.assertEqual(after.sequence, before.sequence)
+        self.assertEqual(after.detections, before.detections)
+        self.assertIsNone(after.selected_index)
+        self.assertIsNone(service.latest_snapshot())
+
+    def test_invalid_bool_zero_and_negative_epochs_publish_no_movement(self):
+        target = (Detection(145, 145, 165, 165, .9, 7),)
+        for invalid in (True, 0, -1):
+            with self.subTest(epoch=invalid):
+                epoch = {"value": invalid}
+                service, capture = self.start_managed_sequence((target,), epoch)
+                with self.assertLogs(
+                    "jitter_app.ai.service", level="WARNING"
+                ):
+                    capture.release_frame()
+                    self.assertTrue(wait_until(
+                        lambda: service.latest_detection_snapshot() is not None
+                    ))
+                self.assertIsNone(service.latest_snapshot())
+
+    def test_trigger_epoch_provider_exception_uses_worker_error_boundary(self):
+        events = []
+        capture = ControlledCapture([rgb_frame(1)])
+        service = AiService(
+            events.append,
+            detector_factory=lambda _path: FakeDetector(),
+            capture_factory=lambda _mode: capture,
+        )
+        self.addCleanup(service.close)
+
+        def failing_provider():
+            raise RuntimeError("epoch provider failed")
+
+        service.start(AimSettings, lambda: False, failing_provider)
+        with self.assertLogs("jitter_app.ai.service", level="ERROR"):
+            capture.release_frame()
+            self.assertTrue(capture.closed.wait(1.0))
+        self.assertEqual(service.status, "error")
+        self.assertIsNone(service.latest_snapshot())
+        self.assertTrue(any(event.kind == "error" for event in events))
+
+    def test_release_during_refinement_discards_result(self):
+        epoch = {"value": 1}
+        capture = FrameCompletionCapture([rgb_frame(1)])
+        detector = SequentialDetector(
+            (
+                (Detection(140, 80, 180, 160, .9, 0),),
+                (Detection(144, 135, 174, 165, .95, 7),),
+            ),
+            second_call_hook=lambda: epoch.update(value=None),
+        )
+        service, _events = self.make_zoom_service(detector, capture=capture)
+        service.start(
+            AimSettings,
+            lambda: True,
+            lambda: epoch["value"],
+        )
+        capture.release_frame()
+        self.assertTrue(capture.processed[0].wait(1.0))
+        self.assertEqual(len(detector.frames), 2)
+        self.assertIsNone(service.latest_snapshot())
+        self.assertIsNone(service.latest_detection_snapshot())
+
+    def test_refined_box_never_becomes_next_frame_lock_identity(self):
+        selected_base = self.small_head(160.0)
+        refined_crop_local = Detection(112, 100, 124, 112, .95, 7)
+        next_base = self.small_head(115.0)
+        detector = SequentialDetector(
+            ((selected_base,), (refined_crop_local,), (next_base,))
+        )
+        capture = ControlledCapture([rgb_frame(1), rgb_frame(2)])
+        gate = {"active": True}
+        epoch = {"value": 1}
+        clock = MutableClock(10.0)
+        service, _events = self.make_zoom_service(
+            detector, capture=capture, clock=clock,
+        )
+        service.start(
+            AimSettings,
+            lambda: gate["active"],
+            lambda: epoch["value"],
+        )
+
+        self.release_and_wait(capture, service, 1)
+        self.assertNotEqual(
+            service.latest_detection_snapshot().detections[0],
+            selected_base,
+        )
+        gate["active"] = False
+        clock.set(10.01)
+        self.release_and_wait(capture, service, 2)
+        self.assertEqual(service.latest_snapshot().aim_x, 115.0)
+        self.assertEqual(
+            service.latest_detection_snapshot().detections,
+            (next_base,),
+        )
 
     def test_normal_gate_publishes_nearest_head_or_player_each_frame(self):
         near_player = Detection(120.0, 132.0, 200.0, 272.0, 0.9, 0)
